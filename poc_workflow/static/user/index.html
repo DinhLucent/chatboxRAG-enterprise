@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DL-RAG | Trợ lý Tri thức Quy trình</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="/static/user/user-chat.css?v=20260524-premium" />
+  </head>
+  <body>
+    <!-- Premium Interactive Background Blobs -->
+    <div class="glow-bg">
+      <div class="blob blob-1"></div>
+      <div class="blob blob-2"></div>
+    </div>
+
+    <div class="user-shell">
+      <aside class="rail" aria-label="Điều hướng">
+        <div class="rail-brand" aria-label="DL-RAG Trợ lý Quy trình">
+          <div class="rail-mark-container">
+            <svg class="logo-svg" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="2" y="2" width="20" height="20" rx="6" fill="url(#logo-grad)"/>
+              <path d="M7 9C7 7.89543 7.89543 7 9 7H15C16.1046 7 17 7.89543 17 9V13C17 14.1046 16.1046 15 15 15H11.5L8.5 17.5V15H9C7.89543 15 7 14.1046 7 13V9Z" fill="white" fill-opacity="0.95"/>
+              <circle cx="10" cy="11" r="1.2" fill="#dc2626"/>
+              <circle cx="14" cy="11" r="1.2" fill="#dc2626"/>
+              <defs>
+                <linearGradient id="logo-grad" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#e11d48"/>
+                  <stop offset="1" stop-color="#9f1239"/>
+                </linearGradient>
+              </defs>
+            </svg>
+          </div>
+          <span class="brand-text">DL-RAG</span>
+        </div>
+        
+        <div class="rail-nav">
+          <button id="newChatBtn" class="rail-button active" type="button" title="Cuộc trò chuyện mới">
+            <svg class="rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+            <span class="rail-label">Mới</span>
+          </button>
+          
+          <button class="rail-button muted" type="button" disabled title="Lịch sử (Sắp ra mắt)">
+            <svg class="rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <polyline points="12 6 12 12 16 14"/>
+            </svg>
+            <span class="rail-label">Lịch sử</span>
+          </button>
+          
+          <button id="toggleDrawerBtn" class="rail-button" type="button" title="Xem nguồn tham chiếu">
+            <svg class="rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="16" y1="13" x2="8" y2="13"/>
+              <line x1="16" y1="17" x2="8" y2="17"/>
+            </svg>
+            <span class="rail-label">Nguồn</span>
+          </button>
+        </div>
+
+        <div class="rail-status" id="railStatus">
+          <div class="status-pulse-container">
+            <span class="status-dot"></span>
+            <span class="status-dot-pulse"></span>
+          </div>
+          <span id="statusText">Đang kết nối</span>
+        </div>
+      </aside>
+
+      <main class="chat-main">
+        <header class="chat-header">
+          <div class="header-content">
+            <h1>Trợ lý Tri thức Quy trình</h1>
+            <div id="assistantLine" class="assistant-line">Trợ lý đang dùng: Tài liệu đang hiệu lực</div>
+          </div>
+        </header>
+
+        <section id="templateGroups" class="template-groups" aria-label="Câu hỏi mẫu"></section>
+
+        <section id="messages" class="messages" aria-live="polite">
+          <div id="welcomeState" class="welcome-state">
+            <div class="welcome-hero">
+              <div class="welcome-badge">Hệ thống RAG thông minh</div>
+              <p class="welcome-eyebrow">Tôi có thể giúp gì cho bạn hôm nay?</p>
+              <p class="welcome-sub">Tìm kiếm nhanh chóng, trích dẫn chính xác từ kho quy trình nội bộ của doanh nghiệp.</p>
+            </div>
+            <div id="welcomeCards" class="welcome-cards" aria-label="Gợi ý bắt đầu"></div>
+          </div>
+        </section>
+
+        <form id="chatForm" class="composer">
+          <div class="composer-container">
+            <div class="composer-settings">
+              <label class="answer-style-label" for="answerStyle">Kiểu trả lời:</label>
+              <div class="select-wrapper">
+                <select id="answerStyle" class="answer-style-select"></select>
+              </div>
+            </div>
+            <div class="textarea-wrapper">
+              <textarea id="queryInput" rows="1" placeholder="Nhập câu hỏi tại đây... (Ctrl+Enter để gửi)"></textarea>
+            </div>
+            <div class="composer-actions">
+              <div id="selectedTemplate" class="selected-template">Không dùng mẫu</div>
+              <button id="sendBtn" class="send-button" type="submit">
+                <span class="btn-text">Gửi</span>
+                <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="22" y1="2" x2="11" y2="13"/>
+                  <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </form>
+      </main>
+
+      <aside id="sourceDrawer" class="source-drawer" aria-label="Nguồn và quá trình">
+        <div class="drawer-header">
+          <div class="drawer-header-content">
+            <h2>Căn cứ tham chiếu</h2>
+            <span id="drawerMeta">Chưa có câu trả lời</span>
+          </div>
+          <button id="closeDrawerBtn" class="icon-button mobile-only" type="button">Ẩn</button>
+        </div>
+        <div class="drawer-tabs" role="tablist">
+          <button class="drawer-tab active" data-tab="sources" type="button">Tài liệu nguồn</button>
+          <button class="drawer-tab" data-tab="trace" type="button">Quá trình RAG</button>
+        </div>
+        <section id="sourcesPanel" class="drawer-panel active"></section>
+        <section id="tracePanel" class="drawer-panel"></section>
+      </aside>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/static/user/user-chat.js?v=20260524-premium"></script>
+  </body>
+</html>

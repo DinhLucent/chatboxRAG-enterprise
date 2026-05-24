@@ -1,0 +1,49 @@
+{
+  "version": "2026-05-24.mvp",
+  "groups": [
+    {
+      "id": "procedure",
+      "label": "Tra cứu quy trình",
+      "templates": [
+        {
+          "id": "procedure_steps",
+          "label": "Quy trình",
+          "question": "Quy trình này gồm những bước nào?"
+        }
+      ]
+    },
+    {
+      "id": "form_checklist",
+      "label": "Tìm biểu mẫu",
+      "templates": [
+        {
+          "id": "form_usage",
+          "label": "Biểu mẫu",
+          "question": "Trường hợp này cần dùng biểu mẫu nào?"
+        }
+      ]
+    },
+    {
+      "id": "incident",
+      "label": "Hỏi lỗi kỹ thuật",
+      "templates": [
+        {
+          "id": "incident_first_response",
+          "label": "Lỗi kỹ thuật",
+          "question": "Khi phát sinh lỗi kỹ thuật, cần xử lý ban đầu thế nào?"
+        }
+      ]
+    },
+    {
+      "id": "vendor_document",
+      "label": "Tìm tài liệu hãng",
+      "templates": [
+        {
+          "id": "vendor_requirement",
+          "label": "Tài liệu hãng",
+          "question": "Tài liệu hãng nêu yêu cầu kỹ thuật nào?"
+        }
+      ]
+    }
+  ]
+}

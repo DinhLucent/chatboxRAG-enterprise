@@ -8,6 +8,7 @@ Use these docs as the operational source for the current POC.
 - `demo-end-to-end-architecture.md`: Mermaid diagrams for the Vercel demo, local backend, document workflow, and security boundaries.
 - `document-intake-procedure.md`: how users provide documents and how agents process inbox files.
 - `acceptance-loop-check-2026-05-23.md`: latest 69-case loop-check report and production gaps.
+- `quality-gate-latest.md`: latest deterministic quality gate report for release acceptance.
 - `operations-observability.md`: incidents, diagnostics, alerts, and AI-agent debug procedure.
 - `mineru-agent-tool.md`: MinerU background service, WebUI, and AI-agent usage.
 

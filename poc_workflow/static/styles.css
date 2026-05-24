@@ -1252,10 +1252,72 @@ tbody tr:hover {
   overflow: auto;
 }
 
-.documents-list-panel thead th {
-  position: sticky;
-  top: 0;
-  z-index: 2;
+.document-record-list {
+  min-width: 0;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.document-record-card {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 0.36fr);
+  gap: var(--space-3);
+  align-items: stretch;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.88);
+  color: var(--text);
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-align: left;
+  box-shadow: none;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.document-record-card:hover,
+.document-record-card.selected-row {
+  border-color: var(--primary-tint);
+  background: var(--primary-soft);
+  box-shadow: var(--shadow-sm);
+}
+
+.document-record-card:active {
+  transform: translateY(1px);
+}
+
+.record-main {
+  min-width: 0;
+}
+
+.record-code {
+  margin-bottom: 4px;
+  color: var(--primary-strong);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.record-side {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.record-side span:not(.status) {
+  overflow-wrap: anywhere;
 }
 
 .result-meta {
@@ -1534,6 +1596,122 @@ tbody tr:hover {
   border-radius: 0;
 }
 
+.runtime-status-panel {
+  border-top: 1px solid var(--line);
+}
+
+.llm-config-panel {
+  border-top: 1px solid var(--line);
+}
+
+.llm-config-header {
+  padding: var(--space-4) var(--space-4) 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.llm-config-form {
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.llm-preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.llm-preset-button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  background: #ffffff;
+  color: var(--muted-strong);
+  padding: 7px 11px;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.llm-preset-button:hover,
+.llm-preset-button.active {
+  border-color: var(--primary-tint);
+  background: var(--primary-soft);
+  color: var(--primary-strong);
+}
+
+.llm-form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 0.9fr);
+  gap: var(--space-3);
+}
+
+.llm-config-note {
+  padding: 8px 0;
+}
+
+.llm-test-result {
+  min-width: 0;
+}
+
+.runtime-status-grid {
+  padding: var(--space-4);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.runtime-status-main {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  border-left: 4px solid var(--primary);
+  background: #f7fcfa;
+  padding: var(--space-3);
+}
+
+.runtime-status-main.failed {
+  border-left-color: var(--danger);
+}
+
+.runtime-status-main.queue,
+.runtime-status-main.ocr_required {
+  border-left-color: var(--warning);
+}
+
+.runtime-status-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  border-bottom: 1px solid var(--line);
+  padding: 8px 0;
+  font-size: 12px;
+}
+
+.runtime-status-row.wide,
+.runtime-status-error {
+  grid-column: 1 / -1;
+}
+
+.runtime-status-row span {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.runtime-status-row strong,
+.runtime-status-row code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .evaluation-summary {
   padding: var(--space-6);
 }
@@ -1764,6 +1942,37 @@ tbody tr:hover {
 
   .document-category-rail {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .runtime-status-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .llm-config-header {
+    flex-direction: column;
+  }
+
+  .llm-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .llm-preset-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .runtime-status-row {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
+  .document-record-card {
+    grid-template-columns: 1fr;
+  }
+
+  .record-side {
+    flex-direction: row;
+    flex-wrap: wrap;
   }
 
   .inspector-summary,

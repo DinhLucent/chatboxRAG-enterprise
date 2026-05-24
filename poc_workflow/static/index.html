@@ -238,20 +238,7 @@
               </div>
               <div id="documentResultMeta" class="result-meta"></div>
               <div class="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Mã tài liệu</th>
-                      <th>Tên tài liệu</th>
-                      <th>Phiên bản</th>
-                      <th>Trạng thái</th>
-                      <th>Danh mục</th>
-                      <th>Chủ sở hữu</th>
-                      <th>Xem</th>
-                    </tr>
-                  </thead>
-                  <tbody id="manifestRows"></tbody>
-                </table>
+                <div id="manifestRows" class="document-record-list"></div>
               </div>
             </section>
 
@@ -326,9 +313,12 @@
                   <button id="bootstrapRagflowBtn" class="button secondary" type="button">Khởi tạo RAGFlow</button>
                   <button id="syncRagflowBtn" class="button secondary" type="button">Đồng bộ RAGFlow</button>
                   <button id="rebuildBtn" class="button secondary" type="button">Dựng lại index cục bộ</button>
+                  <button id="checkLlmBtn" class="button" type="button">Kiểm tra LLM</button>
                 </div>
               </div>
               <div id="systemSummary" class="list"></div>
+              <div id="llmStatusPanel" class="runtime-status-panel"></div>
+              <div id="llmConfigPanel" class="llm-config-panel"></div>
             </section>
             <section class="panel">
               <div class="panel-header">

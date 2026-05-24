@@ -173,6 +173,69 @@ def diagnostic_snapshot(root: Path, include_logs: bool = True) -> dict[str, Any]
     return snapshot
 
 
+def build_incident_agent_prompt(root: Path, incident_id: int) -> str:
+    db = QualityDatabase(root)
+    incident = db.get_incident(incident_id)
+    if not incident:
+        raise ValueError(f"Incident not found: {incident_id}")
+
+    snapshot = diagnostic_snapshot(root, include_logs=True)
+    related_incidents = [
+        item
+        for item in snapshot.get("open_incidents", [])
+        if item.get("id") == incident_id or item.get("component") == incident.get("component")
+    ][:5]
+    payload = {
+        "workspace": str(root),
+        "incident": incident,
+        "operational_summary": snapshot.get("summary"),
+        "operational_status": snapshot.get("status"),
+        "readiness": snapshot.get("readiness"),
+        "related_open_incidents": related_incidents,
+        "recommendations": snapshot.get("recommendations", [])[:6],
+        "latest_evaluation": snapshot.get("latest_evaluation"),
+        "recent_queries": snapshot.get("recent_queries", [])[:8],
+        "recent_knowledge_gaps": snapshot.get("recent_knowledge_gaps", [])[:8],
+        "runtime_logs": snapshot.get("runtime_logs", [])[:4],
+    }
+    context = json.dumps(payload, ensure_ascii=False, indent=2)
+    if len(context) > 18_000:
+        context = context[:18_000].rstrip() + "\n... [context truncated]"
+
+    return f"""Bạn là AI coding agent đang làm việc trong repo local.
+
+Mục tiêu: sửa sự cố liên quan đến incident #{incident_id} trong dashboard chatbot nội bộ.
+
+Yêu cầu bắt buộc:
+- Đọc code và log trước khi sửa, không đoán nguyên nhân.
+- Khoanh vùng nguyên nhân gốc, sửa đúng phạm vi liên quan đến incident.
+- Không reset git, không xoá dữ liệu runtime, không làm mất thay đổi người dùng.
+- Nếu cần chỉnh UI, giữ tiếng Việt, phong cách teal hiện tại và không làm tràn layout.
+- Sau khi sửa, chạy test liên quan. Ưu tiên `python -m pytest tests\\test_webapp.py --basetemp .pytest-tmp-codex`.
+- Nếu incident do cấu hình/dịch vụ ngoài code, hãy nêu rõ biến môi trường, port, process hoặc startup script cần kiểm tra.
+- Chỉ đánh dấu incident đã xử lý sau khi có bằng chứng test/verification.
+
+Thông tin incident:
+- Severity: {incident.get("severity")}
+- Component: {incident.get("component")}
+- Title: {incident.get("title")}
+- Detail: {incident.get("detail")}
+- Status: {incident.get("status")}
+- Created at: {incident.get("created_at")}
+
+Context chẩn đoán dạng JSON:
+```json
+{context}
+```
+
+Kết quả mong muốn từ agent:
+1. Tóm tắt nguyên nhân gốc.
+2. Danh sách file đã sửa.
+3. Lệnh kiểm tra đã chạy và kết quả.
+4. Rủi ro còn lại hoặc việc cần người vận hành làm thủ công, nếu có.
+"""
+
+
 def infer_operational_status(
     stats: dict[str, Any],
     readiness: dict[str, Any],

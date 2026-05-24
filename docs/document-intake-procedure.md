@@ -161,6 +161,18 @@ Nguoi duyet kiem tra tren dashboard hoac manifest:
 - Version moi hon ban active neu cung `doc_id`.
 - Tai lieu duoc phep dua vao chatbot.
 
+Chay audit taxonomy/doc_id truoc khi duyet hang loat:
+
+```powershell
+python -m poc_workflow audit-taxonomy
+python -m poc_workflow plan-taxonomy-remediation
+python -m poc_workflow apply-taxonomy-remediation
+```
+
+Lenh nay tao `data/data_audit/taxonomy_latest.json` va `docs/taxonomy-audit-latest.md`.
+Neu report bao `title suggests ...` hoac `category/doc_id prefix mismatch`, can sua metadata/source path va rebuild index truoc khi sync RAGFlow.
+`apply-taxonomy-remediation --apply` chi tu dong sua record `pending_review` khong conflict; record `active` van phai review vi co the doi citation/doc_id dang phuc vu chatbot.
+
 Approve:
 
 ```powershell
@@ -209,4 +221,4 @@ Neu khong co sidecar, agent se tao metadata nhap.
 - AI agent duoc tao metadata, convert, validate, va dua vao `pending_review`.
 - AI agent khong tu approve tai lieu thanh `active`.
 - Chatbot chi tra loi tu tai lieu `active`.
-- Neu khong co nguon active hop le, bot tra loi: `Khong tim thay can cu trong tai lieu hien hanh.`
+- Neu khong co nguon active hop le, bot tra loi: `Không tìm thấy căn cứ trong tài liệu hiện hành.`

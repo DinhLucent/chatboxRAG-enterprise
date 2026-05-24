@@ -8,6 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from .chatbot import apply_feedback, ask
+from .data_maintenance import (
+    apply_taxonomy_remediation,
+    audit_manifest_taxonomy,
+    backfill_missing_qa_reports,
+    plan_taxonomy_remediation,
+)
 from .database import QualityDatabase
 from .evaluation import run_evaluation
 from .intake import prepare_inbox, requeue_ocr_required
@@ -20,6 +26,7 @@ from .pipeline import (
     rebuild_indexes,
     retire_record,
 )
+from .quality_gate import run_quality_gate
 from .ragflow_http import bootstrap_ragflow_resources, sync_active_to_ragflow
 from .readiness import deployment_readiness
 
@@ -106,6 +113,16 @@ def build_parser() -> argparse.ArgumentParser:
     readiness = sub.add_parser("readiness", help="Check production deployment readiness.")
     readiness.add_argument("--check-network", action="store_true", help="Call RAGFlow health endpoint.")
 
+    quality_gate = sub.add_parser("quality-gate", help="Run the production workflow quality gate.")
+    quality_gate.add_argument("--mode", choices=["local", "production"], default="local")
+    quality_gate.add_argument("--provider", choices=["auto", "ragflow", "local"], default="local")
+    quality_gate.add_argument("--cases", help="Quality gate case suite path. Defaults to eval/quality_gate_cases.json.")
+    quality_gate.add_argument("--check-network", action="store_true", help="Check networked services in readiness.")
+    quality_gate.add_argument("--keep-sandbox", action="store_true", help="Keep .quality-sandbox run directory after pass.")
+    quality_gate.add_argument("--skip-pytest", action="store_true", help="Skip the unit/integration pytest gate.")
+    quality_gate.add_argument("--skip-evaluation", action="store_true", help="Skip the regression retrieval gate.")
+    quality_gate.add_argument("--latency-target-ms", type=int, default=12_000)
+
     sub.add_parser("gaps", help="List knowledge gaps.")
     sub.add_parser("queries", help="List query logs.")
     incidents = sub.add_parser("incidents", help="List operational incidents.")
@@ -124,6 +141,44 @@ def build_parser() -> argparse.ArgumentParser:
 
     diagnostics = sub.add_parser("diagnostics", help="Export a diagnostic snapshot for engineers or AI agents.")
     diagnostics.add_argument("--no-logs", action="store_true", help="Skip runtime log tails.")
+
+    backfill_qa = sub.add_parser("backfill-qa-reports", help="Backfill missing Markdown QA reports for manifest records.")
+    backfill_qa.add_argument("--limit", type=int, help="Backfill at most this many records.")
+    backfill_qa.add_argument("--dry-run", action="store_true", help="Preview records without writing reports or manifest updates.")
+    backfill_qa.add_argument(
+        "--status",
+        action="append",
+        choices=["active", "pending_review", "archived", "retired", "failed_review"],
+        help="Record status to include. Can be repeated. Defaults to active and pending_review.",
+    )
+
+    taxonomy_audit = sub.add_parser("audit-taxonomy", help="Audit manifest taxonomy and doc_id prefix consistency.")
+    taxonomy_audit.add_argument(
+        "--status",
+        action="append",
+        choices=["active", "pending_review", "archived", "retired", "failed_review"],
+        help="Record status to include. Can be repeated. Defaults to active and pending_review.",
+    )
+    taxonomy_audit.add_argument("--no-report", action="store_true", help="Do not write JSON/Markdown audit reports.")
+
+    taxonomy_plan = sub.add_parser("plan-taxonomy-remediation", help="Create a safe taxonomy remediation plan.")
+    taxonomy_plan.add_argument(
+        "--status",
+        action="append",
+        choices=["active", "pending_review", "archived", "retired", "failed_review"],
+        help="Record status to include. Can be repeated. Defaults to active and pending_review.",
+    )
+    taxonomy_plan.add_argument("--no-report", action="store_true", help="Do not write JSON/Markdown plan reports.")
+
+    taxonomy_apply = sub.add_parser("apply-taxonomy-remediation", help="Apply safe pending-review taxonomy remediations.")
+    taxonomy_apply.add_argument("--apply", action="store_true", help="Write changes. Without this flag, performs a dry run.")
+    taxonomy_apply.add_argument("--limit", type=int, help="Apply at most this many safe actions.")
+    taxonomy_apply.add_argument(
+        "--status",
+        action="append",
+        choices=["active", "pending_review", "archived", "retired", "failed_review"],
+        help="Record status to include. Defaults to active and pending_review; only auto-safe pending_review records are changed.",
+    )
 
     return parser
 
@@ -214,6 +269,20 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.command == "readiness":
             result = deployment_readiness(root, check_network=args.check_network)
+        elif args.command == "quality-gate":
+            result = run_quality_gate(
+                root,
+                mode=args.mode,
+                cases_path=args.cases,
+                provider=args.provider,
+                check_network=args.check_network,
+                keep_sandbox=args.keep_sandbox,
+                run_pytest=not args.skip_pytest,
+                run_regression=not args.skip_evaluation,
+                latency_target_ms=args.latency_target_ms,
+            )
+            write_json_output(result)
+            return 0 if result.get("status") == "accepted" else 1
         elif args.command == "gaps":
             result = QualityDatabase(root).list_gaps()
         elif args.command == "queries":
@@ -233,6 +302,32 @@ def main(argv: list[str] | None = None) -> int:
             result = QualityDatabase(root).resolve_incident(args.incident_id, args.status)
         elif args.command == "diagnostics":
             result = diagnostic_snapshot(root, include_logs=not args.no_logs)
+        elif args.command == "backfill-qa-reports":
+            result = backfill_missing_qa_reports(
+                root,
+                statuses=set(args.status) if args.status else None,
+                limit=args.limit,
+                dry_run=args.dry_run,
+            )
+        elif args.command == "audit-taxonomy":
+            result = audit_manifest_taxonomy(
+                root,
+                statuses=set(args.status) if args.status else None,
+                write_report=not args.no_report,
+            )
+        elif args.command == "plan-taxonomy-remediation":
+            result = plan_taxonomy_remediation(
+                root,
+                statuses=set(args.status) if args.status else None,
+                write_report=not args.no_report,
+            )
+        elif args.command == "apply-taxonomy-remediation":
+            result = apply_taxonomy_remediation(
+                root,
+                statuses=set(args.status) if args.status else None,
+                dry_run=not args.apply,
+                limit=args.limit,
+            )
         else:
             parser.error(f"Unknown command: {args.command}")
             return 2

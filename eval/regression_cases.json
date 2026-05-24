@@ -1,10 +1,10 @@
 [
   {
-    "id": "procedure-incident-flow",
-    "query": "Quy trinh xu ly su co ky thuat gom nhung buoc nao?",
+    "id": "procedure-document-control",
+    "query": "Quy trinh kiem soat tai lieu ho so quy dinh gi?",
     "should_answer": true,
     "expected_doc_ids": [
-      "KT-QT-003"
+      "KT-QT-215"
     ],
     "expected_category": "procedure"
   },

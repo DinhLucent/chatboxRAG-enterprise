@@ -6,6 +6,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from poc_workflow.chatbot import NO_SOURCE_ANSWER
+from poc_workflow.database import QualityDatabase
 from poc_workflow.pipeline import approve_record, process_sources
 from poc_workflow.webapp import create_app
 
@@ -22,6 +24,39 @@ def write_source(root: Path) -> None:
             {
                 "doc_id": "KT-QT-010",
                 "title": "Quy trinh nghiem thu",
+                "department": "technical",
+                "category": "procedure",
+                "source_type": "internal_procedure",
+                "language": "vi",
+                "version": "1.0",
+                "effective_from": "2025-01-01",
+                "review_at": "2025-12-31",
+                "owner": "Phong Ky thuat",
+                "access_group": "technical",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def write_context_source(root: Path) -> None:
+    path = root / "source" / "technical" / "procedure" / "KT-QT-CTX_v1.0.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        (
+            "# Quy trinh bao tri may nen\n\n"
+            "Buoc 1: Tiep nhan yeu cau bao tri may nen.\n\n"
+            "Buoc 2: Kiem tra ap suat, lap bien ban va trinh Truong phong Ky thuat duyet.\n\n"
+            "Buoc 3: Luu ho so bao tri vao kho ho so ky thuat."
+        ),
+        encoding="utf-8",
+    )
+    path.with_name(path.stem + ".metadata.json").write_text(
+        json.dumps(
+            {
+                "doc_id": "KT-QT-CTX",
+                "title": "Quy trinh bao tri may nen",
                 "department": "technical",
                 "category": "procedure",
                 "source_type": "internal_procedure",
@@ -90,6 +125,187 @@ def test_web_health_manifest_and_chat(tmp_path: Path) -> None:
     )
     assert feedback.status_code == 200
     assert feedback.json()["knowledge_gap_id"]
+
+
+def test_user_chat_app_public_api_safe_citations_policy_and_feedback(tmp_path: Path) -> None:
+    write_source(tmp_path)
+    process_sources(tmp_path)
+    approve_record(tmp_path, "KT-QT-010", "1.0", "Lead")
+    client = TestClient(create_app(tmp_path))
+
+    page = client.get("/chat")
+    assert page.status_code == 200
+    assert "sourceDrawer" in page.text
+    assert "Bạn muốn hỏi gì?" in page.text
+    assert "Policy" not in page.text
+    assert "Liên quan" not in page.text
+    assert "Pin" not in page.text
+
+    bootstrap = client.get("/api/user/bootstrap")
+    assert bootstrap.status_code == 200
+    boot = bootstrap.json()
+    assert boot["ui"]["default_drawer_tab"] == "sources"
+    assert boot["ui"]["show_policy_debug"] is False
+    assert {style["id"] for style in boot["answer_styles"]} == {"brief", "steps", "checklist"}
+    assert [card["label"] for card in boot["welcome_cards"]] == [
+        "Tra cứu quy trình",
+        "Tìm biểu mẫu",
+        "Hỏi lỗi kỹ thuật",
+        "Tìm tài liệu hãng",
+    ]
+    assert "policy_id" not in boot["policy"]
+    assert {group["id"] for group in boot["templates"]["groups"]} == {
+        "procedure",
+        "form_checklist",
+        "incident",
+        "vendor_document",
+    }
+
+    chat = client.post(
+        "/api/user/chat",
+        json={
+            "query": "quy trinh nghiem thu checklist can gi",
+            "template_id": "procedure_steps",
+            "answer_style": "checklist",
+            "session_id": "session-user-test",
+            "use_llm": False,
+        },
+    )
+    assert chat.status_code == 200
+    body = chat.json()
+    assert body["citations"]
+    citation_text = json.dumps(body["citations"], ensure_ascii=False)
+    assert "source_path" not in citation_text
+    assert "normalized_path" not in citation_text
+    assert str(tmp_path) not in citation_text
+    assert set(body["citations"][0]) == {"title", "doc_id", "version", "excerpt"}
+    assert "score" not in citation_text
+    assert "chunk" not in citation_text
+    assert "provider" not in json.dumps(body.get("trace", {}), ensure_ascii=False)
+    assert "policy_version" not in json.dumps(body.get("trace", {}), ensure_ascii=False)
+    assert body["trace"]["source_count"] == len(body["citations"])
+    assert body["trace_steps"]
+    assert body["answer_style"] == "checklist"
+    assert "Tóm tắt:" in body["answer"]
+    assert "Các bước / Nội dung chính:" in body["answer"]
+    assert "Nguồn:" in body["answer"]
+
+    queries = client.get("/api/queries")
+    assert queries.status_code == 200
+    latest = queries.json()[0]
+    assert latest["session_id"] == "session-user-test"
+    assert latest["template_id"] == "procedure_steps"
+    assert latest["policy_id"] == "production-user-chat"
+    assert latest["policy_version"]
+
+    feedback = client.post(
+        "/api/user/feedback",
+        json={"log_id": body["log_id"], "rating": "missing_source", "session_id": "session-user-test"},
+    )
+    assert feedback.status_code == 200
+    assert feedback.json()["knowledge_gap_id"]
+
+
+def test_user_chat_rejects_unknown_template_and_no_answer_trace(tmp_path: Path) -> None:
+    client = TestClient(create_app(tmp_path))
+
+    unknown_template = client.post(
+        "/api/user/chat",
+        json={"query": "quy trinh khong ton tai", "template_id": "missing-template"},
+    )
+    assert unknown_template.status_code == 400
+    assert "Unknown template_id" in unknown_template.json()["detail"]
+
+    no_answer = client.post(
+        "/api/user/chat",
+        json={"query": "quy trinh khong ton tai", "session_id": "session-no-answer", "use_llm": False},
+    )
+    assert no_answer.status_code == 200
+    body = no_answer.json()
+    assert body["answer"] == NO_SOURCE_ANSWER
+    assert body["citations"] == []
+    assert body["trace"]["source_count"] == 0
+    assert body["trace"]["no_answer_reason"]
+
+
+def test_user_chat_keeps_context_for_follow_up_questions(tmp_path: Path) -> None:
+    write_context_source(tmp_path)
+    process_sources(tmp_path)
+    approve_record(tmp_path, "KT-QT-CTX", "1.0", "Lead")
+    client = TestClient(create_app(tmp_path))
+
+    first = client.post(
+        "/api/user/chat",
+        json={
+            "query": "quy trinh bao tri may nen gom nhung gi",
+            "session_id": "context-session",
+            "device_id": "device-a",
+            "use_llm": False,
+        },
+    )
+    assert first.status_code == 200
+    assert first.json()["citations"]
+    assert first.json()["trace"]["context"]["context_used"] is False
+
+    follow_up = client.post(
+        "/api/user/chat",
+        json={
+            "query": "buoc 2 ai duyet",
+            "session_id": "context-session",
+            "device_id": "device-a",
+            "use_llm": False,
+        },
+    )
+    assert follow_up.status_code == 200
+    body = follow_up.json()
+    assert body["citations"]
+    assert body["citations"][0]["doc_id"] == "KT-QT-CTX"
+    assert body["trace"]["context"]["context_used"] is True
+    assert body["trace"]["context"]["turns_used"] == 1
+
+    latest_query = client.get("/api/queries").json()[0]
+    assert latest_query["query"] == "buoc 2 ai duyet"
+    assert latest_query["session_id"] == "context-session"
+
+    turns = QualityDatabase(tmp_path).recent_user_chat_turns("context-session")
+    assert len(turns) == 2
+    assert "Boi canh hoi thoai" in turns[-1]["effective_query"]
+
+
+def test_user_session_heartbeat_and_stale_cleanup(tmp_path: Path) -> None:
+    client = TestClient(create_app(tmp_path))
+
+    heartbeat = client.post(
+        "/api/user/session/heartbeat",
+        json={"session_id": "cleanup-session", "device_id": "device-a"},
+    )
+    assert heartbeat.status_code == 200
+    assert heartbeat.json()["session_id"] == "cleanup-session"
+    assert heartbeat.json()["device_id"] == "device-a"
+
+    db = QualityDatabase(tmp_path)
+    db.log_user_chat_turn(
+        "cleanup-session",
+        query="hello",
+        effective_query="hello",
+        answer="hi",
+        citation_doc_ids=["KT-QT-001"],
+    )
+    expired = "2000-01-01T00:00:00+00:00"
+    cleanup = db.cleanup_stale_user_chat_sessions(now=expired)
+    assert cleanup["deleted_sessions"] == 0
+
+    with db.connect() as conn:
+        conn.execute(
+            "UPDATE user_chat_sessions SET expires_at = ? WHERE session_id = ?",
+            (expired, "cleanup-session"),
+        )
+
+    cleanup = db.cleanup_stale_user_chat_sessions()
+    assert cleanup["deleted_sessions"] == 1
+    assert cleanup["deleted_turns"] == 1
+    assert db.get_user_chat_session("cleanup-session") is None
+    assert db.recent_user_chat_turns("cleanup-session") == []
 
 
 def test_dashboard_tabs_are_role_scoped() -> None:
@@ -235,6 +451,8 @@ def test_web_operator_auth_when_required(tmp_path: Path, monkeypatch) -> None:
 
     assert client.get("/api/auth-status").json() == {"required": True, "configured": True}
     assert client.get("/api/health").status_code == 401
+    assert client.get("/api/user/bootstrap").status_code == 200
+    assert client.get("/chat").status_code == 200
     assert client.get("/api/health", headers={"X-KB-Token": "secret-token"}).status_code == 200
 
 
@@ -277,6 +495,17 @@ def test_web_incidents_and_diagnostics(tmp_path: Path) -> None:
     assert diagnostics.json()["summary"]["open_incidents"] == 1
     assert diagnostics.json()["status"] in {"attention", "not_ready"}
 
+    agent_prompt = client.get(f"/api/incidents/{incident_id}/agent-prompt")
+    assert agent_prompt.status_code == 200
+    prompt = agent_prompt.json()["prompt"]
+    assert "incident #" in prompt
+    assert "LLM fallback" in prompt
+    assert "Provider timed out" in prompt
+    assert "python -m pytest tests\\test_webapp.py --basetemp .pytest-tmp-codex" in prompt
+
+    missing_prompt = client.get("/api/incidents/9999/agent-prompt")
+    assert missing_prompt.status_code == 404
+
     resolved = client.post(
         "/api/incidents/resolve",
         json={"incident_id": incident_id, "status": "resolved"},
@@ -302,3 +531,163 @@ def test_web_service_status_and_maintenance_mode(tmp_path: Path, monkeypatch) ->
     chat = client.post("/api/chat", json={"query": "quy trinh xu ly su co", "provider": "local"})
     assert chat.status_code == 503
     assert chat.json()["detail"] == "Dang bao tri theo lich."
+
+
+def test_llm_status_endpoint_reports_config_and_smoke(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("POC_LLM_BASE_URL", "http://127.0.0.1:3001/v1")
+    monkeypatch.setenv("POC_LLM_API_KEY", "local-secret")
+    monkeypatch.setenv("POC_LLM_MODEL", "auto")
+
+    def fake_list_models(self, timeout: float = 8) -> dict[str, object]:
+        return {"count": 2, "sample": ["auto", "demo-model"]}
+
+    def fake_smoke(self, timeout: float = 12) -> str:
+        return "ok"
+
+    monkeypatch.setattr("poc_workflow.llm.OpenAICompatibleClient.list_models", fake_list_models)
+    monkeypatch.setattr("poc_workflow.llm.OpenAICompatibleClient.smoke", fake_smoke)
+
+    client = TestClient(create_app(tmp_path))
+
+    health = client.get("/api/health")
+    assert health.status_code == 200
+    assert health.json()["llm"]["configured"] is True
+    assert health.json()["llm"]["state"] == "configured"
+    assert health.json()["llm"]["live_checked"] is False
+
+    status = client.get("/api/llm/status?smoke=true")
+    assert status.status_code == 200
+    body = status.json()
+    assert body["state"] == "ready"
+    assert body["proxy_online"] is True
+    assert body["models_ok"] is True
+    assert body["smoke_ok"] is True
+    assert body["model_count"] == 2
+
+
+def test_llm_dashboard_config_presets_and_secret_redaction(tmp_path: Path, monkeypatch) -> None:
+    def fake_list_models(self, timeout: float = 8) -> dict[str, object]:
+        return {"count": 1, "sample": [self.config.model]}
+
+    def fake_smoke(self, timeout: float = 12) -> str:
+        return "ok"
+
+    monkeypatch.setattr("poc_workflow.llm.OpenAICompatibleClient.list_models", fake_list_models)
+    monkeypatch.setattr("poc_workflow.llm.OpenAICompatibleClient.smoke", fake_smoke)
+
+    client = TestClient(create_app(tmp_path))
+
+    presets = client.get("/api/llm/presets")
+    assert presets.status_code == 200
+    preset_ids = {item["id"] for item in presets.json()}
+    assert {"ollama", "freellmapi", "openai", "deepseek", "gemini", "custom"} <= preset_ids
+
+    missing_key = client.post(
+        "/api/llm/test",
+        json={"provider": "openai", "base_url": "https://api.openai.com/v1", "model": "gpt-4.1-mini"},
+    )
+    assert missing_key.status_code == 400
+    assert "API key" in missing_key.json()["detail"]
+
+    saved = client.put(
+        "/api/llm/config",
+        json={
+            "provider": "ollama",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "llama3.2",
+            "api_key": "",
+        },
+    )
+    assert saved.status_code == 200
+    body = saved.json()
+    assert body["status"]["state"] == "ready"
+    assert body["config"]["source"] == "runtime"
+    assert body["config"]["provider"] == "ollama"
+    assert body["config"]["api_key_configured"] is True
+    assert body["config"]["api_key_mask"] == "••••"
+
+    openai_saved = client.put(
+        "/api/llm/config",
+        json={
+            "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "model": "gpt-4.1-mini",
+            "api_key": "sk-test-secret-123456",
+        },
+    )
+    assert openai_saved.status_code == 200
+
+    config = client.get("/api/llm/config")
+    assert config.status_code == 200
+    assert config.json()["model"] == "gpt-4.1-mini"
+    redacted = json.dumps(config.json())
+    assert "sk-test-secret-123456" not in redacted
+    assert '"api_key":' not in redacted
+
+    reset = client.post("/api/llm/config/reset")
+    assert reset.status_code == 200
+    assert reset.json()["source"] in {"none", "env", "autodetect"}
+
+
+def test_llm_config_save_requires_successful_smoke(tmp_path: Path, monkeypatch) -> None:
+    def fake_list_models(self, timeout: float = 8) -> dict[str, object]:
+        return {"count": 1, "sample": [self.config.model]}
+
+    def failing_smoke(self, timeout: float = 12) -> str:
+        from poc_workflow.llm import LLMError
+
+        raise LLMError("provider timeout")
+
+    monkeypatch.setattr("poc_workflow.llm.OpenAICompatibleClient.list_models", fake_list_models)
+    monkeypatch.setattr("poc_workflow.llm.OpenAICompatibleClient.smoke", failing_smoke)
+
+    client = TestClient(create_app(tmp_path))
+    response = client.put(
+        "/api/llm/config",
+        json={
+            "provider": "ollama",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "llama3.2",
+        },
+    )
+    assert response.status_code == 400
+    assert "provider timeout" in response.json()["detail"]
+    assert not (tmp_path / ".runtime" / "llm-config.json").exists()
+
+
+def test_chat_uses_active_dashboard_llm_config(tmp_path: Path, monkeypatch) -> None:
+    write_source(tmp_path)
+    process_sources(tmp_path)
+    approve_record(tmp_path, "KT-QT-010", "1.0", "Lead")
+
+    def fake_list_models(self, timeout: float = 8) -> dict[str, object]:
+        return {"count": 1, "sample": [self.config.model]}
+
+    def fake_smoke(self, timeout: float = 12) -> str:
+        return "ok"
+
+    def fake_answer(self, query, hits, answer_style="brief") -> str:
+        return f"runtime {self.config.provider} {self.config.model}"
+
+    monkeypatch.setattr("poc_workflow.llm.OpenAICompatibleClient.list_models", fake_list_models)
+    monkeypatch.setattr("poc_workflow.llm.OpenAICompatibleClient.smoke", fake_smoke)
+    monkeypatch.setattr("poc_workflow.llm.OpenAICompatibleClient.answer", fake_answer)
+
+    client = TestClient(create_app(tmp_path))
+    saved = client.put(
+        "/api/llm/config",
+        json={
+            "provider": "ollama",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "local-test-model",
+        },
+    )
+    assert saved.status_code == 200
+
+    chat = client.post(
+        "/api/chat",
+        json={"query": "quy trinh nghiem thu can gi", "provider": "local", "use_llm": True},
+    )
+    assert chat.status_code == 200
+    assert chat.json()["llm_used"] is True
+    assert chat.json()["answer"] == "runtime ollama local-test-model"

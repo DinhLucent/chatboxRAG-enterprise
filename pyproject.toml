@@ -20,7 +20,8 @@ kb-web = "poc_workflow.webapp:main"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "--basetemp=.pytest-tmp"
+addopts = "--basetemp=.quality-sandbox/pytest-tmp"
+cache_dir = ".quality-sandbox/pytest-cache"
 
 [tool.setuptools.package-data]
-poc_workflow = ["static/*"]
+poc_workflow = ["static/*", "static/user/*", "policies/*.json"]

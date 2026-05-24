@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from poc_workflow.chatbot import ask, apply_feedback
+from poc_workflow.chatbot import NO_SOURCE_ANSWER, ask, apply_feedback
 from poc_workflow.database import QualityDatabase
 from poc_workflow.manifest import ManifestStore
 from poc_workflow.models import ManifestRecord
@@ -179,6 +179,25 @@ def test_query_log_feedback_and_knowledge_gap(tmp_path: Path) -> None:
     assert no_answer["knowledge_gap_id"]
     gaps = QualityDatabase(tmp_path).list_gaps()
     assert len(gaps) >= 2
+
+
+def test_local_chat_rejects_low_confidence_token_overlap(tmp_path: Path) -> None:
+    init_workspace(tmp_path)
+    write_source(
+        tmp_path,
+        "KT-QT-012_v1.0.md",
+        "1.0",
+        "# Data integrity\n\nTai lieu noi ve technical parameter trong ho so chat luong.",
+        {"doc_id": "KT-QT-012", "title": "Data integrity"},
+    )
+    process_sources(tmp_path)
+    approve_record(tmp_path, "KT-QT-012", "1.0", "Lead")
+
+    answer = ask(tmp_path, "Bien tan E-07 encoder parameter P191")
+
+    assert answer["citations"] == []
+    assert answer["knowledge_gap_id"]
+    assert answer["answer"] == NO_SOURCE_ANSWER
 
 
 def test_incident_log_and_resolution(tmp_path: Path) -> None:

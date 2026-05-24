@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
 import re
 import shutil
@@ -19,8 +21,23 @@ from .database import QualityDatabase
 from .document_qa import mojibake_score
 from .evaluation import latest_report, run_evaluation
 from .intake import list_inbox, save_upload_to_inbox
+from .llm import (
+    LLMError,
+    llm_presets,
+    llm_runtime_status,
+    redacted_llm_config,
+    reset_llm_runtime_config,
+    save_llm_runtime_config,
+    transient_llm_config,
+)
 from .manifest import ManifestStore
-from .operations import diagnostic_snapshot, maintenance_enabled, public_service_status, record_incident
+from .operations import (
+    build_incident_agent_prompt,
+    diagnostic_snapshot,
+    maintenance_enabled,
+    public_service_status,
+    record_incident,
+)
 from .pipeline import (
     approve_record,
     init_workspace,
@@ -38,6 +55,19 @@ from .ragflow_http import (
 )
 from .readiness import deployment_readiness
 from .runtime import allowed_providers, local_fallback_enabled, provider_allowed
+from .user_chat import (
+    answer_styles_payload,
+    cleanup_stale_sessions,
+    heartbeat_session,
+    load_curated_templates,
+    load_policy_pack,
+    public_policy_summary,
+    normalize_answer_style,
+    template_exists,
+    user_chat_response,
+    user_session_cleanup_interval_seconds,
+    welcome_cards_payload,
+)
 from .utils import read_json
 
 
@@ -55,6 +85,28 @@ class ChatRequest(BaseModel):
 class FeedbackRequest(BaseModel):
     query_log_id: int
     feedback: str
+
+
+class UserChatRequest(BaseModel):
+    query: str
+    template_id: str | None = None
+    answer_style: str | None = "brief"
+    session_id: str | None = None
+    device_id: str | None = None
+    use_llm: bool = True
+
+
+class UserFeedbackRequest(BaseModel):
+    query_log_id: int | None = None
+    log_id: int | None = None
+    feedback: str | None = None
+    rating: str | None = None
+    session_id: str | None = None
+
+
+class UserSessionHeartbeatRequest(BaseModel):
+    session_id: str | None = None
+    device_id: str | None = None
 
 
 class ApproveRequest(BaseModel):
@@ -126,6 +178,20 @@ class IncidentRequest(BaseModel):
 class ResolveIncidentRequest(BaseModel):
     incident_id: int
     status: str = "resolved"
+
+
+class LLMConfigRequest(BaseModel):
+    provider: str = "ollama"
+    base_url: str | None = None
+    model: str | None = None
+    api_key: str | None = None
+    timeout_seconds: int = 8
+
+
+def model_payload(model: BaseModel) -> dict[str, Any]:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()
+    return model.dict()
 
 
 def _strip_accents(value: str) -> str:
@@ -350,18 +416,32 @@ def _document_detail_payload(workspace: Path, doc_id: str, version: str) -> dict
     }
 
 
+@contextlib.asynccontextmanager
+async def _app_lifespan(app: FastAPI):
+    workspace = app.state.workspace
+    cleanup_stale_sessions(workspace)
+    task = asyncio.create_task(_user_session_cleanup_loop(workspace))
+    app.state.user_session_cleanup_task = task
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
 def create_app(root: Path | None = None) -> FastAPI:
     workspace = (root or Path(os.getenv("KB_WORKSPACE_ROOT", ".")).resolve()).resolve()
     init_workspace(workspace)
 
-    app = FastAPI(title="Internal Procedure Chatbot", version="0.1.0")
+    app = FastAPI(title="Internal Procedure Chatbot", version="0.1.0", lifespan=_app_lifespan)
     app.state.workspace = workspace
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.middleware("http")
     async def operator_auth_middleware(request: Request, call_next):
         path = request.url.path
-        if path.startswith("/api/") and path not in {"/api/auth-status"}:
+        if path.startswith("/api/") and path not in {"/api/auth-status"} and not path.startswith("/api/user/"):
             try:
                 require_operator_auth(request)
             except HTTPException as exc:
@@ -389,6 +469,14 @@ def create_app(root: Path | None = None) -> FastAPI:
     def index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
 
+    @app.get("/chat")
+    def user_chat_index() -> FileResponse:
+        return FileResponse(STATIC_DIR / "user" / "index.html")
+
+    @app.get("/user")
+    def user_index() -> FileResponse:
+        return FileResponse(STATIC_DIR / "user" / "index.html")
+
     @app.get("/api/auth-status")
     def auth_status() -> dict[str, bool]:
         return public_auth_status()
@@ -403,7 +491,8 @@ def create_app(root: Path | None = None) -> FastAPI:
         active_count = len([record for record in records if record.status == "active"])
         pending_count = len([record for record in records if record.status == "pending_review"])
         quality_stats = db.stats()
-        llm_configured = bool((os.getenv("POC_LLM_API_KEY") or os.getenv("OPENAI_API_KEY")) and os.getenv("POC_LLM_MODEL"))
+        llm = llm_runtime_status(root=workspace, check_live=False)
+        llm_configured = bool(llm["configured"])
         service_status = public_service_status(
             active_documents=active_count,
             open_incidents=quality_stats["open_incident_count"],
@@ -431,11 +520,7 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "allowed": sorted(allowed_providers()),
                 "local_fallback_enabled": local_fallback_enabled(),
             },
-            "llm": {
-                "configured": llm_configured,
-                "base_url": os.getenv("POC_LLM_BASE_URL", "https://api.openai.com/v1"),
-                "model": os.getenv("POC_LLM_MODEL"),
-            },
+            "llm": llm,
             "manifest": {
                 "records": len(records),
                 "active": active_count,
@@ -451,9 +536,106 @@ def create_app(root: Path | None = None) -> FastAPI:
             "readiness": deployment_readiness(workspace, check_network=False),
         }
 
+    @app.get("/api/user/bootstrap")
+    def user_bootstrap_api() -> dict[str, Any]:
+        policy = load_policy_pack(workspace)
+        return {
+            "service_status": health()["service_status"],
+            "templates": load_curated_templates(workspace),
+            "welcome_cards": welcome_cards_payload(),
+            "answer_styles": answer_styles_payload(),
+            "policy": public_policy_summary(policy),
+            "ui": {
+                "default_drawer_tab": "sources",
+                "drawer_can_hide": True,
+                "drawer_can_pin": False,
+                "citation_visibility": "excerpt_metadata",
+                "show_policy_debug": False,
+            },
+        }
+
+    @app.post("/api/user/chat")
+    def user_chat_api(payload: UserChatRequest) -> dict[str, Any]:
+        if maintenance_enabled():
+            message = os.getenv("KB_MAINTENANCE_MESSAGE", "He thong dang duoc bao tri. Vui long quay lai sau.")
+            raise HTTPException(status_code=503, detail=message)
+        if not payload.query.strip():
+            raise HTTPException(status_code=400, detail="query is required")
+        templates = load_curated_templates(workspace)
+        if not template_exists(templates, payload.template_id):
+            raise HTTPException(status_code=400, detail=f"Unknown template_id: {payload.template_id}")
+        answer_style = normalize_answer_style(payload.answer_style)
+        return user_chat_response(
+            workspace,
+            payload.query,
+            template_id=payload.template_id,
+            answer_style=answer_style,
+            session_id=payload.session_id,
+            device_id=payload.device_id,
+            use_llm=payload.use_llm,
+        )
+
+    @app.post("/api/user/session/heartbeat")
+    def user_session_heartbeat_api(payload: UserSessionHeartbeatRequest) -> dict[str, Any]:
+        return heartbeat_session(workspace, payload.session_id, payload.device_id)
+
+    @app.post("/api/user/feedback")
+    def user_feedback_api(payload: UserFeedbackRequest) -> dict[str, object]:
+        log_id = payload.log_id or payload.query_log_id
+        feedback = payload.rating or payload.feedback
+        if not log_id:
+            raise HTTPException(status_code=400, detail="log_id is required")
+        if not feedback:
+            raise HTTPException(status_code=400, detail="rating is required")
+        try:
+            return apply_feedback(workspace, log_id, feedback)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get("/api/readiness")
     def readiness_api(check_network: bool = False) -> dict[str, Any]:
         return deployment_readiness(workspace, check_network=check_network)
+
+    @app.get("/api/llm/status")
+    def llm_status_api(check_live: bool = True, smoke: bool = False) -> dict[str, Any]:
+        timeout = float(os.getenv("KB_LLM_HEALTH_TIMEOUT_SECONDS", "8"))
+        return llm_runtime_status(root=workspace, check_live=check_live, smoke=smoke, timeout=timeout)
+
+    @app.get("/api/llm/presets")
+    def llm_presets_api() -> list[dict[str, Any]]:
+        return llm_presets()
+
+    @app.get("/api/llm/config")
+    def llm_config_api() -> dict[str, Any]:
+        return redacted_llm_config(workspace)
+
+    @app.post("/api/llm/test")
+    def llm_test_api(payload: LLMConfigRequest | None = None, smoke: bool = True) -> dict[str, Any]:
+        timeout = float((payload.timeout_seconds if payload else None) or os.getenv("KB_LLM_HEALTH_TIMEOUT_SECONDS", "8"))
+        try:
+            config = transient_llm_config(model_payload(payload) if payload else {}) if payload else None
+            return llm_runtime_status(root=workspace, config=config, check_live=True, smoke=smoke, timeout=timeout)
+        except LLMError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.put("/api/llm/config")
+    def llm_save_config_api(payload: LLMConfigRequest) -> dict[str, Any]:
+        timeout = float(payload.timeout_seconds or os.getenv("KB_LLM_HEALTH_TIMEOUT_SECONDS", "8"))
+        try:
+            payload_data = model_payload(payload)
+            config = transient_llm_config(payload_data)
+            status = llm_runtime_status(config=config, check_live=True, smoke=True, timeout=timeout)
+            if status.get("state") != "ready":
+                raise LLMError(str(status.get("last_error") or "LLM smoke test failed."))
+            saved = save_llm_runtime_config(workspace, payload_data)
+            return {"config": saved, "status": status}
+        except LLMError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/llm/config/reset")
+    def llm_reset_config_api() -> dict[str, Any]:
+        reset_llm_runtime_config(workspace)
+        return redacted_llm_config(workspace)
 
     @app.get("/api/taxonomy")
     def taxonomy() -> dict[str, Any]:
@@ -735,6 +917,13 @@ def create_app(root: Path | None = None) -> FastAPI:
     def incidents_api(status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
         return QualityDatabase(workspace).list_incidents(status=status, limit=limit)
 
+    @app.get("/api/incidents/{incident_id}/agent-prompt")
+    def incident_agent_prompt_api(incident_id: int) -> dict[str, Any]:
+        try:
+            return {"incident_id": incident_id, "prompt": build_incident_agent_prompt(workspace, incident_id)}
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @app.post("/api/incidents")
     def create_incident_api(payload: IncidentRequest) -> dict[str, int]:
         try:
@@ -762,6 +951,23 @@ def create_app(root: Path | None = None) -> FastAPI:
         return diagnostic_snapshot(workspace, include_logs=include_logs)
 
     return app
+
+
+async def _user_session_cleanup_loop(workspace: Path) -> None:
+    interval = user_session_cleanup_interval_seconds()
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            cleanup_stale_sessions(workspace)
+        except Exception as exc:
+            record_incident(
+                workspace,
+                "warning",
+                "user_session",
+                "User session cleanup failed",
+                str(exc),
+                {"interval_seconds": interval},
+            )
 
 
 def ragflow_status() -> dict[str, Any]:

@@ -112,7 +112,7 @@ class RAGFlowHTTPClient:
             "dataset_ids": dataset_ids,
             "prompt_config": {
                 "quote": True,
-                "empty_response": "Khong tim thay can cu trong tai lieu hien hanh.",
+                "empty_response": "Không tìm thấy căn cứ trong tài liệu hiện hành.",
                 "system": (
                     "Chi tra loi dua tren noi dung trong {knowledge}. "
                     "Neu khong co can cu trong tai lieu hien hanh, hay noi dung cau tra loi mac dinh."

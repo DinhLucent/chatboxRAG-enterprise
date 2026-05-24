@@ -129,6 +129,32 @@ Run regression evaluation:
 python -m poc_workflow evaluate --provider local
 ```
 
+Run the full deterministic quality gate before accepting a build:
+
+```powershell
+python -m poc_workflow quality-gate
+.\scripts\quality-gate.ps1 -Mode local
+```
+
+The gate follows `intake -> gated -> verify -> accepted/escalated`, writes evidence to
+`data/quality_gate/latest.json` and `docs/quality-gate-latest.md`, checks frontend
+encoding/layout regressions, and does not call an LLM judge, run heavy OCR, or sync RAGFlow by default.
+
+Audit suspicious taxonomy/doc_id metadata before approving or syncing documents:
+
+```powershell
+python -m poc_workflow audit-taxonomy
+python -m poc_workflow plan-taxonomy-remediation
+python -m poc_workflow apply-taxonomy-remediation
+```
+
+This writes `data/data_audit/taxonomy_latest.json` and `docs/taxonomy-audit-latest.md`.
+It reports category/doc_id prefix mismatches and titles that suggest a different taxonomy.
+`apply-taxonomy-remediation` defaults to dry-run and only changes safe `pending_review`
+records when called with `--apply`; active records are left for reviewer approval.
+Local quality-gate runs keep taxonomy findings as warnings, while production mode blocks on
+unresolved active or pending taxonomy issues.
+
 Check production readiness:
 
 ```powershell
@@ -366,7 +392,7 @@ The chatbot layer should use these rules:
 - Do not guess when the context is insufficient.
 - Always cite document sources.
 - If sources conflict, prefer active documents with newer versions.
-- If no valid source exists, answer: `Khong tim thay can cu trong tai lieu hien hanh.`
+- If no valid source exists, answer: `Không tìm thấy căn cứ trong tài liệu hiện hành.`
 
 ## Optional LLM Answering
 

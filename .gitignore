@@ -18,6 +18,7 @@ venv/
 
 # Runtime state, generated indexes, and document data
 .Workplace/
+.quality-sandbox/
 data/
 source/
 sources/

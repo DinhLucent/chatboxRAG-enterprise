@@ -8,10 +8,21 @@ python -m poc_workflow process-source
 python -m poc_workflow approve KT-QT-003 1.0 --approved-by "Truong phong Ky thuat"
 python -m poc_workflow evaluate --provider local
 python -m poc_workflow readiness
+python -m poc_workflow quality-gate
 .\scripts\start-app.ps1
 ```
 
 Open `http://127.0.0.1:8088`.
+
+The quality gate is the release acceptance command. It wraps deterministic checks first:
+static/API route smoke, frontend encoding/layout checks, pytest, regression evaluation,
+API workflow smoke, manifest/data audit, readiness, and representative performance smoke.
+It writes `data/quality_gate/latest.json` and
+`docs/quality-gate-latest.md`; a build is not accepted unless the report status is `accepted`.
+Use `.\scripts\quality-gate.ps1 -Mode production -CheckNetwork` only after RAGFlow/auth are
+configured for the target environment.
+In production mode, missing RAGFlow config, disabled operator auth, enabled local fallback,
+or unresolved taxonomy/category issues in active/pending records are blocker failures, not warnings.
 
 ## Optional FreeLLMAPI LLM Proxy
 
@@ -162,6 +173,17 @@ To recover the local fallback index:
 python -m poc_workflow rebuild-index
 python -m poc_workflow evaluate --provider local
 ```
+
+Before large approval or sync batches, audit taxonomy consistency:
+
+```powershell
+python -m poc_workflow audit-taxonomy
+python -m poc_workflow plan-taxonomy-remediation
+python -m poc_workflow apply-taxonomy-remediation
+```
+
+Review `docs/taxonomy-audit-latest.md` and resolve category/doc_id prefix warnings before production sync.
+Use `apply-taxonomy-remediation --apply` only for auto-safe pending-review actions. Active records require controlled review because changing them changes production citations.
 
 Create a backup before large document updates:
 

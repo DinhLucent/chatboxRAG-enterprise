@@ -81,7 +81,7 @@ User question
 If no valid source exists, the expected answer is:
 
 ```text
-Khong tim thay can cu trong tai lieu hien hanh.
+Không tìm thấy căn cứ trong tài liệu hiện hành.
 ```
 
 ## POC Taxonomy
@@ -102,4 +102,3 @@ company
 - MinerU is the document normalization engine.
 - FreeLLMAPI is an optional OpenAI-compatible LLM proxy for free-tier testing.
 - The owned app remains the governance, dashboard, quality loop, and integration layer.
-

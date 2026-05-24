@@ -1,5 +1,6 @@
 const state = {
   health: null,
+  llmStatus: null,
   manifest: [],
   uploadQueue: { items: [], summary: {} },
   gaps: [],
@@ -7,9 +8,14 @@ const state = {
   runs: [],
   incidents: [],
   diagnostics: null,
+  llmPresets: [],
+  llmConfig: null,
+  llmDraft: null,
+  llmTestStatus: null,
   lastQueryLogId: null,
   generatedPrompt: null,
   adminUnlocked: false,
+  authStatus: { required: true, configured: false },
   selectedReviewRecord: null,
   selectedDocumentRecord: null,
   selectedDocumentDetail: null,
@@ -51,7 +57,7 @@ const api = async (path, options = {}) => {
 const qs = (selector) => document.querySelector(selector);
 
 function isAdminUnlocked() {
-  return Boolean(localStorage.getItem("kbOperatorToken"));
+  return !state.authStatus?.required || Boolean(localStorage.getItem("kbOperatorToken"));
 }
 
 function syncAdminAccess() {
@@ -59,7 +65,7 @@ function syncAdminAccess() {
   document.body.classList.toggle("admin-unlocked", state.adminUnlocked);
   const button = qs("#operatorAccessBtn");
   if (button) {
-    button.textContent = state.adminUnlocked ? "Khóa điều phối" : "Điều phối";
+    button.textContent = state.authStatus?.required && state.adminUnlocked ? "Khóa điều phối" : "Điều phối";
   }
   const activeAdminView = document.querySelector(".view.active.admin-only");
   if (!state.adminUnlocked && activeAdminView) {
@@ -99,7 +105,8 @@ function escapeHtml(value) {
 }
 
 async function refreshAll() {
-  const [health, manifest, uploadQueue, gaps, queries, runs, incidents, diagnostics] = await Promise.all([
+  const [authStatus, health, manifest, uploadQueue, gaps, queries, runs, incidents, diagnostics, llmPresets, llmConfig] = await Promise.all([
+    api("/api/auth-status"),
     api("/api/health"),
     api("/api/manifest"),
     api("/api/upload-queue"),
@@ -108,8 +115,21 @@ async function refreshAll() {
     api("/api/ingestion-runs"),
     api("/api/incidents?limit=25"),
     api("/api/diagnostics?include_logs=false"),
+    api("/api/llm/presets"),
+    api("/api/llm/config"),
   ]);
-  Object.assign(state, { health, manifest, uploadQueue, gaps, queries, runs, incidents, diagnostics });
+  Object.assign(state, { authStatus, health, manifest, uploadQueue, gaps, queries, runs, incidents, diagnostics, llmPresets, llmConfig });
+  syncAdminAccess();
+  if (!state.llmDraft) {
+    state.llmDraft = llmConfigToDraft(llmConfig, llmPresets);
+  }
+  if (
+    !state.llmStatus ||
+    state.llmStatus.base_url !== health.llm?.base_url ||
+    state.llmStatus.model !== health.llm?.model
+  ) {
+    state.llmStatus = health.llm;
+  }
   renderMetrics();
   renderServiceBanner();
   renderProviderOptions();
@@ -127,6 +147,30 @@ function serviceClass(state) {
   return "warn";
 }
 
+function serviceText(value) {
+  const text = String(value || "");
+  const known = {
+    "Dang dung che do tra cuu co ban": "Đang dùng chế độ tra cứu cơ bản",
+    "AI dien giai chua cau hinh, he thong van tra loi dua tren tai lieu nguon.":
+      "AI diễn giải chưa cấu hình, hệ thống vẫn trả lời dựa trên tài liệu nguồn.",
+    "He thong dang bao tri": "Hệ thống đang bảo trì",
+    "He thong dang duoc bao tri. Vui long quay lai sau.": "Hệ thống đang được bảo trì. Vui lòng quay lại sau.",
+    "He thong dang gap su co": "Hệ thống đang gặp sự cố",
+    "Doi ky thuat da ghi nhan su co va dang xu ly. Vui long thu lai sau.":
+      "Đội kỹ thuật đã ghi nhận sự cố và đang xử lý. Vui lòng thử lại sau.",
+    "Chua co tai lieu san sang": "Chưa có tài liệu sẵn sàng",
+    "Chua co tai lieu active da duyet de chatbot tra loi.": "Chưa có tài liệu hiệu lực đã duyệt để chatbot trả lời.",
+    "He thong dang hoat dong han che": "Hệ thống đang hoạt động hạn chế",
+    "Mot so canh bao dang duoc theo doi. Ban van co the dat cau hoi.":
+      "Một số cảnh báo đang được theo dõi. Bạn vẫn có thể đặt câu hỏi.",
+    "He thong san sang": "Hệ thống sẵn sàng",
+    "Chatbot dang ket noi voi kho tai lieu noi bo.": "Chatbot đang kết nối với kho tài liệu nội bộ.",
+    "Chat service unavailable": "Dịch vụ trò chuyện chưa sẵn sàng",
+    "RAGFlow env is not configured": "Chưa cấu hình RAGFlow",
+  };
+  return known[text] || text;
+}
+
 function renderServiceBanner(status = state.health?.service_status) {
   const target = qs("#serviceBanner");
   if (!target) return;
@@ -138,8 +182,8 @@ function renderServiceBanner(status = state.health?.service_status) {
   };
   target.className = `service-banner ${serviceClass(current.state)}`;
   target.innerHTML = `
-    <strong>${escapeHtml(current.title)}</strong>
-      <span>${escapeHtml(current.message)}</span>
+    <strong>${escapeHtml(serviceText(current.title))}</strong>
+      <span>${escapeHtml(serviceText(current.message))}</span>
   `;
 }
 
@@ -341,18 +385,63 @@ function typeLabel(type) {
   return labels[type] || type || "Chưa rõ";
 }
 
-function renderProviderOptions() {
-  const select = qs("#providerSelect");
-  if (!select) return;
-  const allowed = state.health?.providers?.allowed || ["auto", "ragflow", "local"];
+function providerLabel(provider) {
   const labels = {
     auto: "Tự động",
     ragflow: "Chỉ RAGFlow",
     local: "Dự phòng cục bộ",
   };
+  return labels[provider] || provider || "-";
+}
+
+function llmConfigToDraft(config = {}, presets = []) {
+  const provider = config?.provider || presets[0]?.id || "ollama";
+  const preset = presets.find((item) => item.id === provider) || presets.find((item) => item.id === "ollama") || {};
+  return {
+    provider,
+    base_url: config?.runtime_profile?.base_url || config?.base_url || preset.base_url || "",
+    model: config?.runtime_profile?.model || config?.model || preset.model_hint || "",
+    api_key: "",
+    timeout_seconds: config?.runtime_profile?.timeout_seconds || 8,
+  };
+}
+
+function selectedLlmPreset() {
+  return state.llmPresets.find((item) => item.id === state.llmDraft?.provider) || state.llmPresets[0] || {};
+}
+
+function collectLlmDraftFromForm() {
+  const current = state.llmDraft || {};
+  return {
+    provider: current.provider || "ollama",
+    base_url: qs("#llmBaseUrlInput")?.value.trim() || "",
+    model: qs("#llmModelInput")?.value.trim() || "",
+    api_key: qs("#llmApiKeyInput")?.value.trim() || "",
+    timeout_seconds: Number(qs("#llmTimeoutInput")?.value || current.timeout_seconds || 8),
+  };
+}
+
+function applyLlmPreset(provider) {
+  const preset = state.llmPresets.find((item) => item.id === provider);
+  if (!preset) return;
+  state.llmDraft = {
+    provider,
+    base_url: preset.base_url || "",
+    model: preset.model_hint || "",
+    api_key: "",
+    timeout_seconds: state.llmDraft?.timeout_seconds || 8,
+  };
+  state.llmTestStatus = null;
+  renderLlmConfigPanel();
+}
+
+function renderProviderOptions() {
+  const select = qs("#providerSelect");
+  if (!select) return;
+  const allowed = state.health?.providers?.allowed || ["auto", "ragflow", "local"];
   const current = allowed.includes(select.value) ? select.value : allowed[0] || "auto";
   select.innerHTML = allowed
-    .map((provider) => `<option value="${escapeHtml(provider)}">${escapeHtml(labels[provider] || provider)}</option>`)
+    .map((provider) => `<option value="${escapeHtml(provider)}">${escapeHtml(providerLabel(provider))}</option>`)
     .join("");
   select.value = current;
 }
@@ -406,6 +495,62 @@ function feedbackLabel(feedback) {
   return labels[feedback] || feedback || "chưa phản hồi";
 }
 
+function warningCodeLabel(code) {
+  const labels = {
+    missing_markdown: "Thiếu Markdown",
+    short_markdown: "Markdown quá ngắn",
+    possible_mojibake: "Lỗi mã hóa",
+    replacement_characters: "Ký tự lỗi",
+    ocr_uncertain_text: "OCR cần rà soát",
+    qa_not_passed: "QA chưa đạt",
+    qa_report_unreadable: "Không đọc được QA",
+    missing_qa_report: "Thiếu báo cáo QA",
+    title_needs_review: "Tiêu đề cần rà soát",
+    category_mismatch: "Lệch danh mục",
+    related_versions: "Có phiên bản liên quan",
+    older_active_version: "Phiên bản hiệu lực cũ",
+  };
+  return labels[code] || code || "Cảnh báo";
+}
+
+function warningMessageLabel(warning = {}) {
+  const message = String(warning.message || "");
+  switch (warning.code) {
+    case "missing_markdown":
+      return "Thiếu file Markdown đã chuẩn hóa.";
+    case "short_markdown":
+      return "Nội dung Markdown quá ngắn, cần kiểm tra lại nguồn chuyển đổi.";
+    case "possible_mojibake":
+      return "Markdown vẫn có dấu hiệu lỗi mã hóa.";
+    case "replacement_characters":
+      return "Markdown chứa ký tự thay thế do lỗi đọc mã.";
+    case "ocr_uncertain_text":
+      return "Markdown có nhiều dấu hỏi; cần rà soát kết quả OCR.";
+    case "qa_not_passed": {
+      const status = message.match(/^QA status is (.+)\.$/)?.[1];
+      return status ? `Trạng thái QA là ${status}.` : "Báo cáo QA chưa đạt.";
+    }
+    case "qa_report_unreadable":
+      return message ? `Không đọc được báo cáo QA: ${message}` : "Không đọc được báo cáo QA.";
+    case "missing_qa_report":
+      return "Thiếu báo cáo QA.";
+    case "title_needs_review":
+      return "Tiêu đề có vẻ bị slug hoặc thiếu dấu tiếng Việt.";
+    case "category_mismatch":
+      return "Tên file hoặc tiêu đề gợi ý danh mục khác với danh mục hiện tại.";
+    case "related_versions": {
+      const count = message.match(/^(\d+) related record/)?.[1];
+      return count ? `${count} hồ sơ liên quan cùng một nhóm tài liệu.` : "Có hồ sơ liên quan cùng nhóm tài liệu.";
+    }
+    case "older_active_version": {
+      const revision = message.match(/Rev ([^.]+)/)?.[1];
+      return revision ? `Hồ sơ hiệu lực đang cũ hơn Rev ${revision}.` : "Hồ sơ hiệu lực có vẻ cũ hơn phiên bản mới nhất.";
+    }
+    default:
+      return message;
+  }
+}
+
 function jsonBlock(value) {
   return escapeHtml(JSON.stringify(value ?? {}, null, 2));
 }
@@ -429,8 +574,8 @@ function warningList(warnings = []) {
     <div class="warning-stack">
       ${warnings.map((warning) => `
         <div class="review-alert ${escapeHtml(warning.level || "warning")}">
-          <strong>${escapeHtml(warning.code || "cảnh báo")}</strong>
-          <span>${escapeHtml(warning.message || "")}</span>
+          <strong>${escapeHtml(warningCodeLabel(warning.code))}</strong>
+          <span>${escapeHtml(warningMessageLabel(warning))}</span>
         </div>
       `).join("")}
     </div>
@@ -565,7 +710,7 @@ function renderDocumentInspector(targetSelector, detail, options = {}) {
     <div class="inspector-tabs" role="tablist" aria-label="Các phần hồ sơ tài liệu">
       <button class="inspector-tab active" type="button" data-tab="metadata">Metadata</button>
       <button class="inspector-tab" type="button" data-tab="markdown">Markdown</button>
-      <button class="inspector-tab" type="button" data-tab="qa">QA Report</button>
+      <button class="inspector-tab" type="button" data-tab="qa">Báo cáo QA</button>
       <button class="inspector-tab" type="button" data-tab="versions">Phiên bản</button>
     </div>
 
@@ -648,33 +793,25 @@ function renderManifest() {
 
   rows.innerHTML = filtered.length
     ? filtered.map((record) => `
-      <tr class="${documentKey(record) === documentKey(state.selectedDocumentRecord) ? "selected-row" : ""}">
-        <td>${escapeHtml(record.doc_id)}</td>
-        <td>
+      <button
+        class="document-record-card document-inspect-btn ${documentKey(record) === documentKey(state.selectedDocumentRecord) ? "selected-row" : ""}"
+        type="button"
+        data-doc-id="${escapeHtml(record.doc_id)}"
+        data-version="${escapeHtml(record.version)}"
+      >
+        <div class="record-main">
+          <div class="record-code">${escapeHtml(record.doc_id)} v${escapeHtml(record.version)}</div>
           <div class="item-title">${escapeHtml(record.title || "-")}</div>
           <div class="item-meta">${escapeHtml(record.source_path || record.normalized_path || "")}</div>
-        </td>
-        <td>${escapeHtml(record.version)}</td>
-        <td>${statusPill(record.status)}</td>
-        <td>${escapeHtml(categoryLabel(record.category))}</td>
-        <td>${escapeHtml(record.owner)}</td>
-        <td>
-          <button
-            class="button micro document-inspect-btn"
-            type="button"
-            data-doc-id="${escapeHtml(record.doc_id)}"
-            data-version="${escapeHtml(record.version)}"
-          >
-            Xem
-          </button>
-        </td>
-      </tr>
+        </div>
+        <div class="record-side">
+          ${statusPill(record.status)}
+          <span>${escapeHtml(categoryLabel(record.category))}</span>
+          <span>${escapeHtml(record.owner || "-")}</span>
+        </div>
+      </button>
     `).join("")
-    : `
-      <tr>
-        <td colspan="7" class="empty table-empty">Không có tài liệu khớp bộ lọc.</td>
-      </tr>
-    `;
+    : `<div class="empty table-empty">Không có tài liệu khớp bộ lọc.</div>`;
   document.querySelectorAll(".document-inspect-btn").forEach((button) => {
     button.addEventListener("click", async () => {
       const record = state.manifest.find(
@@ -833,7 +970,7 @@ function renderQuality() {
           Top-3 hit: ${escapeHtml(evaluation.metrics?.top3_doc_hit_rate ?? "-")} |
           Trích dẫn: ${escapeHtml(evaluation.metrics?.citation_accuracy ?? "-")} |
           Không trả lời: ${escapeHtml(evaluation.metrics?.no_answer_accuracy ?? "-")} |
-          Latency p95: ${escapeHtml(evaluation.metrics?.latency_p95_ms ?? "-")}ms
+          Độ trễ p95: ${escapeHtml(evaluation.metrics?.latency_p95_ms ?? "-")}ms
         </div>
       </div>
     `
@@ -886,6 +1023,8 @@ function renderOperations() {
   if (!healthBox) return;
   renderOperationStatusCards();
   renderSystemSummary();
+  renderLlmStatusPanel();
+  renderLlmConfigPanel();
   healthBox.textContent = JSON.stringify(state.health, null, 2);
   const visibleIncidents = state.incidents.slice(0, 10);
   qs("#incidentList").innerHTML = visibleIncidents.length
@@ -901,6 +1040,7 @@ function renderOperations() {
         </div>
         ${incident.status === "open" ? `
           <div class="button-row">
+            <button class="button copy-incident-prompt-btn" data-id="${escapeHtml(incident.id)}" type="button">Sao chép prompt fix</button>
             <button class="button secondary resolve-incident-btn" data-id="${escapeHtml(incident.id)}" type="button">Đánh dấu đã xử lý</button>
           </div>
         ` : ""}
@@ -929,6 +1069,271 @@ function renderOperations() {
       await refreshAll();
     });
   });
+  document.querySelectorAll(".copy-incident-prompt-btn").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const result = await api(`/api/incidents/${button.dataset.id}/agent-prompt`);
+      await copyText(result.prompt || "", "Đã sao chép prompt sửa lỗi");
+    });
+  });
+}
+
+function llmStateLabel(status = {}) {
+  const labels = {
+    not_configured: "Chưa cấu hình",
+    configured: "Đã cấu hình",
+    proxy_online: "Proxy online",
+    ready: "Đang hoạt động",
+    error: "Có lỗi",
+  };
+  return labels[status.state] || "Chưa rõ";
+}
+
+function llmStatusClass(status = {}) {
+  if (status.state === "ready" || status.state === "proxy_online") return "active";
+  if (status.state === "configured") return "ocr_required";
+  if (status.state === "not_configured") return "queue";
+  return "failed";
+}
+
+function formatCheckedAt(value) {
+  if (!value) return "-";
+  try {
+    return new Date(value).toLocaleString("vi-VN");
+  } catch {
+    return value;
+  }
+}
+
+function llmStatusDetail(status = {}) {
+  if (!status.configured) return "Thiếu model hoặc API key";
+  if (status.state === "ready") return `${status.model || "-"} | ${status.latency_ms ?? "-"}ms`;
+  if (status.state === "proxy_online") return `${status.model_count ?? 0} model khả dụng`;
+  if (status.state === "configured") return "Chưa kiểm tra live";
+  return status.last_error || "Không kiểm tra được LLM";
+}
+
+function llmErrorStatus(message) {
+  return {
+    configured: false,
+    state: "error",
+    live_checked: true,
+    models_ok: false,
+    smoke_ok: false,
+    latency_ms: null,
+    last_error: message || "Không kiểm tra được LLM",
+    checked_at: new Date().toISOString(),
+  };
+}
+
+function readinessCheckLabel(name) {
+  const labels = {
+    operator_auth: "Xác thực điều phối",
+    ragflow_config: "Cấu hình RAGFlow",
+    ragflow_network: "Kết nối RAGFlow",
+    mineru_available: "MinerU",
+    active_documents: "Tài liệu hiệu lực",
+    latest_evaluation: "Đánh giá hồi quy",
+    local_fallback_disabled: "Dự phòng cục bộ",
+  };
+  return labels[name] || name;
+}
+
+function readinessStatusLabel(status) {
+  const labels = {
+    pass: "đạt",
+    warn: "cảnh báo",
+    fail: "lỗi",
+  };
+  return labels[status] || status;
+}
+
+function renderLlmStatusPanel() {
+  const target = qs("#llmStatusPanel");
+  if (!target) return;
+  const status = state.llmStatus || state.health?.llm || {};
+  const modelSample = (status.model_sample || []).slice(0, 5).join(", ");
+  target.innerHTML = `
+    <div class="runtime-status-grid">
+      <div class="runtime-status-main ${escapeHtml(llmStatusClass(status))}">
+        <div>
+          <div class="metric-label">LLM runtime</div>
+          <div class="metric-value small">${escapeHtml(llmStateLabel(status))}</div>
+        </div>
+        <span class="status ${escapeHtml(llmStatusClass(status))}">${escapeHtml(status.live_checked ? "Đã kiểm tra live" : "Cấu hình")}</span>
+      </div>
+      <div class="runtime-status-row">
+        <span>Endpoint</span>
+        <code>${escapeHtml(status.base_url || "-")}</code>
+      </div>
+      <div class="runtime-status-row">
+        <span>Model</span>
+        <strong>${escapeHtml(status.model || "-")}</strong>
+      </div>
+      <div class="runtime-status-row">
+        <span>Proxy / model</span>
+        <strong>${escapeHtml(status.models_ok === null || status.models_ok === undefined ? "Chưa kiểm tra" : status.models_ok ? "OK" : "Lỗi")}</strong>
+      </div>
+      <div class="runtime-status-row">
+        <span>Smoke test</span>
+        <strong>${escapeHtml(status.smoke_ok === null || status.smoke_ok === undefined ? "Chưa chạy" : status.smoke_ok ? "Trả lời được" : "Lỗi")}</strong>
+      </div>
+      <div class="runtime-status-row">
+        <span>Lần kiểm tra</span>
+        <strong>${escapeHtml(formatCheckedAt(status.checked_at))}</strong>
+      </div>
+      ${modelSample ? `
+        <div class="runtime-status-row wide">
+          <span>Model mẫu</span>
+          <code>${escapeHtml(modelSample)}</code>
+        </div>
+      ` : ""}
+      ${status.last_error ? `
+        <div class="review-alert warning runtime-status-error">
+          <strong>Thông báo</strong>
+          <span>${escapeHtml(status.last_error)}</span>
+        </div>
+      ` : ""}
+    </div>
+  `;
+}
+
+function renderLlmConfigPanel() {
+  const target = qs("#llmConfigPanel");
+  if (!target) return;
+  const draft = state.llmDraft || llmConfigToDraft(state.llmConfig, state.llmPresets);
+  state.llmDraft = draft;
+  const preset = selectedLlmPreset();
+  const status = state.llmTestStatus;
+  const saveReady = status?.state === "ready";
+  target.innerHTML = `
+    <div class="llm-config-header">
+      <div>
+        <div class="metric-label">Cấu hình LLM</div>
+        <div class="item-meta">Đổi provider/model ngay trên dashboard. Config áp dụng global cho toàn app.</div>
+      </div>
+      <span class="status ${escapeHtml(state.llmConfig?.source === "runtime" ? "active" : "info")}">
+        ${escapeHtml(state.llmConfig?.source === "runtime" ? "Đang dùng dashboard config" : "Đang dùng env / auto")}
+      </span>
+    </div>
+    <form id="llmConfigForm" class="llm-config-form">
+      <div class="llm-preset-row" role="group" aria-label="Chọn nhà cung cấp LLM">
+        ${state.llmPresets.map((item) => `
+          <button
+            class="llm-preset-button ${item.id === draft.provider ? "active" : ""}"
+            type="button"
+            data-provider="${escapeHtml(item.id)}"
+          >${escapeHtml(item.label || item.id)}</button>
+        `).join("")}
+      </div>
+      <div class="llm-form-grid">
+        <label class="field-stack" for="llmBaseUrlInput">
+          <span>Base URL</span>
+          <input id="llmBaseUrlInput" value="${escapeHtml(draft.base_url)}" placeholder="https://.../v1" />
+        </label>
+        <label class="field-stack" for="llmModelInput">
+          <span>Model</span>
+          <input id="llmModelInput" value="${escapeHtml(draft.model)}" placeholder="${escapeHtml(preset.model_hint || "model-id")}" />
+        </label>
+        <label class="field-stack" for="llmApiKeyInput">
+          <span>API key</span>
+          <input id="llmApiKeyInput" type="password" value="" placeholder="${escapeHtml(state.llmConfig?.api_key_configured ? "Để trống để giữ key hiện tại" : preset.requires_api_key ? "Bắt buộc" : "Không bắt buộc")}" autocomplete="off" />
+        </label>
+        <label class="field-stack" for="llmTimeoutInput">
+          <span>Timeout</span>
+          <input id="llmTimeoutInput" type="number" min="3" max="60" value="${escapeHtml(draft.timeout_seconds || 8)}" />
+        </label>
+      </div>
+      <div class="item-meta llm-config-note">${escapeHtml(preset.note || "Endpoint cần tương thích OpenAI /v1/chat/completions.")}</div>
+      ${draft.provider === "ollama" ? `<div class="item-meta llm-config-note">Nếu model chưa có, chạy: <code>ollama pull ${escapeHtml(draft.model || preset.model_hint || "llama3.2")}</code></div>` : ""}
+      <div class="button-row">
+        <button id="loadLlmModelsBtn" class="button secondary" type="button">Tải model</button>
+        <button id="testLlmConfigBtn" class="button secondary" type="button">Kiểm tra</button>
+        <button id="saveLlmConfigBtn" class="button" type="submit" ${saveReady ? "" : "disabled"}>Lưu & kích hoạt</button>
+        <button id="resetLlmConfigBtn" class="button secondary" type="button">Khôi phục mặc định</button>
+      </div>
+      <div class="llm-test-result">
+        ${status ? `
+          <div class="runtime-status-main ${escapeHtml(llmStatusClass(status))}">
+            <div>
+              <div class="metric-label">Kết quả kiểm tra</div>
+              <div class="metric-value small">${escapeHtml(llmStateLabel(status))}</div>
+            </div>
+            <span class="status ${escapeHtml(llmStatusClass(status))}">${escapeHtml(status.latency_ms ?? "-")}ms</span>
+          </div>
+          ${status.last_error ? `<div class="review-alert warning"><strong>Lỗi</strong><span>${escapeHtml(status.last_error)}</span></div>` : ""}
+          ${(status.model_sample || []).length ? `<div class="item-meta">Model mẫu: ${escapeHtml(status.model_sample.slice(0, 6).join(", "))}</div>` : ""}
+        ` : `<div class="empty compact-empty">Chưa kiểm tra cấu hình mới.</div>`}
+      </div>
+    </form>
+  `;
+
+  target.querySelectorAll(".llm-preset-button").forEach((button) => {
+    button.addEventListener("click", () => applyLlmPreset(button.dataset.provider));
+  });
+  ["#llmBaseUrlInput", "#llmModelInput", "#llmApiKeyInput", "#llmTimeoutInput"].forEach((selector) => {
+    target.querySelector(selector)?.addEventListener("input", () => {
+      state.llmDraft = collectLlmDraftFromForm();
+      state.llmTestStatus = null;
+      qs("#saveLlmConfigBtn").disabled = true;
+    });
+  });
+  qs("#loadLlmModelsBtn")?.addEventListener("click", async () => {
+    state.llmDraft = collectLlmDraftFromForm();
+    try {
+      state.llmTestStatus = await api("/api/llm/test?smoke=false", {
+        method: "POST",
+        body: JSON.stringify(state.llmDraft),
+      });
+    } catch (err) {
+      state.llmTestStatus = llmErrorStatus(err.message);
+    }
+    renderOperations();
+    toast(state.llmTestStatus.models_ok ? "Đã tải danh sách model" : "Không tải được model");
+  });
+  qs("#testLlmConfigBtn")?.addEventListener("click", async () => {
+    state.llmDraft = collectLlmDraftFromForm();
+    try {
+      state.llmTestStatus = await api("/api/llm/test?smoke=true", {
+        method: "POST",
+        body: JSON.stringify(state.llmDraft),
+      });
+    } catch (err) {
+      state.llmTestStatus = llmErrorStatus(err.message);
+    }
+    renderOperations();
+    toast(state.llmTestStatus.state === "ready" ? "LLM trả lời được" : "LLM chưa sẵn sàng");
+  });
+  qs("#llmConfigForm")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    state.llmDraft = collectLlmDraftFromForm();
+    try {
+      const result = await api("/api/llm/config", {
+        method: "PUT",
+        body: JSON.stringify(state.llmDraft),
+      });
+      state.llmConfig = result.config;
+      state.llmStatus = result.status;
+      state.llmTestStatus = result.status;
+      await refreshAll();
+      toast("Đã kích hoạt cấu hình LLM");
+    } catch (err) {
+      state.llmTestStatus = llmErrorStatus(err.message);
+      renderOperations();
+      toast("Chưa lưu được cấu hình LLM");
+    }
+  });
+  qs("#resetLlmConfigBtn")?.addEventListener("click", async () => {
+    try {
+      state.llmConfig = await api("/api/llm/config/reset", { method: "POST", body: "{}" });
+      state.llmDraft = llmConfigToDraft(state.llmConfig, state.llmPresets);
+      state.llmTestStatus = null;
+      state.llmStatus = state.health?.llm;
+      await refreshAll();
+      toast("Đã khôi phục cấu hình mặc định");
+    } catch (err) {
+      toast(err.message);
+    }
+  });
 }
 
 function renderOperationStatusCards() {
@@ -937,12 +1342,13 @@ function renderOperationStatusCards() {
   const health = state.health || {};
   const ragflowReady = Boolean(health.ragflow?.configured && health.ragflow?.available);
   const mineruReady = Boolean(health.mineru?.available);
-  const llmReady = Boolean(health.llm?.configured);
+  const llmStatus = state.llmStatus || health.llm || {};
+  const llmReady = llmStatus.state === "ready" || llmStatus.state === "proxy_online";
   const cards = [
     {
       label: "RAGFlow",
       value: ragflowReady ? "Sẵn sàng" : "Chưa sẵn sàng",
-      detail: health.ragflow?.message || (health.ragflow?.configured ? "Đã cấu hình" : "Chưa cấu hình"),
+      detail: serviceText(health.ragflow?.message || (health.ragflow?.configured ? "Đã cấu hình" : "Chưa cấu hình")),
       status: ragflowReady ? "active" : "ocr_required",
     },
     {
@@ -953,9 +1359,9 @@ function renderOperationStatusCards() {
     },
     {
       label: "LLM",
-      value: llmReady ? "Đã cấu hình" : "Tắt",
-      detail: health.llm?.model || "Chỉ trả lời theo tài liệu nguồn",
-      status: llmReady ? "active" : "queue",
+      value: llmStateLabel(llmStatus),
+      detail: llmStatusDetail(llmStatus),
+      status: llmStatusClass(llmStatus),
     },
     {
       label: "Tài liệu hiệu lực",
@@ -990,14 +1396,14 @@ function renderSystemSummary() {
   if (!target) return;
   const health = state.health || {};
   const service = health.service_status || {};
-  const providers = health.providers?.allowed?.join(", ") || "-";
+  const providers = (health.providers?.allowed || []).map(providerLabel).join(", ") || "-";
   const readinessIssues = (health.readiness?.checks || [])
     .filter((check) => check.status !== "pass")
-    .map((check) => `${check.name}: ${check.status}`);
+    .map((check) => `${readinessCheckLabel(check.name)}: ${readinessStatusLabel(check.status)}`);
   target.innerHTML = `
     <div class="item">
-      <div class="item-title">${escapeHtml(service.title || "Chưa rõ trạng thái hệ thống")}</div>
-      <div class="item-meta">${escapeHtml(service.message || "Chưa có thông điệp trạng thái.")}</div>
+      <div class="item-title">${escapeHtml(serviceText(service.title || "Chưa rõ trạng thái hệ thống"))}</div>
+      <div class="item-meta">${escapeHtml(serviceText(service.message || "Chưa có thông điệp trạng thái."))}</div>
     </div>
     <div class="item">
       <div class="item-title">Nguồn truy xuất</div>
@@ -1037,6 +1443,10 @@ function switchView(viewName) {
   const metrics = qs("#metrics");
   if (metrics) {
     metrics.hidden = viewName === "upload";
+  }
+  if (window.matchMedia("(max-width: 980px)").matches) {
+    const activeView = qs(`#view-${viewName}`);
+    requestAnimationFrame(() => activeView?.scrollIntoView({ block: "start" }));
   }
 }
 
@@ -1125,6 +1535,10 @@ async function updateUploadStatus(relativePaths, status) {
 function setupActions() {
   qs("#refreshBtn").addEventListener("click", () => refreshAll().catch((err) => toast(err.message)));
   qs("#operatorAccessBtn").addEventListener("click", () => {
+    if (!state.authStatus?.required) {
+      switchView("operations");
+      return;
+    }
     if (state.adminUnlocked) {
       localStorage.removeItem("kbOperatorToken");
       syncAdminAccess();
@@ -1248,6 +1662,19 @@ function setupActions() {
     state.diagnostics = await api("/api/diagnostics?include_logs=true");
     renderOperations();
     toast("Đã làm mới chẩn đoán");
+  });
+  qs("#checkLlmBtn")?.addEventListener("click", async () => {
+    const button = qs("#checkLlmBtn");
+    button.disabled = true;
+    button.textContent = "Đang kiểm tra...";
+    try {
+      state.llmStatus = await api("/api/llm/status?smoke=true");
+      renderOperations();
+      toast(state.llmStatus.state === "ready" ? "LLM đang hoạt động" : "LLM cần kiểm tra cấu hình");
+    } finally {
+      button.disabled = false;
+      button.textContent = "Kiểm tra LLM";
+    }
   });
   qs("#chatForm").addEventListener("submit", async (event) => {
     event.preventDefault();

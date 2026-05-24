@@ -79,8 +79,10 @@ VALID_FEEDBACK = {
     "correct",
     "wrong",
     "missing_source",
+    "missing_answer",
     "wrong_source",
     "no_answer",
+    "unclear",
 }
 
 

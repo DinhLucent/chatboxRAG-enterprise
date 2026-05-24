@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -7,18 +8,13 @@ from typing import Any
 from .utils import utc_now, write_json
 
 
-MOJIBAKE_MARKERS = (
-    "Ã",
-    "Â",
-    "â€",
-    "â€“",
-    "â€œ",
-    "â€",
-    "áº",
-    "á»",
-    "Ä",
-    "Æ",
-    "�",
+MOJIBAKE_PATTERNS = (
+    re.compile(r"\u00c3[\u0080-\u00bf\u0192\u201a-\u201e\u2020-\u2021\u02c6\u2030\u0160\u2039\u0152\u017d]"),
+    re.compile(r"\u00c2[\u0080-\u00bf]"),
+    re.compile(r"\u00e2[\u0080-\u20ac][\u0080-\u2122]"),
+    re.compile(r"\u00e1[\u00ba\u00bb]"),
+    re.compile(r"\u00c4[\u0080-\u01b0]"),
+    re.compile(r"\u00c6[\u0080-\u01b0]"),
 )
 
 
@@ -51,7 +47,7 @@ def qa_markdown(markdown_path: Path, report_path: Path | None = None) -> Markdow
 
     stripped = text.strip()
     score = mojibake_score(text)
-    replacement_count = text.count("�")
+    replacement_count = text.count("\ufffd") + text.count("\u00ef\u00bf\u00bd")
     empty_table_cells = text.count("<p></p>") + text.count("<p> </p>")
 
     if len(stripped) < 20:
@@ -92,7 +88,9 @@ def qa_markdown(markdown_path: Path, report_path: Path | None = None) -> Markdow
 
 
 def mojibake_score(text: str) -> int:
-    return sum(text.count(marker) for marker in MOJIBAKE_MARKERS)
+    return text.count("\ufffd") + text.count("\u00ef\u00bf\u00bd") + sum(
+        len(pattern.findall(text)) for pattern in MOJIBAKE_PATTERNS
+    )
 
 
 def repair_mojibake(text: str) -> str | None:

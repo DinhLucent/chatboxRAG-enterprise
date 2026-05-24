@@ -190,6 +190,22 @@ refs/freellmapi/.runtime/freellmapi.pid
 .runtime/kb-web-8088.out.log
 ```
 
+## Install Auto-Start At Windows Logon
+
+Run this from the repository root:
+
+```powershell
+.\scripts\install-freellmapi-startup-task.ps1
+```
+
+The installer tries to create a Windows Scheduled Task first. If Windows blocks task registration without elevated permissions, it still creates a user Startup shortcut:
+
+```text
+C:\Users\ADMIN\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\DemoChatbot-FreeLLMAPI.lnk
+```
+
+That shortcut starts `scripts\start-freellmapi.ps1` on port `3001` after the `ADMIN` user logs into Windows. `scripts\start-app.ps1` auto-detects this local FreeLLMAPI endpoint and configures `POC_LLM_BASE_URL`, `POC_LLM_API_KEY`, and `POC_LLM_MODEL=auto` when no explicit LLM key is already set.
+
 Check running ports:
 
 ```powershell
@@ -238,4 +254,3 @@ For production:
 ```text
 RAGFlow retrieval + enterprise-approved LLM provider + auth + audit + monitoring
 ```
-
