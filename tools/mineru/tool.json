@@ -1,0 +1,19 @@
+{
+  "name": "mineru-document-converter",
+  "description": "Local MinerU service for converting PDF, image, DOCX, PPTX, and XLSX files into Markdown/JSON for the chatbot ingestion pipeline.",
+  "service": {
+    "api_url": "http://127.0.0.1:8010",
+    "webui_url": "http://127.0.0.1:7860",
+    "root": "C:\\Users\\ADMIN\\Documents\\pdftomm\\MinerU"
+  },
+  "commands": {
+    "start": "powershell -ExecutionPolicy Bypass -File scripts\\start-mineru-tool.ps1 -WithWebUI",
+    "status": "powershell -ExecutionPolicy Bypass -File scripts\\status-mineru-tool.ps1",
+    "stop": "powershell -ExecutionPolicy Bypass -File scripts\\stop-mineru-tool.ps1",
+    "agent_ingest": "powershell -ExecutionPolicy Bypass -File scripts\\agent-ingest-inbox.ps1"
+  },
+  "environment": {
+    "MINERU_EXECUTABLE": "mineru",
+    "MINERU_API_URL": "http://127.0.0.1:8010"
+  }
+}

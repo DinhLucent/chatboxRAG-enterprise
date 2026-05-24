@@ -1,0 +1,18 @@
+[
+  {
+    "id": "procedure-incident-flow",
+    "query": "Quy trinh xu ly su co ky thuat gom nhung buoc nao?",
+    "should_answer": true,
+    "expected_doc_ids": [
+      "KT-QT-003"
+    ],
+    "expected_category": "procedure"
+  },
+  {
+    "id": "unknown-vendor-error",
+    "query": "Bien tan E-07 encoder parameter P191",
+    "should_answer": false,
+    "expected_doc_ids": [],
+    "expected_category": "vendor_document"
+  }
+]

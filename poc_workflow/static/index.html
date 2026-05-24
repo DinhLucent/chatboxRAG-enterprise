@@ -1,0 +1,402 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Trợ lý quy trình nội bộ</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css?v=20260524-teal" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+          </div>
+          <div>
+            <div class="brand-title">Kho Quy Trình</div>
+            <div class="brand-subtitle">Tri thức đã kiểm soát</div>
+          </div>
+        </div>
+        <nav class="nav" aria-label="Primary">
+          <button class="nav-item active" data-view="chat">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+            <span>Hỏi đáp</span>
+          </button>
+          <button class="nav-item" data-view="documents">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+            <span>Tài liệu</span>
+          </button>
+          <button class="nav-item admin-only" data-view="upload">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.2 15c.7-1.2 1-2.5.7-3.9-.3-2-1.9-3.6-3.9-3.9H17c-.7-2.9-3.2-5-6.2-5A6.9 6.9 0 0 0 4 9c0 .7.1 1.4.3 2.1C2 12.1 1 14 1.8 16.2c.6 1.8 2.2 3.2 4.1 3.5h11.6c2.4-.2 4.4-1.9 4.7-4.3z"></path><polyline points="16 16 12 12 8 16"></polyline><line x1="12" y1="12" x2="12" y2="21"></line></svg>
+            <span>Nạp file</span>
+          </button>
+          <button class="nav-item admin-only" data-view="review">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"></path><rect x="8" y="2" width="8" height="4" rx="1" ry="1"></rect><path d="M9 14l2 2 4-4"></path></svg>
+            <span>Duyệt</span>
+          </button>
+          <button class="nav-item admin-only" data-view="operations">
+            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line><line x1="2" y1="12" x2="22" y2="12"></line></svg>
+            <span>Vận hành</span>
+          </button>
+        </nav>
+      </aside>
+
+      <main class="content">
+        <section class="topbar">
+          <div>
+            <h1>Trợ lý quy trình nội bộ</h1>
+            <p>Tra cứu có dẫn nguồn, kiểm soát vòng đời tài liệu và duyệt vận hành trong một màn hình gọn.</p>
+          </div>
+          <div class="topbar-actions">
+            <button id="refreshBtn" class="button secondary" type="button">Làm mới</button>
+            <button id="operatorAccessBtn" class="button secondary" type="button">Điều phối</button>
+          </div>
+        </section>
+
+        <section id="serviceBanner" class="service-banner" aria-live="polite"></section>
+
+        <section id="metrics" class="metrics"></section>
+
+        <section id="authPanel" class="auth-panel" hidden>
+          <div>
+            <h2>Cần quyền điều phối</h2>
+            <p id="authMessage">Nhập token điều phối để quản lý nạp file, duyệt tài liệu, vận hành và cấu hình hệ thống.</p>
+            <p class="auth-hint">File token demo cục bộ: <code>.runtime\kb-auth-token.txt</code></p>
+          </div>
+          <div class="auth-controls">
+            <input id="operatorTokenInput" type="password" placeholder="Dán token điều phối" autocomplete="off" />
+            <button id="saveOperatorTokenBtn" class="button" type="button">Mở khóa</button>
+            <button id="clearOperatorTokenBtn" class="button secondary" type="button">Xóa</button>
+          </div>
+        </section>
+
+        <section class="view active" id="view-chat">
+          <div class="split">
+            <section class="panel chat-panel">
+              <div class="panel-header">
+                <h2>Hỏi kho tri thức hiệu lực</h2>
+              </div>
+              <form id="chatForm" class="chat-form">
+                <textarea id="queryInput" rows="5" placeholder="Nhập câu hỏi về quy trình..."></textarea>
+                <div class="form-row">
+                  <button class="button" type="submit">Hỏi</button>
+                </div>
+                <details class="admin-debug admin-only">
+                  <summary>Kiểm tra kỹ thuật</summary>
+                  <div class="debug-grid">
+                    <label class="field-stack" for="providerSelect">
+                      <span>Nguồn trả lời</span>
+                      <select id="providerSelect">
+                        <option value="auto">Tự động</option>
+                        <option value="ragflow">Chỉ RAGFlow</option>
+                        <option value="local">Dự phòng cục bộ</option>
+                      </select>
+                    </label>
+                    <label class="field-stack" for="userIdInput">
+                      <span>Mã người dùng</span>
+                      <input id="userIdInput" placeholder="Không bắt buộc" />
+                    </label>
+                    <label class="checkbox">
+                      <input id="useLlmInput" type="checkbox" />
+                      <span>Dùng LLM sau truy xuất</span>
+                    </label>
+                  </div>
+                </details>
+              </form>
+              <div id="answerBox" class="answer empty">Chưa có câu hỏi.</div>
+              <div id="answerFeedback" class="answer-feedback" hidden>
+                <span>Phản hồi</span>
+                <button class="button secondary compact answer-feedback-btn" data-feedback="correct" type="button">Đúng</button>
+                <button class="button warning compact answer-feedback-btn" data-feedback="wrong_source" type="button">Sai nguồn</button>
+                <button class="button danger compact answer-feedback-btn" data-feedback="no_answer" type="button">Không trả lời được</button>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <h2>Nguồn tài liệu</h2>
+              </div>
+              <div id="citations" class="list empty">Chưa có nguồn trích dẫn.</div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view admin-only" id="view-upload">
+          <div class="upload-grid">
+            <section class="panel upload-panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Nạp file / Hàng chờ nguồn</h2>
+                  <p class="panel-caption">Đưa file vào hàng chờ và tạo prompt xử lý cho tác nhân vận hành.</p>
+                </div>
+              </div>
+              <form id="uploadForm" class="stack-form">
+                <label class="upload-zone" for="uploadFiles">
+                  <input id="uploadFiles" type="file" multiple />
+                  <span>Kéo thả hoặc chọn PDF, Word, Excel, ảnh scan, tài liệu hãng, văn bản hoặc Markdown.</span>
+                </label>
+                <div class="form-row">
+                  <label class="field-stack" for="uploadCategory">
+                    <span>Kiểu phân loại</span>
+                    <select id="uploadCategory">
+                      <option value="">Tự phân loại</option>
+                      <option value="procedure">Tài liệu quy trình</option>
+                      <option value="vendor_document">Tài liệu hãng</option>
+                      <option value="form_checklist">Biểu mẫu / checklist</option>
+                      <option value="faq_troubleshooting">FAQ / xử lý lỗi</option>
+                    </select>
+                  </label>
+                  <button class="button" type="submit">Nạp file</button>
+                  <button id="scanSourceBtn" class="button secondary" type="button">Quét thư mục nguồn</button>
+                </div>
+              </form>
+            </section>
+
+            <section class="panel prompt-panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Prompt tác nhân</h2>
+                  <p class="panel-caption">Nội dung prompt được lưu phía máy chủ sau khi tạo.</p>
+                </div>
+              </div>
+              <div class="prompt-body">
+                <div id="promptTrace" class="prompt-trace">Chưa tạo prompt.</div>
+                <textarea id="agentPromptBox" class="prompt-box" rows="18" readonly placeholder="Prompt sau khi tạo sẽ hiển thị tại đây."></textarea>
+                <div class="button-row prompt-actions">
+                  <button id="copyPromptBtn" class="button secondary" type="button">Sao chép prompt</button>
+                  <button id="moveWorkplaceBtn" class="button secondary" type="button">Chuyển vào xử lý</button>
+                  <button id="markFailedBtn" class="button danger" type="button">Đánh dấu lỗi</button>
+                  <button id="clearPromptBtn" class="button secondary" type="button">Xóa</button>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <section class="status-cards" id="uploadStatusCards" aria-label="Trạng thái hàng chờ nạp file"></section>
+
+          <section class="panel">
+            <div class="panel-header queue-header">
+              <div>
+                <h2>Hàng chờ file</h2>
+                <p class="panel-caption">Chọn file, tạo prompt có cấu trúc, rồi bàn giao cho tác nhân xử lý.</p>
+              </div>
+              <div class="button-row">
+                <button id="generatePromptBtn" class="button" type="button">Tạo prompt</button>
+                <button id="copySelectedPromptBtn" class="button secondary" type="button">Sao chép prompt</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="queue-table">
+                <thead>
+                  <tr>
+                    <th><input id="selectAllQueue" type="checkbox" aria-label="Chọn tất cả file trong hàng chờ" /></th>
+                    <th>Tên file</th>
+                    <th>Loại gợi ý</th>
+                    <th>Trạng thái</th>
+                    <th>Bước</th>
+                    <th>Phiên bản</th>
+                    <th>Cập nhật</th>
+                    <th>Thao tác</th>
+                  </tr>
+                </thead>
+                <tbody id="uploadQueueRows"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section class="view" id="view-documents">
+          <div class="documents-layout">
+            <aside class="document-category-panel" aria-label="Danh mục tài liệu">
+              <div class="category-panel-title">Danh mục</div>
+              <div id="documentCategoryRail" class="document-category-rail"></div>
+            </aside>
+
+            <section class="panel documents-list-panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Sổ đăng ký tài liệu</h2>
+                  <p class="panel-caption">Lọc theo danh mục, cuộn trong khung danh sách và mở hồ sơ chi tiết khi cần.</p>
+                </div>
+              </div>
+              <div class="document-filters">
+                <input id="documentSearchInput" placeholder="Tìm mã, tên, bộ phận, chủ sở hữu..." />
+                <select id="documentCategoryFilter" aria-label="Lọc theo danh mục">
+                  <option value="">Tất cả danh mục</option>
+                </select>
+                <select id="documentStatusFilter" aria-label="Lọc theo trạng thái">
+                  <option value="active">Chỉ hiệu lực</option>
+                  <option value="pending_review">Chờ duyệt</option>
+                  <option value="failed_review">Duyệt lỗi</option>
+                  <option value="retired">Đã ngưng</option>
+                  <option value="">Tất cả trạng thái</option>
+                </select>
+              </div>
+              <div id="documentResultMeta" class="result-meta"></div>
+              <div class="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Mã tài liệu</th>
+                      <th>Tên tài liệu</th>
+                      <th>Phiên bản</th>
+                      <th>Trạng thái</th>
+                      <th>Danh mục</th>
+                      <th>Chủ sở hữu</th>
+                      <th>Xem</th>
+                    </tr>
+                  </thead>
+                  <tbody id="manifestRows"></tbody>
+                </table>
+              </div>
+            </section>
+
+            <section class="panel document-inspector-panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Hồ sơ tài liệu</h2>
+                  <p class="panel-caption">Siêu dữ liệu, OCR/Markdown, QA, đường dẫn, cảnh báo và phiên bản liên quan.</p>
+                </div>
+              </div>
+              <div id="documentInspector" class="document-inspector empty">Chọn một tài liệu để xem hồ sơ.</div>
+            </section>
+          </div>
+        </section>
+
+        <section class="view admin-only" id="view-review">
+          <div class="split">
+            <section class="panel">
+              <div class="panel-header">
+                <h2>Chờ duyệt</h2>
+              </div>
+              <div id="pendingList" class="list"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Thao tác duyệt</h2>
+                  <p class="panel-caption">Chọn tài liệu chờ duyệt trước khi phê duyệt hoặc từ chối.</p>
+                </div>
+              </div>
+              <form id="reviewForm" class="stack-form">
+                <div id="reviewSelection" class="review-selection empty">Chưa chọn tài liệu.</div>
+                <div id="reviewInspector" class="document-inspector compact empty">Chọn tài liệu chờ duyệt để kiểm tra metadata và QA trước khi duyệt.</div>
+                <div class="review-checklist">
+                  <label class="checkbox">
+                    <input class="review-check" type="checkbox" />
+                    <span>Metadata, taxonomy, chủ sở hữu và phiên bản đã đúng.</span>
+                  </label>
+                  <label class="checkbox">
+                    <input class="review-check" type="checkbox" />
+                    <span>Kết quả Markdown/OCR đọc được và đủ dùng cho trả lời.</span>
+                  </label>
+                  <label class="checkbox">
+                    <input class="review-check" type="checkbox" />
+                    <span>Tài liệu được phép dùng trong chatbot.</span>
+                  </label>
+                </div>
+                <input id="reviewDocId" type="hidden" />
+                <input id="reviewVersion" type="hidden" />
+                <input id="approvedBy" placeholder="Người duyệt" />
+                <textarea id="rejectReason" rows="4" placeholder="Lý do từ chối là bắt buộc khi từ chối"></textarea>
+                <div class="button-row">
+                  <button id="reviewApproveBtn" class="button" data-action="approve" type="submit" disabled>Duyệt</button>
+                  <button id="reviewRejectBtn" class="button warning" data-action="reject" type="submit" disabled>Từ chối</button>
+                </div>
+              </form>
+            </section>
+          </div>
+        </section>
+
+        <section class="view admin-only" id="view-operations">
+          <section class="status-cards" id="operationStatusCards" aria-label="Trạng thái vận hành"></section>
+
+          <div class="split">
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Điều khiển runtime</h2>
+                  <p class="panel-caption">Chỉ dùng sau khi đã kiểm tra trạng thái hệ thống.</p>
+                </div>
+                <div class="button-row">
+                  <button id="bootstrapRagflowBtn" class="button secondary" type="button">Khởi tạo RAGFlow</button>
+                  <button id="syncRagflowBtn" class="button secondary" type="button">Đồng bộ RAGFlow</button>
+                  <button id="rebuildBtn" class="button secondary" type="button">Dựng lại index cục bộ</button>
+                </div>
+              </div>
+              <div id="systemSummary" class="list"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-header">
+                <h2>Trung tâm sự cố</h2>
+                <button id="refreshDiagnosticsBtn" class="button secondary" type="button">Chẩn đoán</button>
+              </div>
+              <div id="incidentList" class="list"></div>
+            </section>
+          </div>
+
+          <section class="quality-evaluation">
+            <div class="panel-header">
+              <div>
+                <h2>Vòng lặp chất lượng</h2>
+                <p class="panel-caption">Đánh giá hồi quy, khoảng trống tri thức và phản hồi truy vấn gần đây.</p>
+              </div>
+              <button id="evaluateBtn" class="button secondary" type="button">Chạy đánh giá</button>
+            </div>
+            <section class="panel">
+              <div class="panel-header">
+                <h2>Đánh giá hồi quy</h2>
+              </div>
+              <div id="evaluationBox" class="evaluation-summary empty"></div>
+            </section>
+            <div class="split quality-lists">
+              <section class="panel">
+                <div class="panel-header">
+                  <h2>Khoảng trống tri thức</h2>
+                </div>
+                <div id="gapList" class="list"></div>
+              </section>
+              <section class="panel">
+                <div class="panel-header">
+                  <h2>Truy vấn gần đây</h2>
+                </div>
+                <div id="queryList" class="list"></div>
+              </section>
+            </div>
+          </section>
+
+          <div class="split system-lower">
+            <section class="panel">
+              <div class="panel-header">
+                <h2>Lượt xử lý dữ liệu</h2>
+              </div>
+              <div id="ingestionList" class="list"></div>
+            </section>
+            <section class="panel">
+              <div class="panel-header">
+                <h2>Chẩn đoán</h2>
+              </div>
+              <div class="diagnostic-stack">
+                <details>
+                  <summary>Tóm tắt chẩn đoán</summary>
+                  <pre id="diagnosticsBox" class="json-box compact"></pre>
+                </details>
+                <details>
+                  <summary>Payload health thô</summary>
+                  <pre id="healthBox" class="json-box compact"></pre>
+                </details>
+              </div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/static/app.js?v=20260524-teal"></script>
+  </body>
+</html>

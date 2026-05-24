@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "demo-chatbot-engineerworkflow"
+version = "0.1.0"
+description = "POC workflow for governed RAG knowledge ingestion, lifecycle, and quality loop."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.100",
+  "uvicorn>=0.20",
+  "pydantic>=2",
+]
+
+[project.scripts]
+kb-poc = "poc_workflow.cli:main"
+kb-web = "poc_workflow.webapp:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "--basetemp=.pytest-tmp"
+
+[tool.setuptools.package-data]
+poc_workflow = ["static/*"]

@@ -1,0 +1,12 @@
+{
+  "company": {
+    "department": {
+      "technical": [
+        "procedure",
+        "vendor_document",
+        "form_checklist",
+        "faq_troubleshooting"
+      ]
+    }
+  }
+}

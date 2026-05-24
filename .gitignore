@@ -1,0 +1,66 @@
+# Python/cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest-tmp*/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments and secrets
+.venv/
+venv/
+.runtime/
+.env
+.env.*
+!.env.example
+!.env.production.example
+!vercel-demo/.env.example
+
+# Runtime state, generated indexes, and document data
+.Workplace/
+data/
+source/
+sources/
+backups/
+ragflow_index/
+staging/
+normalized/
+archive/
+failed/
+refs/
+plan/
+design/
+
+# Inbox keeps only operator-facing templates.
+inbox/**
+!inbox/
+!inbox/README.md
+!inbox/CLASSIFICATION_STANDARD.md
+
+# Manifest keeps only static taxonomy.
+manifest/*
+!manifest/
+!manifest/taxonomy.json
+
+# Local deployment/tool state
+.vercel/
+vercel-demo/.vercel/
+
+# Large or generated document/media artifacts
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.doc
+*.docx
+*.xls
+*.xlsx
+*.ppt
+*.pptx
+*.zip
+
+# Logs and local databases
+*.log
+*.db
+*.sqlite
+*.sqlite3

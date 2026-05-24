@@ -1,0 +1,58 @@
+services:
+  kb-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        INSTALL_MINERU: "${INSTALL_MINERU:-false}"
+    image: procedure-kb-app:local
+    container_name: procedure-kb-app
+    restart: unless-stopped
+    ports:
+      - "${KB_WEB_PORT:-8088}:8088"
+    environment:
+      KB_WORKSPACE_ROOT: /workspace
+      KB_WEB_HOST: 0.0.0.0
+      KB_WEB_PORT: 8088
+      KB_REQUIRE_AUTH: "${KB_REQUIRE_AUTH:-true}"
+      KB_AUTH_TOKEN: "${KB_AUTH_TOKEN:-}"
+      KB_ENABLE_LOCAL_FALLBACK: "${KB_ENABLE_LOCAL_FALLBACK:-false}"
+      KB_ALLOWED_PROVIDERS: "${KB_ALLOWED_PROVIDERS:-auto,ragflow}"
+      RAGFLOW_BASE_URL: "${RAGFLOW_BASE_URL:-http://host.docker.internal:9380}"
+      RAGFLOW_API_KEY: "${RAGFLOW_API_KEY:-}"
+      RAGFLOW_TECHNICAL_ACTIVE_DATASET_ID: "${RAGFLOW_TECHNICAL_ACTIVE_DATASET_ID:-}"
+      RAGFLOW_CHAT_ID: "${RAGFLOW_CHAT_ID:-}"
+      RAGFLOW_SEARCH_ID: "${RAGFLOW_SEARCH_ID:-}"
+      RAGFLOW_CHAT_MODEL: "${RAGFLOW_CHAT_MODEL:-model}"
+      POC_LLM_BASE_URL: "${POC_LLM_BASE_URL:-https://api.openai.com/v1}"
+      POC_LLM_API_KEY: "${POC_LLM_API_KEY:-}"
+      POC_LLM_MODEL: "${POC_LLM_MODEL:-}"
+      MINERU_EXECUTABLE: "${MINERU_EXECUTABLE:-mineru}"
+      MINERU_BACKEND: "${MINERU_BACKEND:-}"
+      MINERU_API_URL: "${MINERU_API_URL:-}"
+      MINERU_BACKEND_URL: "${MINERU_BACKEND_URL:-}"
+      MINERU_TIMEOUT_SECONDS: "${MINERU_TIMEOUT_SECONDS:-1800}"
+    volumes:
+      - ./source:/workspace/source
+      - ./staging:/workspace/staging
+      - ./normalized:/workspace/normalized
+      - ./manifest:/workspace/manifest
+      - ./archive:/workspace/archive
+      - ./failed:/workspace/failed
+      - ./ragflow_index:/workspace/ragflow_index
+      - ./data:/workspace/data
+      - ./eval:/workspace/eval
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/api/auth-status', timeout=5)",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
