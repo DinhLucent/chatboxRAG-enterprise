@@ -65,3 +65,7 @@ vercel-demo/.vercel/
 *.db
 *.sqlite
 *.sqlite3
+
+# Large original downloads
+root_source/
+

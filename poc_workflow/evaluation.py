@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from .chatbot import NO_SOURCE_ANSWER, ask
+from .manifest import ManifestStore
+from .text_cleaning import contains_raw_markup, normalized_text
 from .utils import utc_now, write_json
 
 
@@ -19,6 +22,12 @@ class EvaluationCase:
     should_answer: bool = True
     expected_doc_ids: list[str] = field(default_factory=list)
     expected_category: str | None = None
+    answer_style: str = "brief"
+    user_chat: bool = False
+    should_clarify: bool = False
+    expected_answer_terms: list[str] = field(default_factory=list)
+    forbidden_answer_terms: list[str] = field(default_factory=list)
+    source_support_terms: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EvaluationCase":
@@ -35,6 +44,12 @@ class EvaluationCase:
             should_answer=bool(data.get("should_answer", True)),
             expected_doc_ids=[str(doc_id) for doc_id in expected_doc_ids],
             expected_category=data.get("expected_category"),
+            answer_style=str(data.get("answer_style") or "brief"),
+            user_chat=bool(data.get("user_chat", False)),
+            should_clarify=bool(data.get("should_clarify", False)),
+            expected_answer_terms=_string_list(data, "expected_answer_terms"),
+            forbidden_answer_terms=_string_list(data, "forbidden_answer_terms"),
+            source_support_terms=_string_list(data, "source_support_terms"),
         )
 
 
@@ -92,7 +107,26 @@ def evaluate_case(
     latency_target_ms: int,
     user_id: str,
 ) -> dict[str, Any]:
-    answer = ask(root, case.query, user_id=user_id, use_llm=use_llm, provider=provider)
+    if case.user_chat:
+        from .user_chat import user_chat_response
+
+        answer = user_chat_response(
+            root,
+            case.query,
+            answer_style=case.answer_style,
+            session_id=f"eval-{case.id}-{uuid.uuid4().hex}",
+            use_llm=use_llm,
+            user_id=user_id,
+        )
+    else:
+        answer = ask(
+            root,
+            case.query,
+            user_id=user_id,
+            use_llm=use_llm,
+            provider=provider,
+            answer_style=case.answer_style,
+        )
     citations = answer.get("citations") or []
     doc_ids = sorted(
         {
@@ -106,15 +140,36 @@ def evaluate_case(
     has_expected_doc = bool(expected & retrieved) if expected else None
     answer_text = str(answer.get("answer") or "")
     no_answer = not citations and NO_SOURCE_ANSWER in answer_text
+    clarification = bool(answer.get("needs_clarification")) or "cho mình thêm" in answer_text.lower()
     latency_ms = int(answer.get("latency_ms") or 0)
 
     if case.should_answer:
         citation_ok = bool(citations) if not expected else bool(has_expected_doc)
         no_answer_ok = None
+        clarification_ok = None if not case.should_clarify else False
+    elif case.should_clarify:
+        citation_ok = None
+        no_answer_ok = not citations
+        clarification_ok = clarification and not citations
     else:
         citation_ok = None
         no_answer_ok = no_answer
+        clarification_ok = None
 
+    clean_output_ok = not contains_raw_markup(answer_text)
+    format_ok = answer_format_ok(answer_text, bool(citations), clarification)
+    expected_terms_ok = terms_present(answer_text, case.expected_answer_terms)
+    forbidden_terms_ok = terms_absent(answer_text, case.forbidden_answer_terms)
+    source_support_ok = terms_supported_by_sources(root, citations, case.source_support_terms)
+    answer_quality_ok = all(
+        [
+            clean_output_ok,
+            format_ok,
+            expected_terms_ok,
+            forbidden_terms_ok,
+            source_support_ok,
+        ]
+    )
     latency_ok = latency_ms <= latency_target_ms
     checks = [latency_ok]
     if has_expected_doc is not None:
@@ -123,6 +178,9 @@ def evaluate_case(
         checks.append(citation_ok)
     if no_answer_ok is not None:
         checks.append(no_answer_ok)
+    if clarification_ok is not None:
+        checks.append(clarification_ok)
+    checks.append(answer_quality_ok)
 
     return {
         "id": case.id,
@@ -135,6 +193,17 @@ def evaluate_case(
         "has_expected_doc": has_expected_doc,
         "citation_ok": citation_ok,
         "no_answer_ok": no_answer_ok,
+        "should_clarify": case.should_clarify,
+        "clarification_ok": clarification_ok,
+        "clean_output_ok": clean_output_ok,
+        "format_ok": format_ok,
+        "expected_answer_terms": case.expected_answer_terms,
+        "expected_terms_ok": expected_terms_ok,
+        "forbidden_answer_terms": case.forbidden_answer_terms,
+        "forbidden_terms_ok": forbidden_terms_ok,
+        "source_support_terms": case.source_support_terms,
+        "source_support_ok": source_support_ok,
+        "answer_quality_ok": answer_quality_ok,
         "latency_ms": latency_ms,
         "latency_ok": latency_ok,
         "provider": answer.get("provider"),
@@ -150,12 +219,16 @@ def summarize_results(results: list[dict[str, Any]], latency_target_ms: int) -> 
     citation_cases = [result for result in results if result["citation_ok"] is not None]
     no_answer_cases = [result for result in results if result["no_answer_ok"] is not None]
     latency_cases = [result for result in results if result["latency_ok"] is not None]
+    answer_quality_cases = [result for result in results if result.get("answer_quality_ok") is not None]
+    clarification_cases = [result for result in results if result.get("clarification_ok") is not None]
     metrics = {
         "total_cases": len(results),
         "passed_cases": sum(1 for result in results if result["pass"]),
         "top3_doc_hit_rate": rate(top3_cases, "has_expected_doc"),
         "citation_accuracy": rate(citation_cases, "citation_ok"),
         "no_answer_accuracy": rate(no_answer_cases, "no_answer_ok"),
+        "answer_quality_accuracy": rate(answer_quality_cases, "answer_quality_ok"),
+        "clarification_accuracy": rate(clarification_cases, "clarification_ok"),
         "latency_pass_rate": rate(latency_cases, "latency_ok"),
         "average_latency_ms": int(sum(latencies) / len(latencies)) if latencies else 0,
         "p95_latency_ms": percentile(latencies, 0.95),
@@ -163,6 +236,8 @@ def summarize_results(results: list[dict[str, Any]], latency_target_ms: int) -> 
             "top3_doc_hit_rate": 0.85,
             "citation_accuracy": 0.90,
             "no_answer_accuracy": 0.95,
+            "answer_quality_accuracy": 0.95,
+            "clarification_accuracy": 1.0,
             "latency_p95_ms": latency_target_ms,
         },
     }
@@ -170,10 +245,68 @@ def summarize_results(results: list[dict[str, Any]], latency_target_ms: int) -> 
         (metrics["top3_doc_hit_rate"] is None or metrics["top3_doc_hit_rate"] >= 0.85)
         and (metrics["citation_accuracy"] is None or metrics["citation_accuracy"] >= 0.90)
         and (metrics["no_answer_accuracy"] is None or metrics["no_answer_accuracy"] >= 0.95)
+        and (metrics["answer_quality_accuracy"] is None or metrics["answer_quality_accuracy"] >= 0.95)
+        and (metrics["clarification_accuracy"] is None or metrics["clarification_accuracy"] >= 1.0)
         and metrics["p95_latency_ms"] <= latency_target_ms
         and metrics["passed_cases"] == metrics["total_cases"]
     )
     return metrics
+
+
+def _string_list(data: dict[str, Any], key: str) -> list[str]:
+    value = data.get(key) or []
+    if not isinstance(value, list):
+        raise ValueError(f"Evaluation case {data.get('id')} {key} must be a list")
+    return [str(item) for item in value]
+
+
+def terms_present(text: str, terms: list[str]) -> bool:
+    normalized = normalized_text(text)
+    return all(normalized_text(term) in normalized for term in terms)
+
+
+def terms_absent(text: str, terms: list[str]) -> bool:
+    normalized = normalized_text(text)
+    return all(normalized_text(term) not in normalized for term in terms)
+
+
+def answer_format_ok(answer_text: str, has_citations: bool, clarification: bool) -> bool:
+    if clarification or not has_citations:
+        return True
+    normalized = normalized_text(answer_text)
+    return "tom tat" in normalized and "nguon" in normalized
+
+
+def terms_supported_by_sources(root: Path, citations: list[Any], terms: list[str]) -> bool:
+    if not terms:
+        return True
+    source_text = citation_source_text(root, citations)
+    if not source_text:
+        return False
+    normalized_source = normalized_text(source_text)
+    return all(normalized_text(term) in normalized_source for term in terms)
+
+
+def citation_source_text(root: Path, citations: list[Any]) -> str:
+    records = {
+        (record.doc_id, record.version): record
+        for record in ManifestStore(root).load()
+    }
+    chunks: list[str] = []
+    for citation in citations:
+        if not isinstance(citation, dict):
+            continue
+        doc_id = str(citation.get("doc_id") or "")
+        version = str(citation.get("version") or "")
+        if citation.get("excerpt"):
+            chunks.append(str(citation.get("excerpt")))
+        record = records.get((doc_id, version))
+        if not record:
+            continue
+        path = Path(record.normalized_path)
+        if path.exists():
+            chunks.append(path.read_text(encoding="utf-8", errors="ignore"))
+    return "\n".join(chunks)
 
 
 def rate(results: list[dict[str, Any]], key: str) -> float | None:

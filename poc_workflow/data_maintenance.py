@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Any
 
 from .document_qa import qa_markdown
 from .manifest import ManifestStore
-from .utils import safe_filename, utc_now, write_json
+from .utils import content_hash, safe_filename, utc_now, write_json
 
 
 DEFAULT_QA_STATUSES = {"active", "pending_review"}
@@ -16,6 +17,12 @@ TAXONOMY_REPORT_JSON = Path("data") / "data_audit" / "taxonomy_latest.json"
 TAXONOMY_REPORT_MARKDOWN = Path("docs") / "taxonomy-audit-latest.md"
 TAXONOMY_REMEDIATION_JSON = Path("data") / "data_audit" / "taxonomy_remediation_plan.json"
 TAXONOMY_REMEDIATION_MARKDOWN = Path("docs") / "taxonomy-remediation-plan.md"
+ACTIVE_SCOPE_REPORT_JSON = Path("data") / "data_audit" / "active_scope_latest.json"
+ACTIVE_SCOPE_REPORT_MARKDOWN = Path("docs") / "active-scope-latest.md"
+DEFAULT_ACTIVE_SCOPE_ID = "engineering_procedures_v1"
+ACTIVE_SCOPE_DISABLED_REASON = (
+    "Disabled by active scope engineering_procedures_v1; awaiting review before future expansion."
+)
 CATEGORY_DOC_ID_PREFIXES = {
     "procedure": "KT-QT-",
     "vendor_document": "KT-HANG-",
@@ -33,6 +40,301 @@ TITLE_CATEGORY_HINTS = (
     ("procedure", ("quy trình", "quy trinh")),
     ("form_checklist", ("biểu mẫu", "bieu mau", "checklist", "phiếu", "phieu", "mẫu", "mau")),
 )
+
+
+def scope_active_set(
+    root: Path,
+    active_root: Path,
+    *,
+    scope_id: str = DEFAULT_ACTIVE_SCOPE_ID,
+    approved_by: str = "scope-active-set",
+    dry_run: bool = True,
+    write_report: bool = True,
+) -> dict[str, Any]:
+    root = root.resolve()
+    active_root = active_root if active_root.is_absolute() else root / active_root
+    active_root = active_root.resolve()
+    if not active_root.exists() or not active_root.is_dir():
+        raise FileNotFoundError(f"Active root does not exist or is not a directory: {active_root}")
+
+    store = ManifestStore(root)
+    records = store.load()
+    targets = collect_active_scope_targets(root, active_root, scope_id)
+    target_by_hash = {str(target["content_hash"]): target for target in targets}
+    matched_hashes: set[str] = set()
+    actions: list[dict[str, Any]] = []
+    now = utc_now()
+
+    before_counts = status_counts(records)
+    before_active_categories = category_counts(record for record in records if record.status == "active")
+
+    for record in records:
+        target = target_by_hash.get(record.content_hash)
+        if target:
+            matched_hashes.add(record.content_hash)
+            changes = desired_scope_record_changes(record, target, scope_id, approved_by)
+            actions.append(
+                {
+                    "record_key": record.key,
+                    "doc_id": record.doc_id,
+                    "version": record.version,
+                    "action": "activate_scope_record" if changes else "keep_scope_record",
+                    "changes": changes,
+                    "target_file": target["relative_path"],
+                    "display_code": target.get("display_code"),
+                    "source_role": target["source_role"],
+                }
+            )
+            if not dry_run and changes:
+                apply_scope_record(record, target, scope_id, approved_by, now)
+                write_scope_metadata_sidecar(record)
+            continue
+
+        if record.status == "active":
+            actions.append(
+                {
+                    "record_key": record.key,
+                    "doc_id": record.doc_id,
+                    "version": record.version,
+                    "action": "disable_to_pending_review",
+                    "changes": ["status", "status_reason", "approved_by"],
+                }
+            )
+            if not dry_run:
+                record.status = "pending_review"
+                record.status_reason = disabled_reason(scope_id)
+                record.approved_by = None
+                record.updated_at = now
+        elif record.status == "pending_review":
+            actions.append(
+                {
+                    "record_key": record.key,
+                    "doc_id": record.doc_id,
+                    "version": record.version,
+                    "action": "keep_pending_review",
+                    "changes": [],
+                }
+            )
+        else:
+            actions.append(
+                {
+                    "record_key": record.key,
+                    "doc_id": record.doc_id,
+                    "version": record.version,
+                    "action": "leave_non_serving_status",
+                    "status": record.status,
+                    "changes": [],
+                }
+            )
+
+    missing_targets = [target for target in targets if target["content_hash"] not in matched_hashes]
+    expected_active_count = sum(
+        1 for action in actions if action["action"] in {"activate_scope_record", "keep_scope_record"}
+    )
+    expected_pending_count = sum(
+        1 for action in actions if action["action"] in {"disable_to_pending_review", "keep_pending_review"}
+    )
+
+    if not dry_run:
+        store.save(records)
+        from .pipeline import rebuild_indexes
+
+        rebuild_indexes(root)
+
+    after_records = store.load() if not dry_run else records
+    report = {
+        "generated_at": utc_now(),
+        "dry_run": dry_run,
+        "scope_id": scope_id,
+        "active_root": str(active_root),
+        "target_file_count": len(targets),
+        "matched_record_count": len(matched_hashes),
+        "missing_target_count": len(missing_targets),
+        "expected_active_count": expected_active_count,
+        "expected_pending_review_count": expected_pending_count,
+        "before_status_counts": before_counts,
+        "after_status_counts": status_counts(after_records) if not dry_run else None,
+        "before_active_category_counts": before_active_categories,
+        "after_active_category_counts": category_counts(record for record in after_records if record.status == "active")
+        if not dry_run
+        else None,
+        "target_files": targets,
+        "missing_target_files": missing_targets,
+        "actions": actions,
+    }
+    if write_report:
+        write_active_scope_reports(root, report)
+    return report
+
+
+def collect_active_scope_targets(root: Path, active_root: Path, scope_id: str) -> list[dict[str, Any]]:
+    targets: list[dict[str, Any]] = []
+    for file_path in sorted(path for path in active_root.rglob("*") if path.is_file()):
+        targets.append(
+            {
+                "relative_path": file_path.relative_to(root).as_posix()
+                if is_relative_to(file_path, root)
+                else str(file_path),
+                "active_root_relative_path": file_path.relative_to(active_root).as_posix(),
+                "source_path": str(file_path),
+                "content_hash": content_hash(file_path),
+                "display_code": infer_display_code(file_path),
+                "source_role": source_role_for_path(file_path),
+                "scope_id": scope_id,
+                "suffix": file_path.suffix.lower(),
+            }
+        )
+    return targets
+
+
+def desired_scope_record_changes(record: Any, target: dict[str, Any], scope_id: str, approved_by: str) -> list[str]:
+    changes = []
+    expected = {
+        "status": "active",
+        "department": "technical",
+        "category": "procedure",
+        "source_type": "internal_procedure",
+        "approved_by": approved_by,
+    }
+    for field, value in expected.items():
+        if getattr(record, field) != value:
+            changes.append(field)
+    extra_expected = {
+        "display_code": target.get("display_code"),
+        "source_role": target.get("source_role"),
+        "active_scope_id": scope_id,
+        "active_scope_source_path": target.get("source_path"),
+        "active_scope_relative_path": target.get("relative_path"),
+    }
+    for key, value in extra_expected.items():
+        if value and record.extra.get(key) != value:
+            changes.append(f"extra.{key}")
+    return changes
+
+
+def apply_scope_record(record: Any, target: dict[str, Any], scope_id: str, approved_by: str, updated_at: str) -> None:
+    record.status = "active"
+    record.status_reason = None
+    record.department = "technical"
+    record.category = "procedure"
+    record.source_type = "internal_procedure"
+    record.approved_by = approved_by
+    record.updated_at = updated_at
+    record.extra["active_scope_id"] = scope_id
+    record.extra["active_scope_source_path"] = target["source_path"]
+    record.extra["active_scope_relative_path"] = target["relative_path"]
+    record.extra["source_role"] = target["source_role"]
+    if target.get("display_code"):
+        record.extra["display_code"] = target["display_code"]
+
+
+def write_scope_metadata_sidecar(record: Any) -> None:
+    source_path = Path(record.source_path)
+    metadata_path = source_path.with_name(source_path.stem + ".metadata.json")
+    metadata = metadata_payload_for_record(record)
+    metadata["approved_by"] = record.approved_by
+    for key in [
+        "display_code",
+        "source_role",
+        "active_scope_id",
+        "active_scope_source_path",
+        "active_scope_relative_path",
+    ]:
+        if record.extra.get(key):
+            metadata[key] = record.extra[key]
+    write_json(metadata_path, metadata)
+
+
+def infer_display_code(path: Path) -> str | None:
+    text = " ".join([path.name, path.stem, *path.parts])
+    match = re.search(r"\bPD[-\s]*TECH[-\s]*([A-Z])[-\s]*([0-9]{1,3})\b", text, flags=re.IGNORECASE)
+    if not match:
+        return None
+    return f"PD-TECH-{match.group(1).upper()}-{match.group(2)}"
+
+
+def source_role_for_path(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        return "primary_pdf"
+    if suffix == ".xlsx":
+        return "supporting_workbook"
+    return "supporting_file"
+
+
+def disabled_reason(scope_id: str) -> str:
+    if scope_id == DEFAULT_ACTIVE_SCOPE_ID:
+        return ACTIVE_SCOPE_DISABLED_REASON
+    return f"Disabled by active scope {scope_id}; awaiting review before future expansion."
+
+
+def status_counts(records: list[Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for record in records:
+        counts[record.status] = counts.get(record.status, 0) + 1
+    return counts
+
+
+def category_counts(records: Any) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for record in records:
+        counts[record.category] = counts.get(record.category, 0) + 1
+    return counts
+
+
+def write_active_scope_reports(root: Path, report: dict[str, Any]) -> None:
+    write_json(root / ACTIVE_SCOPE_REPORT_JSON, report)
+    markdown = [
+        "# Active Scope Latest",
+        "",
+        f"- Generated: `{report['generated_at']}`",
+        f"- Dry run: `{report['dry_run']}`",
+        f"- Scope: `{report['scope_id']}`",
+        f"- Active root: `{report['active_root']}`",
+        f"- Target files: `{report['target_file_count']}`",
+        f"- Matched records: `{report['matched_record_count']}`",
+        f"- Missing target files: `{report['missing_target_count']}`",
+        f"- Expected active records: `{report['expected_active_count']}`",
+        f"- Expected pending review records: `{report['expected_pending_review_count']}`",
+        "",
+        "## Target Files",
+        "",
+    ]
+    targets = report.get("target_files") or []
+    if targets:
+        markdown.extend(["| File | Display code | Role | Matched |", "| --- | --- | --- | --- |"])
+        matched_hashes = {
+            action.get("display_code") or action.get("target_file")
+            for action in report.get("actions") or []
+            if action.get("action") in {"activate_scope_record", "keep_scope_record"}
+        }
+        for target in targets:
+            marker = target.get("display_code") or target.get("relative_path")
+            markdown.append(
+                "| "
+                + " | ".join(
+                    [
+                        markdown_cell(target.get("relative_path")),
+                        markdown_cell(target.get("display_code")),
+                        markdown_cell(target.get("source_role")),
+                        markdown_cell(marker in matched_hashes),
+                    ]
+                )
+                + " |"
+            )
+    else:
+        markdown.append("No target files found.")
+    target = root / ACTIVE_SCOPE_REPORT_MARKDOWN
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("\n".join(markdown) + "\n", encoding="utf-8")
+
+
+def is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 def backfill_missing_qa_reports(

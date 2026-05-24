@@ -7,8 +7,16 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .chatbot import ANSWER_STYLE_LABELS, NO_SOURCE_ANSWER, ask
+from .chatbot import (
+    ANSWER_STYLE_LABELS,
+    NO_SOURCE_ANSWER,
+    ask,
+    infer_query_answer_style,
+    mermaid_flowchart,
+    workflow_label,
+)
 from .database import QualityDatabase
+from .manifest import ManifestStore, latest_active_records
 from .text_cleaning import clean_excerpt, clean_retrieval_text, contains_raw_markup, normalized_text
 from .utils import utc_now
 
@@ -19,38 +27,48 @@ MAX_PUBLIC_EXCERPT_CHARS = 720
 DEFAULT_SESSION_TTL_SECONDS = 30 * 60
 DEFAULT_CONTEXT_TURN_LIMIT = 6
 DEFAULT_ANSWER_STYLE = "brief"
+CLARIFICATION_ANSWER = (
+    "Bạn cho mình thêm mã hoặc tên tài liệu/quy trình cần tra cứu nhé. "
+    "Ví dụ: `KT-QT-003` hoặc `quy trình xử lý sự cố kỹ thuật`."
+)
+
+CLARIFICATION_ANSWER = (
+    "Bạn cho mình thêm mã hoặc tên tài liệu/quy trình cần tra cứu nhé. "
+    "Ví dụ: `PD-TECH-A-01` hoặc `quy trình lắp đặt`."
+)
 
 ANSWER_STYLES = [
     {"id": "brief", "label": "Ngắn gọn"},
     {"id": "steps", "label": "Từng bước"},
     {"id": "checklist", "label": "Checklist"},
+    {"id": "workflow", "label": "Workflow"},
 ]
 
 WELCOME_CARDS = [
     {
         "id": "welcome_procedure",
-        "label": "Tra cứu quy trình",
+        "label": "Quy trình kỹ thuật",
         "template_id": "procedure_steps",
-        "question": "Quy trình này gồm những bước nào?",
+        "question": "Quy trình kỹ thuật gồm những bước nào?",
         "answer_style": "steps",
     },
     {
         "id": "welcome_form",
-        "label": "Tìm biểu mẫu",
+        "label": "Biểu mẫu kỹ thuật",
         "template_id": "form_usage",
-        "question": "Trường hợp này cần dùng biểu mẫu nào?",
+        "question": "Trường hợp này cần dùng biểu mẫu kỹ thuật nào?",
         "answer_style": "brief",
     },
     {
         "id": "welcome_incident",
-        "label": "Hỏi lỗi kỹ thuật",
+        "label": "Xử lý sự cố",
         "template_id": "incident_first_response",
-        "question": "Khi phát sinh lỗi kỹ thuật, cần xử lý ban đầu thế nào?",
+        "question": "Khi phát sinh sự cố kỹ thuật, cần xử lý ban đầu thế nào?",
         "answer_style": "checklist",
     },
     {
         "id": "welcome_vendor",
-        "label": "Tìm tài liệu hãng",
+        "label": "Tài liệu hãng",
         "template_id": "vendor_requirement",
         "question": "Tài liệu hãng nêu yêu cầu kỹ thuật nào?",
         "answer_style": "brief",
@@ -60,9 +78,26 @@ WELCOME_CARDS = [
 FOLLOW_UP_PATTERNS = [
     r"\b(buoc|bước)\s*\d+\b",
     r"\b(no|nó|nay|này|do|đó|tren|trên|duoi|dưới)\b",
-    r"\b(ai|khi nao|khi nào|o dau|ở đâu|can gi|cần gì|nhu the nao|như thế nào)\b",
+    r"\b(ai duyet|ai duyệt|o dau|ở đâu|can gi tiep|cần gì tiếp)\b",
     r"\b(tiep|tiếp|tie?p theo|sau do|sau đó)\b",
 ]
+
+STANDALONE_QUERY_TERMS = (
+    "quy trinh",
+    "quy trình",
+    "tai lieu",
+    "tài liệu",
+    "bieu mau",
+    "biểu mẫu",
+    "ticket",
+    "bien tan",
+    "biến tần",
+    "encoder",
+    "parameter",
+    "alarm",
+    "ma loi",
+    "mã lỗi",
+)
 
 
 def load_policy_pack(root: Path) -> dict[str, Any]:
@@ -117,7 +152,7 @@ def user_chat_response(
     user_id: str | None = "anonymous-user-chat",
 ) -> dict[str, Any]:
     policy = load_policy_pack(root)
-    active_answer_style = normalize_answer_style(answer_style)
+    active_answer_style = infer_answer_style(query, normalize_answer_style(answer_style))
     db = QualityDatabase(root)
     active_session_id = normalize_session_id(session_id)
     session = db.touch_user_chat_session(
@@ -126,6 +161,18 @@ def user_chat_response(
         ttl_seconds=user_session_ttl_seconds(),
     )
     history = db.recent_user_chat_turns(active_session_id, limit=user_context_turn_limit())
+    if needs_clarification(query, history):
+        return clarification_response(
+            db,
+            policy,
+            query=query,
+            answer=CLARIFICATION_ANSWER,
+            active_session_id=active_session_id,
+            session=session,
+            template_id=template_id,
+            answer_style=active_answer_style,
+            user_id=user_id,
+        )
     effective_query = contextual_query(query, history)
     result = ask(
         root,
@@ -146,7 +193,7 @@ def user_chat_response(
             policy_version=str(policy.get("version") or ""),
         )
 
-    citations = sanitize_public_citations(result.get("citations") or [])
+    citations = sanitize_public_citations(root, result.get("citations") or [])
     result["answer"] = format_user_answer(str(result.get("answer") or ""), citations, active_answer_style)
     citation_doc_ids = sorted({str(citation.get("doc_id")) for citation in citations if citation.get("doc_id")})
     db.log_user_chat_turn(
@@ -158,7 +205,8 @@ def user_chat_response(
         query_log_id=log_id if isinstance(log_id, int) else None,
         template_id=template_id,
     )
-    trace = build_public_trace(result, len(citations), policy)
+    answer_check = public_answer_check(str(result.get("answer") or ""), citations)
+    trace = build_public_trace(result, len(citations), policy, answer_check=answer_check)
     context_used = effective_query != query
     trace["context"] = {
         "session_id": active_session_id,
@@ -188,10 +236,75 @@ def user_chat_response(
         "policy": public_policy_summary(policy),
         "template_id": template_id,
         "answer_style": active_answer_style,
-        "answer_source": result.get("answer_source") or "no_answer",
-        "llm_used": bool(result.get("llm_used")),
-        "llm_error": result.get("llm_error"),
-        "fallback_reason": result.get("fallback_reason"),
+        "needs_clarification": False,
+        "session_id": active_session_id,
+        "session": {
+            "session_id": active_session_id,
+            "device_id": session.get("device_id"),
+            "last_seen_at": session.get("last_seen_at"),
+            "expires_at": session.get("expires_at"),
+            "ttl_seconds": user_session_ttl_seconds(),
+        },
+    }
+
+
+def clarification_response(
+    db: QualityDatabase,
+    policy: dict[str, Any],
+    *,
+    query: str,
+    answer: str,
+    active_session_id: str,
+    session: dict[str, Any],
+    template_id: str | None,
+    answer_style: str,
+    user_id: str | None,
+) -> dict[str, Any]:
+    log_id = db.log_query(
+        query,
+        user_id,
+        [],
+        False,
+        0,
+        answer,
+        answer_source="clarification",
+    )
+    db.annotate_query(
+        log_id,
+        session_id=active_session_id,
+        template_id=template_id,
+        policy_id=str(policy.get("policy_id") or ""),
+        policy_version=str(policy.get("version") or ""),
+    )
+    db.log_user_chat_turn(
+        active_session_id,
+        query=query,
+        effective_query=query,
+        answer=answer,
+        citation_doc_ids=[],
+        query_log_id=log_id,
+        template_id=template_id,
+    )
+    trace = build_public_trace({"answer": answer, "answer_source": "clarification"}, 0, policy)
+    trace["context"] = {
+        "session_id": active_session_id,
+        "turns_available": 0,
+        "turns_used": 0,
+        "context_used": False,
+        "expires_at": session["expires_at"],
+    }
+    return {
+        "answer": answer,
+        "citations": [],
+        "trace": trace,
+        "trace_steps": trace["steps"],
+        "query_log_id": log_id,
+        "log_id": log_id,
+        "knowledge_gap_id": None,
+        "policy": public_policy_summary(policy),
+        "template_id": template_id,
+        "answer_style": answer_style,
+        "needs_clarification": True,
         "session_id": active_session_id,
         "session": {
             "session_id": active_session_id,
@@ -247,10 +360,11 @@ def contextual_query(query: str, history: list[dict[str, Any]]) -> str:
     clean_query = query.strip()
     if not history or not should_use_context(clean_query):
         return clean_query
-    context_lines = []
-    for turn in history[-user_context_turn_limit() :]:
-        context_lines.append(f"User: {public_excerpt(turn.get('query') or '')}")
-        context_lines.append(f"Assistant: {public_excerpt(turn.get('answer') or '')}")
+    anchor_turn = next((turn for turn in reversed(history) if turn.get("citation_doc_ids")), history[-1])
+    context_lines = [f"Chủ đề trước: {public_excerpt(anchor_turn.get('query') or '')}"]
+    citation_doc_ids = [str(doc_id) for doc_id in anchor_turn.get("citation_doc_ids") or [] if doc_id]
+    if citation_doc_ids:
+        context_lines.append(f"Tài liệu đã dùng trước: {', '.join(citation_doc_ids[:5])}")
     return "\n".join(
         [
             "Cau hoi hien tai:",
@@ -262,37 +376,126 @@ def contextual_query(query: str, history: list[dict[str, Any]]) -> str:
     )
 
 
+def infer_answer_style(query: str, selected_style: str) -> str:
+    return infer_query_answer_style(query, selected_style)
+
+
+def needs_clarification(query: str, history: list[dict[str, Any]]) -> bool:
+    clean_query = query.strip()
+    if history and should_use_context(clean_query):
+        last_turn = history[-1]
+        if last_turn.get("citation_doc_ids"):
+            return False
+    normalized = normalized_text(clean_query)
+    if has_specific_document_hint(normalized):
+        return False
+    if is_technical_catalog_count_query(normalized):
+        return False
+    ambiguous_patterns = [
+        "quy trinh nay",
+        "tai lieu nay",
+        "trong quy trinh nay",
+        "cai nay",
+        "muc nay",
+    ]
+    generic_questions = {
+        "quy trinh nay gom nhung buoc nao",
+        "quy trinh nay nhu the nao",
+        "quy trinh nay lam sao",
+        "tai lieu nay noi ve gi",
+    }
+    compact = re.sub(r"\s+", " ", normalized).strip(" ?.!:")
+    return compact in generic_questions or any(pattern in normalized for pattern in ambiguous_patterns)
+
+
+def has_specific_document_hint(normalized_query: str) -> bool:
+    if re.search(r"\bkt\s*[- ]\s*(qt|faq|bm|hang)\s*[- ]\s*\d{1,4}\b", normalized_query):
+        return True
+    specific_terms = [
+        "xu ly su co",
+        "kiem soat tai lieu",
+        "bao tri",
+        "nghiem thu",
+        "lap dat",
+        "sua chua",
+        "bao duong",
+    ]
+    return any(term in normalized_query for term in specific_terms)
+
+
+def is_technical_catalog_count_query(normalized_query: str) -> bool:
+    asks_count_or_list = any(term in normalized_query for term in ["bao nhieu", "danh sach", "cac quy trinh"])
+    mentions_technical = any(term in normalized_query for term in ["phong ky thuat", "bo phan ky thuat", "ky thuat"])
+    mentions_procedure_docs = "quy trinh" in normalized_query and (
+        "tai lieu" in normalized_query or "phong" in normalized_query or "danh sach" in normalized_query
+    )
+    return asks_count_or_list and mentions_technical and mentions_procedure_docs
+
+
 def should_use_context(query: str) -> bool:
     compact = query.strip().lower()
-    if len(compact.split()) <= 7:
+    normalized = normalized_text(compact)
+    if has_context_reference(normalized):
         return True
+    if any(term in normalized for term in STANDALONE_QUERY_TERMS):
+        return False
     return any(re.search(pattern, compact, flags=re.IGNORECASE) for pattern in FOLLOW_UP_PATTERNS)
+
+
+def has_context_reference(normalized_query: str) -> bool:
+    if re.search(r"\bbuoc\s*\d+\b", normalized_query):
+        return True
+    return any(
+        term in normalized_query
+        for term in [
+            "quy trinh nay",
+            "tai lieu nay",
+            "trong quy trinh nay",
+            "noi dung nay",
+            "muc nay",
+            "phan nay",
+            "noi dung tren",
+        ]
+    )
 
 
 def public_policy_summary(policy: dict[str, Any]) -> dict[str, Any]:
     return {
-        "label": "Trả lời có nguồn",
+        "label": "Trợ lý phòng Kỹ thuật",
         "summary": [
-            "Trợ lý chỉ trả lời dựa trên tài liệu đang hiệu lực.",
+            "Trợ lý chỉ trả lời dựa trên tài liệu đang hiệu lực của phòng Kỹ thuật.",
             "Nếu không tìm thấy căn cứ, trợ lý sẽ nói rõ là chưa tìm thấy trong tài liệu hiện hành.",
         ],
         "debug_visible": False,
     }
 
 
-def sanitize_public_citations(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def sanitize_public_citations(root: Path, citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    active_latest = {
+        (record.doc_id, record.version)
+        for record in latest_active_records(ManifestStore(root).load())
+    }
     safe: list[dict[str, Any]] = []
     for citation in citations:
         if not isinstance(citation, dict):
             continue
+        doc_id = str(citation.get("doc_id") or "")
+        version = str(citation.get("version") or "")
+        if not doc_id or not version or (doc_id, version) not in active_latest:
+            continue
         safe.append(
             {
-                "title": citation.get("title") or citation.get("doc_id") or "Nguồn",
-                "doc_id": citation.get("doc_id"),
-                "version": citation.get("version"),
+                "title": public_excerpt(clean_retrieval_text(citation.get("title") or doc_id or "Nguồn"), 160),
+                "doc_id": doc_id,
+                "version": version,
                 "excerpt": public_excerpt(clean_excerpt(citation.get("excerpt") or citation.get("text") or "")),
             }
         )
+        if safe:
+            if citation.get("display_code"):
+                safe[-1]["display_code"] = str(citation["display_code"])
+            if citation.get("source_role"):
+                safe[-1]["source_role"] = str(citation["source_role"])
     return safe
 
 
@@ -307,7 +510,7 @@ def format_user_answer(answer: str, citations: list[dict[str, Any]], answer_styl
     if "Tóm tắt:" in text and "Nguồn:" in text:
         return text
     source_text = ", ".join(
-        f"{citation.get('doc_id')} v{citation.get('version')}"
+        f"{citation.get('display_code') or citation.get('doc_id')} v{citation.get('version')}"
         for citation in citations
         if citation.get("doc_id") and citation.get("version")
     )
@@ -316,6 +519,17 @@ def format_user_answer(answer: str, citations: list[dict[str, Any]], answer_styl
         body = "\n".join(f"- [ ] {item}" for item in _answer_points(text))
     elif answer_style == "steps":
         body = "\n".join(f"{index}. {item}" for index, item in enumerate(_answer_points(text), start=1))
+    elif answer_style == "workflow":
+        points = [workflow_label(item) for item in _answer_points(text)]
+        points = [point for point in points if point]
+        if len(points) >= 2:
+            numbered = "\n".join(f"{index}. {item}" for index, item in enumerate(points, start=1))
+            return (
+                f"Tóm tắt:\n{text}\n\n"
+                f"Workflow:\n```mermaid\n{mermaid_flowchart(points)}\n```\n\n"
+                f"Các bước / Nội dung chính:\n{numbered}\n\n"
+                f"Nguồn:\n{source_text}"
+            )
     return f"Tóm tắt:\n{text}\n\nCác bước / Nội dung chính:\n{body}\n\nNguồn:\n{source_text}"
 
 
@@ -350,21 +564,50 @@ def _answer_points(text: str) -> list[str]:
     return parts[:6] or [text]
 
 
-def build_public_trace(result: dict[str, Any], citation_count: int, policy: dict[str, Any]) -> dict[str, Any]:
-    no_answer_reason = None
-    if citation_count == 0:
-        no_answer_reason = "no_public_citations"
-    if result.get("knowledge_gap_id") and not no_answer_reason:
-        no_answer_reason = "knowledge_gap_created"
+def public_answer_check(answer: str, citations: list[dict[str, Any]]) -> dict[str, Any]:
+    if not citations:
+        return {
+            "checked": False,
+            "passed": True,
+            "detail": "Chưa có nguồn phù hợp để đối chiếu, nên hệ thống không tạo câu trả lời có căn cứ.",
+        }
+    issues = []
+    if contains_raw_markup(answer):
+        issues.append("còn dữ liệu thô")
+    if not has_answer_headings(answer):
+        issues.append("thiếu cấu trúc Tóm tắt/Nguồn")
+    if not any(str(citation.get("doc_id") or "") in answer for citation in citations):
+        issues.append("chưa hiển thị mã nguồn")
+    if issues:
+        return {
+            "checked": True,
+            "passed": False,
+            "detail": "Cần kiểm tra lại: " + ", ".join(issues) + ".",
+        }
+    return {
+        "checked": True,
+        "passed": True,
+        "detail": "Đã kiểm tra câu trả lời sạch, có cấu trúc và khớp nguồn trích dẫn trước khi hiển thị.",
+    }
+
+
+def build_public_trace(
+    result: dict[str, Any],
+    citation_count: int,
+    policy: dict[str, Any],
+    answer_check: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     answer_source = str(result.get("answer_source") or "")
     if answer_source == "llm":
-        answer_detail = "Da tao cau tra loi bang LLM."
+        answer_detail = "Câu trả lời được tạo từ các nguồn đã chọn."
     elif answer_source == "fallback_clean_excerpt":
-        answer_detail = "Tam tra loi bang trich doan da lam sach vi LLM chua san sang."
+        answer_detail = "Câu trả lời được tạo từ trích đoạn tài liệu đã làm sạch."
+    elif answer_source == "clarification":
+        answer_detail = "Cần thêm mã hoặc tên tài liệu/quy trình để trả lời đúng nguồn."
     elif answer_source == "no_answer":
-        answer_detail = "Khong tim thay can cu trong tai lieu hien hanh."
+        answer_detail = "Không tìm thấy căn cứ trong tài liệu hiện hành."
     else:
-        answer_detail = "Cau tra loi duoc tao kem nguon neu co can cu."
+        answer_detail = "Câu trả lời được tạo kèm nguồn khi có căn cứ."
 
     steps = [
         {
@@ -377,7 +620,7 @@ def build_public_trace(result: dict[str, Any], citation_count: int, policy: dict
             "id": "search",
             "label": "Đang tìm trong tài liệu hiện hành...",
             "status": "done" if citation_count else "empty",
-            "detail": f"Tìm thấy {citation_count} nguồn tham chiếu.",
+            "detail": f"Tìm thấy {citation_count} nguồn tham chiếu." if answer_source != "clarification" else "Tạm dừng tìm kiếm cho đến khi có đủ ngữ cảnh.",
         },
         {
             "id": "select_sources",
@@ -386,8 +629,16 @@ def build_public_trace(result: dict[str, Any], citation_count: int, policy: dict
             "detail": "Nguồn được chọn từ tài liệu đang hiệu lực." if citation_count else "Chưa có nguồn phù hợp.",
         },
         {
+            "id": "verify_answer",
+            "label": "Đang kiểm tra câu trả lời với nguồn...",
+            "status": "done"
+            if (answer_check or {}).get("checked") and (answer_check or {}).get("passed")
+            else ("warning" if (answer_check or {}).get("checked") else "empty"),
+            "detail": str((answer_check or {}).get("detail") or "Kiểm tra nguồn sẽ chạy khi có trích dẫn phù hợp."),
+        },
+        {
             "id": "answer",
-            "label": "Đang tạo câu trả lời...",
+            "label": "Đang tạo câu trả lời..." if answer_source != "clarification" else "Đang hỏi thêm thông tin...",
             "status": "done" if result.get("answer") else "empty",
             "detail": "Câu trả lời được tạo kèm nguồn nếu có căn cứ.",
         },
@@ -396,17 +647,16 @@ def build_public_trace(result: dict[str, Any], citation_count: int, policy: dict
 
     return {
         "source_count": citation_count,
-        "no_answer_reason": no_answer_reason,
         "generated_at": utc_now(),
         "steps": steps,
     }
 
 
-def public_excerpt(value: object) -> str:
-    text = re.sub(r"\s+", " ", str(value or "")).strip()
-    if len(text) <= MAX_PUBLIC_EXCERPT_CHARS:
+def public_excerpt(value: object, max_chars: int = MAX_PUBLIC_EXCERPT_CHARS) -> str:
+    text = re.sub(r"\s+", " ", clean_retrieval_text(value)).strip()
+    if len(text) <= max_chars:
         return text
-    return text[:MAX_PUBLIC_EXCERPT_CHARS].rstrip() + "..."
+    return text[:max_chars].rstrip() + "..."
 
 
 def _load_json_with_workspace_override(root: Path, workspace_path: Path, package_path: Path) -> dict[str, Any]:

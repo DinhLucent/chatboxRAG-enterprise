@@ -20,11 +20,11 @@ from .data_maintenance import audit_manifest_taxonomy
 from .document_qa import mojibake_score
 from .evaluation import evaluate_case, load_cases, resolve_cases_path, summarize_results
 from .llm import OpenAICompatibleClient, OpenAICompatibleConfig
-from .manifest import ManifestStore, record_family_key
+from .manifest import ManifestStore, latest_active_records, record_family_key, record_latest_key
 from .rag_index import SearchHit
 from .pipeline import approve_record, init_workspace, process_sources
 from .readiness import deployment_readiness
-from .utils import utc_now, version_key, write_json
+from .utils import utc_now, write_json
 
 
 DEFAULT_QUALITY_CASES_PATH = Path("eval") / "quality_gate_cases.json"
@@ -499,18 +499,22 @@ def frontend_static_gate(root: Path) -> dict[str, Any]:
     index_path = static_root / "index.html"
     app_path = static_root / "app.js"
     styles_path = static_root / "styles.css"
+    user_chat_path = static_root / "user" / "user-chat.js"
+    user_chat_styles_path = static_root / "user" / "user-chat.css"
 
     try:
         html = index_path.read_text(encoding="utf-8")
         app_js = app_path.read_text(encoding="utf-8")
         styles = styles_path.read_text(encoding="utf-8")
+        user_chat_js = user_chat_path.read_text(encoding="utf-8")
+        user_chat_styles = user_chat_styles_path.read_text(encoding="utf-8")
     except Exception as exc:
         return check_result(
             "frontend_static",
             "fail",
             "blocker",
             "Frontend static files could not be read as UTF-8.",
-            "read poc_workflow/static/*.html,*.js,*.css",
+            "read poc_workflow/static/*.html,*.js,*.css and static/user assets",
             failed_cases=[str(exc)],
         )
 
@@ -547,6 +551,15 @@ def frontend_static_gate(root: Path) -> dict[str, Any]:
         if fragment not in app_js:
             failed_cases.append(f"Missing app.js fragment: {fragment} ({detail})")
 
+    required_user_chat_fragments = {
+        "function renderMermaidWorkflow": "user chat must convert workflow Mermaid into a readable visual sequence",
+        'lang === "mermaid"': "user chat must detect Mermaid code fences",
+        "formatInlineMarkdown": "user chat must preserve code fences before inline markdown formatting",
+    }
+    for fragment, detail in required_user_chat_fragments.items():
+        if fragment not in user_chat_js:
+            failed_cases.append(f"Missing user-chat.js fragment: {fragment} ({detail})")
+
     forbidden_active_patterns = (
         r"updateSelectedUploadStatus\(\s*['\"]active['\"]",
         r"updateUploadStatus\([^)]*['\"]active['\"]",
@@ -559,6 +572,11 @@ def frontend_static_gate(root: Path) -> dict[str, Any]:
     for fragment in required_css_fragments:
         if fragment not in styles:
             failed_cases.append(f"Missing responsive/layout CSS fragment: {fragment}")
+
+    required_user_css_fragments = (".markdown-code", ".workflow-diagram", ".workflow-node", ".workflow-source")
+    for fragment in required_user_css_fragments:
+        if fragment not in user_chat_styles:
+            failed_cases.append(f"Missing user chat answer CSS fragment: {fragment}")
 
     project_root = Path(__file__).resolve().parents[1]
     smoke_web_path = root / "scripts" / "smoke-web.ps1"
@@ -717,6 +735,10 @@ def retrieval_eval_gate(
             str(cases_path),
         )
     cases = load_cases(root, cases_path)
+    try:
+        ask(root, "warmup query", provider=provider, use_llm=False)
+    except Exception:
+        pass
     started = utc_now()
     results = [
         evaluate_case(root, case, provider, False, latency_target_ms, "quality-gate")
@@ -767,6 +789,10 @@ def workspace_eval_gate(root: Path, *, provider: str, latency_target_ms: int) ->
         )
     try:
         cases = load_cases(root, cases_path)
+        try:
+            ask(root, "warmup query", provider=provider, use_llm=False)
+        except Exception:
+            pass
         results = [
             evaluate_case(root, case, provider, False, latency_target_ms, "quality-gate-workspace")
             for case in cases
@@ -1038,7 +1064,11 @@ def data_audit_gate(root: Path, *, production: bool) -> dict[str, Any]:
     metrics["record_count"] = len(records)
     active_records = [record for record in records if record.status == "active"]
     pending_records = [record for record in records if record.status == "pending_review"]
+    served_latest_records = latest_active_records(records)
+    served_latest_keys = {record.key for record in served_latest_records}
+    served_latest_versions = {(record.doc_id, record.version) for record in served_latest_records}
     metrics["active_count"] = len(active_records)
+    metrics["served_latest_active_count"] = len(served_latest_records)
     metrics["pending_review_count"] = len(pending_records)
     if not records:
         warnings.append("manifest has no records")
@@ -1083,10 +1113,35 @@ def data_audit_gate(root: Path, *, production: bool) -> dict[str, Any]:
     for family, family_records in active_by_family.items():
         if len(family_records) <= 1:
             continue
-        latest = sorted(family_records, key=lambda record: version_key(record.version))[-1]
-        stale = [record.key for record in family_records if record.key != latest.key]
-        if stale:
-            blockers.append(f"{family} has stale active versions: {', '.join(stale)}")
+        latest_key = max(record_latest_key(record) for record in family_records)
+        older = [
+            record.key
+            for record in family_records
+            if record.key not in served_latest_keys and record_latest_key(record) < latest_key
+        ]
+        if older:
+            warnings.append(f"{family} has older active revisions excluded from served latest set: {', '.join(older)}")
+
+    active_index_path = root / "ragflow_index" / "technical_active.jsonl"
+    stale_index_records: set[str] = set()
+    if active_index_path.exists():
+        for line in active_index_path.read_text(encoding="utf-8", errors="replace").splitlines():
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                blockers.append("technical_active index contains invalid JSONL")
+                continue
+            doc_id = str(payload.get("doc_id") or "")
+            version = str(payload.get("version") or "")
+            if doc_id and version and (doc_id, version) not in served_latest_versions:
+                stale_index_records.add(f"{doc_id}_v{version}")
+    if stale_index_records:
+        blockers.append(
+            "technical_active index contains records outside active/latest set: "
+            + ", ".join(sorted(stale_index_records)[:20])
+        )
 
     taxonomy_report = audit_manifest_taxonomy(root, statuses={"active", "pending_review"}, write_report=True)
     taxonomy_issues = taxonomy_report.get("issues") or []

@@ -311,6 +311,184 @@ def test_rebuild_index_uses_only_latest_active_version(tmp_path: Path) -> None:
     assert {hit.version for hit in hits} == {"1.2"}
 
 
+def test_rebuild_index_uses_only_latest_business_revision_for_same_document_code(tmp_path: Path) -> None:
+    init_workspace(tmp_path)
+    old_md = tmp_path / "normalized" / "technical" / "procedure" / "KT-QT-OLD_v1.0.md"
+    new_md = tmp_path / "normalized" / "technical" / "procedure" / "KT-QT-NEW_v1.0.md"
+    old_md.parent.mkdir(parents=True, exist_ok=True)
+    old_md.write_text("# Quy trinh\n\nNoi dung Rev 03 khong duoc dung.", encoding="utf-8")
+    new_md.write_text("# Quy trinh\n\nNoi dung Rev 04 moi duoc dung.", encoding="utf-8")
+
+    ManifestStore(tmp_path).save(
+        [
+            ManifestRecord(
+                doc_id="KT-QT-OLD",
+                title="PD SALES A 106 Rev 03 Quy trình bán hàng",
+                department="technical",
+                category="procedure",
+                source_type="internal_procedure",
+                language="vi",
+                version="1.0",
+                status="active",
+                effective_from="2025-01-01",
+                owner="Phong Ky thuat",
+                access_group="technical",
+                source_path="/source/old.pdf",
+                normalized_path=str(old_md),
+                content_hash="old",
+            ),
+            ManifestRecord(
+                doc_id="KT-QT-NEW",
+                title="PD SALES A 106 Rev 04 Quy trình bán hàng",
+                department="technical",
+                category="procedure",
+                source_type="internal_procedure",
+                language="vi",
+                version="1.0",
+                status="active",
+                effective_from="2025-03-01",
+                owner="Phong Ky thuat",
+                access_group="technical",
+                source_path="/source/new.pdf",
+                normalized_path=str(new_md),
+                content_hash="new",
+            ),
+        ]
+    )
+
+    rebuild_indexes(tmp_path)
+
+    hits = LocalRagIndex(tmp_path).search("Noi dung")
+    assert hits
+    assert {hit.doc_id for hit in hits} == {"KT-QT-NEW"}
+    assert "Rev 03" not in (tmp_path / "ragflow_index" / "technical_active.jsonl").read_text(encoding="utf-8")
+
+
+def test_rebuild_index_uses_deterministic_latest_when_business_revision_ties(tmp_path: Path) -> None:
+    init_workspace(tmp_path)
+    old_md = tmp_path / "normalized" / "technical" / "procedure" / "KT-QT-022_v1.0.md"
+    new_md = tmp_path / "normalized" / "technical" / "procedure" / "KT-QT-215_v1.0.md"
+    old_md.parent.mkdir(parents=True, exist_ok=True)
+    old_md.write_text("# Kiem soat tai lieu\n\nNoi dung duplicate dau tien.", encoding="utf-8")
+    new_md.write_text("# Kiem soat tai lieu\n\nNoi dung duplicate duoc phuc vu.", encoding="utf-8")
+
+    common = {
+        "title": "PD IC A 001 Rev 10 Quy trinh kiem soat tai lieu, ho so",
+        "department": "technical",
+        "category": "procedure",
+        "source_type": "internal_procedure",
+        "language": "vi",
+        "version": "1.0",
+        "status": "active",
+        "effective_from": "2025-01-01",
+        "owner": "Phong Ky thuat",
+        "access_group": "technical",
+    }
+    ManifestStore(tmp_path).save(
+        [
+            ManifestRecord(
+                doc_id="KT-QT-022",
+                source_path="/source/KT-QT-022.pdf",
+                normalized_path=str(old_md),
+                content_hash="old",
+                **common,
+            ),
+            ManifestRecord(
+                doc_id="KT-QT-215",
+                source_path="/source/KT-QT-215.pdf",
+                normalized_path=str(new_md),
+                content_hash="new",
+                **common,
+            ),
+        ]
+    )
+    rebuild_indexes(tmp_path)
+
+    hits = LocalRagIndex(tmp_path).search("quy trinh kiem soat tai lieu", limit=3)
+
+    assert hits
+    assert {hit.doc_id for hit in hits} == {"KT-QT-215"}
+
+
+def test_incident_workflow_queries_keep_active_ticket_procedure_in_top_hits(tmp_path: Path) -> None:
+    init_workspace(tmp_path)
+    kt003_md = tmp_path / "normalized" / "technical" / "procedure" / "KT-QT-003_v1.0.md"
+    faq_md = tmp_path / "normalized" / "technical" / "faq" / "KT-FAQ-011_v1.0.md"
+    generic_md = tmp_path / "normalized" / "technical" / "procedure" / "KT-QT-028_v1.0.md"
+    kt003_md.parent.mkdir(parents=True, exist_ok=True)
+    faq_md.parent.mkdir(parents=True, exist_ok=True)
+    kt003_md.write_text(
+        "# Quy trinh xu ly su co ky thuat\n\n"
+        "Nhan vien Ky thuat tiep nhan thong tin su co tu nguoi dung hoac he thong giam sat, "
+        "ghi nhan ticket, phan loai muc do anh huong, cap nhat ket qua va dong ticket.",
+        encoding="utf-8",
+    )
+    faq_md.write_text(
+        "# Cau hoi ve tiep nhan su co\n\n"
+        "FAQ giai thich nhanh viec tiep nhan su co nhung khong thay the quy trinh xu ly su co ky thuat.",
+        encoding="utf-8",
+    )
+    generic_md.write_text(
+        "# Quy trinh tiep nhan thong tin\n\n"
+        "Tai lieu quy dinh kenh tiep nhan thong tin chung va phan hoi cho cac bo phan lien quan.",
+        encoding="utf-8",
+    )
+
+    common = {
+        "department": "technical",
+        "source_type": "internal_procedure",
+        "language": "vi",
+        "version": "1.0",
+        "status": "active",
+        "effective_from": "2025-01-01",
+        "owner": "Phong Ky thuat",
+        "access_group": "technical",
+    }
+    ManifestStore(tmp_path).save(
+        [
+            ManifestRecord(
+                doc_id="KT-QT-003",
+                title="Quy trinh xu ly su co ky thuat",
+                category="procedure",
+                source_path="/source/KT-QT-003.md",
+                normalized_path=str(kt003_md),
+                content_hash="kt003",
+                **common,
+            ),
+            ManifestRecord(
+                doc_id="KT-FAQ-011",
+                title="FAQ tiep nhan su co ky thuat",
+                category="faq",
+                source_path="/source/KT-FAQ-011.md",
+                normalized_path=str(faq_md),
+                content_hash="faq011",
+                **common,
+            ),
+            ManifestRecord(
+                doc_id="KT-QT-028",
+                title="Quy trinh tiep nhan thong tin",
+                category="procedure",
+                source_path="/source/KT-QT-028.md",
+                normalized_path=str(generic_md),
+                content_hash="kt028",
+                **common,
+            ),
+        ]
+    )
+    rebuild_indexes(tmp_path)
+
+    queries = [
+        "Tai lieu nao huong dan nhan vien phong Ky thuat tiep nhan su co?",
+        "Thoi gian bao loi co nam trong thong tin can ghi nhan khong?",
+        "Muc do uu tien duoc phan loai theo quy dinh cua bo phan nao?",
+    ]
+    for query in queries:
+        hits = LocalRagIndex(tmp_path).search(query, limit=3)
+        assert hits
+        assert "KT-QT-003" in {hit.doc_id for hit in hits}
+        assert hits[0].doc_id == "KT-QT-003"
+
+
 def test_process_sources_can_target_specific_source_paths(tmp_path: Path) -> None:
     init_workspace(tmp_path)
     write_source(

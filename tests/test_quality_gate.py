@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from poc_workflow.cli import main
+from poc_workflow.pipeline import rebuild_indexes
 from poc_workflow.quality_gate import (
     audit_tracked_runtime_paths,
     assert_path_within,
@@ -217,6 +218,62 @@ def test_data_audit_warns_on_suspicious_taxonomy(tmp_path: Path) -> None:
 
     assert result["status"] == "warn"
     assert any("title suggests procedure" in note for note in result["notes"])
+
+
+def test_data_audit_blocks_stale_served_index_not_manifest_duplicates(tmp_path: Path) -> None:
+    old_normalized = tmp_path / "normalized" / "technical" / "procedure" / "KT-QT-096_v1.0.md"
+    new_normalized = tmp_path / "normalized" / "technical" / "procedure" / "KT-QT-181_v1.0.md"
+    old_normalized.parent.mkdir(parents=True, exist_ok=True)
+    old_normalized.write_text("# Quy trinh ban hang\n\nNoi dung Rev 03 da co revision moi.", encoding="utf-8")
+    new_normalized.write_text("# Quy trinh ban hang\n\nNoi dung Rev 04 la revision moi nhat.", encoding="utf-8")
+    manifest = tmp_path / "manifest" / "records.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    common = {
+        "department": "technical",
+        "category": "procedure",
+        "source_type": "internal_procedure",
+        "language": "vi",
+        "version": "1.0",
+        "status": "active",
+        "effective_from": "2026-01-01",
+        "owner": "Phong Ky thuat",
+        "access_group": "technical",
+    }
+    manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "doc_id": "KT-QT-096",
+                    "title": "PD SALES A 106 Rev 03 Quy trinh ban hang",
+                    "source_path": str(tmp_path / "source" / "KT-QT-096.pdf"),
+                    "normalized_path": str(old_normalized),
+                    "content_hash": "old",
+                    **common,
+                },
+                {
+                    "doc_id": "KT-QT-181",
+                    "title": "PD SALES A 106 Rev 04 Quy trinh ban hang va xuat kho",
+                    "source_path": str(tmp_path / "source" / "KT-QT-181.pdf"),
+                    "normalized_path": str(new_normalized),
+                    "content_hash": "new",
+                    **common,
+                },
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    rebuild_indexes(tmp_path)
+
+    result = data_audit_gate(tmp_path, production=False)
+
+    active_index = (tmp_path / "ragflow_index" / "technical_active.jsonl").read_text(encoding="utf-8")
+    assert "KT-QT-181" in active_index
+    assert "KT-QT-096" not in active_index
+    assert result["status"] == "warn"
+    assert result["failed_cases"] == []
+    assert any("older active revisions excluded from served latest set" in note for note in result["notes"])
 
 
 def test_data_audit_promotes_taxonomy_issues_to_production_blockers(tmp_path: Path) -> None:

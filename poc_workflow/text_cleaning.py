@@ -35,6 +35,12 @@ LOW_VALUE_TERMS = (
     "loai tai lieu",
     "tinh trang",
     "ghi chu bieu mau",
+    "so do quy trinh",
+    "raci",
+    "tan suat",
+    "ket qua",
+    "trach nhiem thuc hien",
+    "trach nhiem phe duyet",
     "column 1",
     "column 2",
     "lich su chinh sua",
@@ -92,7 +98,8 @@ def clean_excerpt(value: object, max_chars: int = 720) -> str:
 
 
 def normalized_text(value: object) -> str:
-    text = unicodedata.normalize("NFD", str(value or ""))
+    text = str(value or "").replace("đ", "d").replace("Đ", "D")
+    text = unicodedata.normalize("NFD", text)
     text = "".join(char for char in text if unicodedata.category(char) != "Mn")
     return text.lower()
 
@@ -123,8 +130,16 @@ def retrieval_quality_adjustment(*, text: object, title: object = "", category: 
         adjustment += content_hits * 2
     low_hits = sum(1 for term in LOW_VALUE_TERMS if term in normalized_text(cleaned))
     adjustment -= low_hits
+    if "lich su chinh sua" in normalized_text(cleaned) or "so chinh sua" in normalized_text(cleaned):
+        adjustment -= 12
     if is_aggregate_document_list(cleaned, title):
         adjustment -= 30
+    if "ticket" in norm_query and "ticket" not in normalized:
+        adjustment -= 8
+    if "ky thuat" in norm_query and not any(term in normalized for term in ["ky thuat", "thiet bi", "khac phuc"]):
+        adjustment -= 6
+    if "su co" in norm_query and not any(term in normalized for term in ["su co", "khac phuc", "loi", "hong"]):
+        adjustment -= 12
     if contains_raw_markup(text):
         adjustment -= 2
     if is_low_value_retrieval_text(cleaned):

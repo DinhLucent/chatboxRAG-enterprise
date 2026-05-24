@@ -1,217 +1,738 @@
-const demoTokenInput = document.querySelector("#demoToken");
-const questionInput = document.querySelector("#question");
-const useLlmInput = document.querySelector("#useLlm");
-const askBtn = document.querySelector("#askBtn");
-const healthBtn = document.querySelector("#healthBtn");
-const answerBox = document.querySelector("#answerBox");
-const statusCard = document.querySelector("#statusCard");
-const statusTitle = document.querySelector("#statusTitle");
-const statusText = document.querySelector("#statusText");
-const metrics = document.querySelector("#metrics");
-const feedbackBox = document.querySelector("#feedbackBox");
+const state = {
+  bootstrap: null,
+  templateId: null,
+  templateLabel: null,
+  sessionId: getOrCreateStoredId("kbUserChatSessionId", "session"),
+  deviceId: getOrCreateStoredId("kbUserChatDeviceId", "device"),
+  lastResponse: null,
+  drawerHidden: isCompactLayout(),
+  heartbeatTimer: null,
+};
 
-let currentLogId = null;
-let currentServiceStatus = null;
+const qs = (selector) => document.querySelector(selector);
+const NO_SOURCE_TEXT = "Không tìm thấy căn cứ trong tài liệu hiện hành.";
+const LOADING_STEPS = [
+  "Đang hiểu câu hỏi...",
+  "Đang tìm trong tài liệu hiện hành...",
+  "Đang chọn nguồn phù hợp...",
+  "Đang tạo câu trả lời...",
+];
 
-demoTokenInput.value = localStorage.getItem("demoToken") || "";
+function isCompactLayout() {
+  return window.matchMedia?.("(max-width: 1040px)")?.matches ?? false;
+}
 
-function tokenHeaders() {
-  const token = demoTokenInput.value.trim();
-  if (token) {
-    localStorage.setItem("demoToken", token);
+function createId(prefix) {
+  if (window.crypto?.randomUUID) {
+    return `${prefix}-${window.crypto.randomUUID()}`;
   }
-  return token ? { "X-Demo-Token": token } : {};
+  return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function statusClass(state) {
-  if (state === "ok") return "ok";
-  if (["maintenance", "incident", "offline", "unavailable"].includes(state)) return "bad";
-  if (["degraded", "limited", "not_ready", "unknown"].includes(state)) return "warn";
-  return "";
+function getOrCreateStoredId(key, prefix) {
+  const current = localStorage.getItem(key);
+  if (current) return current;
+  const value = createId(prefix);
+  localStorage.setItem(key, value);
+  return value;
 }
 
-function setStatus(type, title, text) {
-  statusCard.className = `status ${type || ""}`.trim();
-  statusTitle.textContent = title;
-  statusText.textContent = text;
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }
 
-function setServiceStatus(serviceStatus) {
-  currentServiceStatus = serviceStatus;
-  setStatus(
-    statusClass(serviceStatus?.state),
-    serviceStatus?.title || "Chua xac dinh trang thai",
-    serviceStatus?.message || "Chua nhan duoc trang thai he thong.",
+function parseMarkdown(text) {
+  if (!text) return "";
+  
+  const html = escapeHtml(text);
+  const lines = html.split("\n");
+  const result = [];
+  let inUl = false;
+  let inOl = false;
+  let inCode = false;
+  let codeLang = "";
+  let codeLines = [];
+  
+  for (let line of lines) {
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith("```")) {
+      if (inCode) {
+        result.push(renderCodeBlock(codeLang, codeLines.join("\n")));
+        inCode = false;
+        codeLang = "";
+        codeLines = [];
+      } else {
+        if (inUl) {
+          result.push("</ul>");
+          inUl = false;
+        }
+        if (inOl) {
+          result.push("</ol>");
+          inOl = false;
+        }
+        inCode = true;
+        codeLang = trimmed.slice(3).trim().toLowerCase();
+        codeLines = [];
+      }
+      continue;
+    }
+
+    if (inCode) {
+      codeLines.push(line);
+      continue;
+    }
+    
+    if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+      if (inOl) {
+        result.push("</ol>");
+        inOl = false;
+      }
+      if (!inUl) {
+        result.push('<ul class="markdown-ul">');
+        inUl = true;
+      }
+      const content = trimmed.substring(2);
+      result.push(`<li>${formatInlineMarkdown(content)}</li>`);
+      continue;
+    }
+    
+    const olMatch = trimmed.match(/^(\d+)\.\s+(.*)/);
+    if (olMatch) {
+      if (inUl) {
+        result.push("</ul>");
+        inUl = false;
+      }
+      if (!inOl) {
+        result.push('<ol class="markdown-ol">');
+        inOl = true;
+      }
+      const content = olMatch[2];
+      result.push(`<li>${formatInlineMarkdown(content)}</li>`);
+      continue;
+    }
+    
+    if (inUl) {
+      result.push("</ul>");
+      inUl = false;
+    }
+    if (inOl) {
+      result.push("</ol>");
+      inOl = false;
+    }
+    
+    if (trimmed.startsWith("### ")) {
+      result.push(`<h3>${formatInlineMarkdown(trimmed.substring(4))}</h3>`);
+    } else if (trimmed.startsWith("## ")) {
+      result.push(`<h2>${formatInlineMarkdown(trimmed.substring(3))}</h2>`);
+    } else if (trimmed.startsWith("# ")) {
+      result.push(`<h1>${formatInlineMarkdown(trimmed.substring(2))}</h1>`);
+    } else if (trimmed === "") {
+      result.push('<p class="markdown-empty-line"></p>');
+    } else {
+      result.push(`<p class="markdown-para">${formatInlineMarkdown(line)}</p>`);
+    }
+  }
+  
+  if (inUl) result.push("</ul>");
+  if (inOl) result.push("</ol>");
+  if (inCode) result.push(renderCodeBlock(codeLang, codeLines.join("\n")));
+  
+  return result.join("\n");
+}
+
+function formatInlineMarkdown(value) {
+  let html = String(value ?? "");
+  html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/\*(.*?)\*/g, "<em>$1</em>");
+  html = html.replace(/`(.*?)`/g, "<code>$1</code>");
+  html = html.replace(
+    /\[(.*?)\]\(((?:https?:\/\/|\/)[^\s)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
   );
-  askBtn.disabled = serviceStatus?.can_chat === false;
+  return html;
+}
+
+function renderCodeBlock(lang, code) {
+  if (lang === "mermaid") {
+    return renderMermaidWorkflow(code);
+  }
+  return `<pre class="markdown-code"><code>${code}</code></pre>`;
+}
+
+function renderMermaidWorkflow(code) {
+  const labels = [];
+  const seen = new Set();
+  const nodePattern = /([A-Za-z][A-Za-z0-9_-]*)\[(?:(?:"|&quot;)(.*?)(?:"|&quot;)|([^\]]+))\]/g;
+  for (const line of code.split("\n")) {
+    for (const match of line.matchAll(nodePattern)) {
+      if (seen.has(match[1])) continue;
+      seen.add(match[1]);
+      const label = (match[2] || match[3] || "").trim();
+      if (label) labels.push(label);
+    }
+  }
+  if (!labels.length) {
+    return `<pre class="markdown-code"><code>${code}</code></pre>`;
+  }
+  return `
+    <div class="workflow-diagram">
+      <div class="workflow-nodes">
+        ${labels
+          .map(
+            (label, index) => `
+              <div class="workflow-node">
+                <span>${index + 1}</span>
+                <p>${label}</p>
+              </div>
+              ${index < labels.length - 1 ? '<div class="workflow-arrow" aria-hidden="true">&darr;</div>' : ""}
+            `,
+          )
+          .join("")}
+      </div>
+      <details class="workflow-source">
+        <summary>Mermaid</summary>
+        <pre class="markdown-code"><code>${code}</code></pre>
+      </details>
+    </div>
+  `;
+}
+
+function toast(message) {
+  const target = qs("#toast");
+  target.textContent = message;
+  target.classList.add("show");
+  window.setTimeout(() => target.classList.remove("show"), 2800);
+}
+
+function handleSpotlightMove(e) {
+  const card = e.currentTarget;
+  const rect = card.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  card.style.setProperty("--mouse-x", `${x}px`);
+  card.style.setProperty("--mouse-y", `${y}px`);
+}
+
+function wireSpotlight(selector) {
+  document.querySelectorAll(selector).forEach((card) => {
+    card.removeEventListener("mousemove", handleSpotlightMove);
+    card.addEventListener("mousemove", handleSpotlightMove);
+  });
+}
+
+function autoGrowTextarea() {
+  const textarea = qs("#queryInput");
+  if (!textarea) return;
+  textarea.style.height = "auto";
+  textarea.style.height = textarea.scrollHeight + "px";
 }
 
 async function api(path, options = {}) {
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  const token = qs("#demoToken")?.value.trim();
+  if (token) {
+    headers["X-Demo-Token"] = token;
+    localStorage.setItem("demoToken", token);
+  }
   const response = await fetch(path, {
     ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...tokenHeaders(),
-      ...(options.headers || {}),
-    },
+    headers,
   });
-  const payload = await response.json().catch(() => ({}));
+  const text = await response.text();
+  const payload = text ? JSON.parse(text) : null;
   if (!response.ok) {
-    const message = payload.message || payload.detail || payload.error || `HTTP ${response.status}`;
-    const error = new Error(message);
-    error.payload = payload;
-    error.status = response.status;
-    throw error;
+    throw new Error(payload?.detail || payload?.error || payload?.message || response.statusText);
   }
   return payload;
 }
 
-function renderSources(citations) {
-  if (!citations || citations.length === 0) {
-    return "";
-  }
-  const items = citations
-    .map((source) => {
-      const title = source.title || source.doc_id || "Tai lieu";
-      const version = source.version ? `v${source.version}` : "";
-      const category = source.category || "";
-      return `
-        <div class="source">
-          <strong>${escapeHtml(title)} ${escapeHtml(version)}</strong>
-          <span>${escapeHtml(source.doc_id || "")} ${category ? "- " + escapeHtml(category) : ""}</span>
-        </div>
-      `;
-    })
+function statusClass(serviceStatus) {
+  if (serviceStatus?.state === "ok") return "ok";
+  if (["maintenance", "incident", "offline", "unavailable"].includes(serviceStatus?.state)) return "bad";
+  return "";
+}
+
+function applyStatus(serviceStatus) {
+  const railStatus = qs("#railStatus");
+  railStatus.className = `rail-status ${statusClass(serviceStatus)}`.trim();
+  qs("#statusText").textContent = serviceStatus?.can_chat === false ? "Tạm dừng" : "Sẵn sàng";
+}
+
+function renderBootstrap() {
+  qs("#assistantLine").textContent = "Trợ lý đang dùng: Tài liệu phòng Kỹ thuật | Quy tắc: Trả lời có nguồn";
+  renderAnswerStyles();
+  renderTemplates();
+  renderWelcomeCards();
+  applyStatus(state.bootstrap?.service_status);
+  switchDrawerTab("sources");
+}
+
+function renderAnswerStyles() {
+  const styles = state.bootstrap?.answer_styles || [
+    { id: "brief", label: "Ngắn gọn" },
+    { id: "steps", label: "Từng bước" },
+    { id: "checklist", label: "Checklist" },
+    { id: "workflow", label: "Workflow" },
+  ];
+  qs("#answerStyle").innerHTML = styles
+    .map((style) => `<option value="${escapeHtml(style.id)}">${escapeHtml(style.label)}</option>`)
     .join("");
-  return `<div class="source-list">${items}</div>`;
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+function renderWelcomeCards() {
+  const cards = state.bootstrap?.welcome_cards || [];
+  qs("#welcomeCards").innerHTML = cards
+    .map(
+      (card) => `
+        <button
+          class="welcome-card"
+          type="button"
+          data-template-id="${escapeHtml(card.template_id)}"
+          data-question="${escapeHtml(card.question)}"
+          data-label="${escapeHtml(card.label)}"
+          data-answer-style="${escapeHtml(card.answer_style || "brief")}"
+        >
+          <span>${escapeHtml(card.label)}</span>
+          <small>${escapeHtml(card.question)}</small>
+        </button>
+      `,
+    )
+    .join("");
+  document.querySelectorAll(".welcome-card").forEach((button) => {
+    button.addEventListener("click", () => selectPrompt(button));
+  });
+  wireSpotlight(".welcome-card");
 }
 
-function renderMetrics(health) {
-  const aiLabel = health.llm_configured ? "AI san sang" : "Tra cuu co ban";
-  const evalLabel = health.latest_evaluation_pass
-    ? `${health.passed_cases || "-"} / ${health.total_cases || "-"} pass`
-    : "Chua pass";
-  metrics.innerHTML = `
-    <div><strong>${escapeHtml(health.active_documents ?? "-")}</strong><span>Tai lieu active</span></div>
-    <div><strong>${escapeHtml(health.open_incidents ?? 0)}</strong><span>Su co dang mo</span></div>
-    <div><strong>${escapeHtml(aiLabel)}</strong><span>Trang thai AI</span></div>
-    <div><strong>${escapeHtml(evalLabel)}</strong><span>Loop-check</span></div>
-  `;
-}
-
-function renderUnavailable(serviceStatus, message) {
-  const title = serviceStatus?.title || "He thong tam thoi khong san sang";
-  const text = serviceStatus?.message || message || "Vui long thu lai sau hoac bao ky thuat.";
-  answerBox.innerHTML = `
-    <div class="notice">
-      <strong>${escapeHtml(title)}</strong>
-      <span>${escapeHtml(text)}</span>
-    </div>
-  `;
-  setServiceStatus({
-    state: serviceStatus?.state || "unavailable",
-    can_chat: false,
-    title,
-    message: text,
+function renderTemplates() {
+  const groups = state.bootstrap?.templates?.groups || [];
+  const target = qs("#templateGroups");
+  target.innerHTML = groups
+    .flatMap((group) =>
+      (group.templates || []).map(
+        (template) => `
+          <button
+            class="template-chip"
+            type="button"
+            data-template-id="${escapeHtml(template.id)}"
+            data-question="${escapeHtml(template.question)}"
+            data-label="${escapeHtml(group.label)}"
+          >
+            ${escapeHtml(group.label)}
+          </button>
+        `,
+      ),
+    )
+    .join("");
+  document.querySelectorAll(".template-chip").forEach((button) => {
+    button.addEventListener("click", () => selectPrompt(button));
   });
 }
 
-async function checkHealth() {
-  healthBtn.disabled = true;
-  setStatus("", "Dang kiem tra", "Dang ket noi he thong xu ly noi bo...");
-  try {
-    const health = await api("/api/health");
-    renderMetrics(health);
-    setServiceStatus(health.service_status);
-  } catch (error) {
-    metrics.innerHTML = `
-      <div><strong>-</strong><span>Tai lieu active</span></div>
-      <div><strong>Mat ket noi</strong><span>May xu ly noi bo</span></div>
-    `;
-    renderUnavailable(error.payload?.service_status, error.message);
-  } finally {
-    healthBtn.disabled = false;
+function selectPrompt(button) {
+  state.templateId = button.dataset.templateId || null;
+  state.templateLabel = button.dataset.label || null;
+  qs("#queryInput").value = button.dataset.question || "";
+  autoGrowTextarea();
+  if (button.dataset.answerStyle) {
+    qs("#answerStyle").value = button.dataset.answerStyle;
   }
+  qs("#selectedTemplate").textContent = state.templateLabel || "Không dùng mẫu";
+  document.querySelectorAll(".template-chip").forEach((item) => {
+    item.classList.toggle("active", item.dataset.templateId === state.templateId);
+  });
+  qs("#queryInput").focus();
 }
 
-async function askQuestion() {
-  const query = questionInput.value.trim();
+function appendMessage(role, html, actions = "") {
+  const target = qs("#messages");
+  qs("#welcomeState")?.remove();
+  const article = document.createElement("article");
+  article.className = `message ${role}`;
+  article.innerHTML = `<div class="message-body">${html}</div>${actions}`;
+  target.appendChild(article);
+  target.scrollTop = target.scrollHeight;
+  return article;
+}
+
+function renderFeedbackActions(logId) {
+  if (!logId) return "";
+  const options = [
+    ["correct", "Đúng"],
+    ["wrong", "Sai"],
+    ["missing_source", "Thiếu nguồn"],
+  ];
+  return `
+    <div class="message-actions" data-log-id="${escapeHtml(logId)}">
+      <button class="copy-button" type="button" title="Sao chép câu trả lời">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+        </svg>
+        <span>Sao chép</span>
+      </button>
+      ${options
+        .map(([value, label]) => `<button class="feedback-button" type="button" data-feedback="${value}">${label}</button>`)
+        .join("")}
+    </div>
+  `;
+}
+
+function wireFeedback(container = document) {
+  container.querySelectorAll(".copy-button").forEach((button) => {
+    button.addEventListener("click", () => {
+      const messageBody = button.closest(".message")?.querySelector(".message-body");
+      if (messageBody) {
+        const textToCopy = messageBody.innerText.trim();
+        navigator.clipboard.writeText(textToCopy)
+          .then(() => toast("Đã sao chép vào bộ nhớ tạm"))
+          .catch((err) => toast("Lỗi khi sao chép: " + err));
+      }
+    });
+  });
+
+  container.querySelectorAll(".feedback-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const logId = Number(button.closest(".message-actions")?.dataset.logId || 0);
+      if (!logId) return;
+      try {
+        await api("/api/feedback", {
+          method: "POST",
+          body: JSON.stringify({
+            query_log_id: logId,
+            feedback: button.dataset.feedback,
+            session_id: state.sessionId,
+          }),
+        });
+        toast("Đã ghi nhận phản hồi");
+      } catch (error) {
+        toast(error.message);
+      }
+    });
+  });
+}
+
+async function submitChat(event) {
+  event.preventDefault();
+  const query = qs("#queryInput").value.trim();
   if (!query) {
-    questionInput.focus();
+    qs("#queryInput").focus();
     return;
   }
-  if (currentServiceStatus?.can_chat === false) {
-    renderUnavailable(currentServiceStatus);
-    return;
+
+  qs("#sendBtn").disabled = true;
+  appendMessage("user", escapeHtml(query));
+  const pending = appendMessage("assistant", renderLoadingMessage());
+  if (!isCompactLayout()) {
+    ensureDrawerVisible();
   }
-  askBtn.disabled = true;
-  feedbackBox.hidden = true;
-  currentLogId = null;
-  answerBox.innerHTML = `<span class="muted">Dang tra cuu tai lieu va tao cau tra loi...</span>`;
+  switchDrawerTab("trace");
+  renderTrace(LOADING_STEPS.map((label) => ({ label, status: "empty", detail: "" })));
+
   try {
     const result = await api("/api/chat", {
       method: "POST",
       body: JSON.stringify({
         query,
-        use_llm: useLlmInput.checked,
+        template_id: state.templateId,
+        answer_style: qs("#answerStyle").value,
+        session_id: state.sessionId,
+        device_id: state.deviceId,
+        use_llm: true,
       }),
     });
-    currentLogId = result.query_log_id;
-    answerBox.innerHTML = `
-      <div>${escapeHtml(result.answer || "Khong co cau tra loi.")}</div>
-      ${renderSources(result.citations)}
-    `;
-    feedbackBox.hidden = !currentLogId;
-    setStatus("ok", "Da tra loi", `Thoi gian xu ly: ${result.latency_ms ?? "-"} ms`);
-  } catch (error) {
-    renderUnavailable(error.payload?.service_status, error.message);
-  } finally {
-    if (currentServiceStatus?.can_chat !== false) {
-      askBtn.disabled = false;
+    state.lastResponse = result;
+    if (result.session?.session_id || result.session_id) {
+      state.sessionId = result.session?.session_id || result.session_id;
+      localStorage.setItem("kbUserChatSessionId", state.sessionId);
     }
+    pending.querySelector(".message-body").innerHTML = parseMarkdown(result.answer || NO_SOURCE_TEXT);
+    pending.insertAdjacentHTML("beforeend", renderFeedbackActions(result.query_log_id || result.log_id));
+    wireFeedback(pending);
+    renderSources(result.citations || []);
+    renderTrace(result.trace_steps || result.trace?.steps || []);
+    switchDrawerTab("sources");
+    qs("#drawerMeta").textContent = `${result.citations?.length || 0} nguồn`;
+    qs("#queryInput").value = "";
+    autoGrowTextarea();
+    checkHealth();
+  } catch (error) {
+    pending.querySelector(".message-body").textContent = error.message || "Hệ thống chưa sẵn sàng.";
+    toast(error.message);
+  } finally {
+    qs("#sendBtn").disabled = false;
   }
 }
 
-async function sendFeedback(feedback) {
-  if (!currentLogId) {
+function renderLoadingMessage() {
+  return `
+    <div class="loading-list">
+      ${LOADING_STEPS.map((step) => `
+        <div class="loading-step">
+          <span class="loading-step-dot"></span>
+          <span>${escapeHtml(step)}</span>
+        </div>
+      `).join("")}
+    </div>
+  `;
+}
+
+function renderSources(citations) {
+  const target = qs("#sourcesPanel");
+  if (!citations.length) {
+    target.innerHTML = `
+      <div class="empty-state">
+        Chưa có nguồn tham chiếu. Khi bạn đặt câu hỏi, tài liệu được dùng để trả lời sẽ hiển thị tại đây.
+      </div>
+    `;
     return;
   }
+  target.innerHTML = citations
+    .map(
+      (citation, index) => `
+        <article class="source-card">
+          <div class="source-title">${index + 1}. ${escapeHtml(citation.title || citation.doc_id || "Nguồn")}</div>
+          <div class="source-meta">
+            ${escapeHtml(citation.display_code || citation.doc_id || "-")} | v${escapeHtml(citation.version || "-")}
+            ${citation.display_code && citation.doc_id ? ` | ${escapeHtml(citation.doc_id)}` : ""}
+          </div>
+          <div class="source-excerpt">${escapeHtml(citation.excerpt || "Không có đoạn trích công khai.")}</div>
+        </article>
+      `,
+    )
+    .join("");
+  wireSpotlight(".source-card");
+}
+
+function renderTrace(steps) {
+  const target = qs("#tracePanel");
+  const rows = Array.isArray(steps) ? steps : [];
+  if (!rows.length) {
+    target.innerHTML = `<div class="empty-state">Chưa có quá trình xử lý.</div>`;
+    return;
+  }
+  target.innerHTML = rows
+    .map(
+      (step) => `
+        <article class="trace-step">
+          <span class="trace-dot ${escapeHtml(step.status || "")}"></span>
+          <div class="trace-card">
+            <div class="source-title">${escapeHtml(step.label || "Bước xử lý")}</div>
+            ${step.detail ? `<div class="trace-meta">${escapeHtml(step.detail)}</div>` : ""}
+          </div>
+        </article>
+      `,
+    )
+    .join("");
+  wireSpotlight(".trace-card");
+}
+
+function switchDrawerTab(tabName) {
+  document.querySelectorAll(".drawer-tab").forEach((tab) => {
+    tab.classList.toggle("active", tab.dataset.tab === tabName);
+  });
+  document.querySelectorAll(".drawer-panel").forEach((panel) => panel.classList.remove("active"));
+  
+  const panelId = tabName === "status" ? "statusPanel" : `${tabName}Panel`;
+  qs(`#${panelId}`)?.classList.add("active");
+}
+
+function syncDrawer() {
+  const drawer = qs("#sourceDrawer");
+  qs(".user-shell").classList.toggle("drawer-hidden", state.drawerHidden);
+  drawer.classList.toggle("hidden", state.drawerHidden);
+}
+
+function ensureDrawerVisible() {
+  state.drawerHidden = false;
+  syncDrawer();
+}
+
+function resetChat() {
+  state.sessionId = createId("session");
+  localStorage.setItem("kbUserChatSessionId", state.sessionId);
+  state.templateId = null;
+  state.templateLabel = null;
+  state.lastResponse = null;
+  qs("#queryInput").value = "";
+  autoGrowTextarea();
+  qs("#selectedTemplate").textContent = "Không dùng mẫu";
+  document.querySelectorAll(".template-chip").forEach((item) => item.classList.remove("active"));
+  qs("#messages").innerHTML = `
+    <div id="welcomeState" class="welcome-state">
+      <div class="welcome-hero">
+        <div class="welcome-badge">Hệ thống RAG phòng Kỹ thuật</div>
+        <p class="welcome-eyebrow">Tôi có thể giúp gì cho bạn hôm nay?</p>
+        <p class="welcome-sub">Tìm kiếm nhanh chóng, trích dẫn chính xác từ kho tài liệu và quy trình phòng Kỹ thuật.</p>
+      </div>
+      <div id="welcomeCards" class="welcome-cards" aria-label="Gợi ý bắt đầu"></div>
+    </div>
+  `;
+  renderWelcomeCards();
+  qs("#drawerMeta").textContent = "Chưa có câu trả lời";
+  renderSources([]);
+  renderTrace([]);
+  switchDrawerTab("sources");
+  sendHeartbeat().catch(() => {});
+}
+
+async function sendHeartbeat() {
+  const token = qs("#demoToken")?.value.trim();
+  if (!token) return;
+  const result = await api("/api/heartbeat", {
+    method: "POST",
+    body: JSON.stringify({
+      session_id: state.sessionId,
+      device_id: state.deviceId,
+    }),
+  });
+  if (result.session_id && result.session_id !== state.sessionId) {
+    state.sessionId = result.session_id;
+    localStorage.setItem("kbUserChatSessionId", state.sessionId);
+  }
+  return result;
+}
+
+function startHeartbeat() {
+  if (state.heartbeatTimer) {
+    window.clearInterval(state.heartbeatTimer);
+  }
+  sendHeartbeat().catch(() => {});
+  state.heartbeatTimer = window.setInterval(() => {
+    sendHeartbeat().catch(() => {});
+  }, 30000);
+  window.addEventListener("beforeunload", () => {
+    const payload = JSON.stringify({ session_id: state.sessionId, device_id: state.deviceId });
+    const headers = {};
+    const token = qs("#demoToken")?.value.trim();
+    if (token) {
+      headers["X-Demo-Token"] = token;
+    }
+    navigator.sendBeacon?.("/api/heartbeat", new Blob([payload], { type: "application/json" }));
+  });
+}
+
+async function checkHealth() {
+  const statusCard = qs("#vercelStatusCard");
+  const statusTitle = qs("#statusTitle");
+  const statusDesc = qs("#statusDesc");
+  const token = qs("#demoToken")?.value.trim();
+  
+  if (!token) {
+    if (statusTitle) statusTitle.textContent = "Chưa kiểm tra";
+    if (statusDesc) statusDesc.textContent = "Nhập mã demo để tải trạng thái hệ thống.";
+    return;
+  }
+
+  if (statusTitle) statusTitle.textContent = "Đang kiểm tra...";
+  if (statusDesc) statusDesc.textContent = "Đang kết nối hệ thống xử lý nội bộ...";
+
   try {
-    await api("/api/feedback", {
-      method: "POST",
-      body: JSON.stringify({
-        query_log_id: currentLogId,
-        feedback,
-      }),
-    });
-    setStatus("ok", "Da ghi nhan phan hoi", "Phan hoi se duoc dung de cai thien kho tri thuc.");
+    const health = await api("/api/health");
+    if (qs("#metricDocs")) qs("#metricDocs").textContent = health.active_documents ?? "-";
+    if (qs("#metricConnection")) qs("#metricConnection").textContent = health.service_status?.state === "ok" ? "OK" : "Lỗi";
+    if (qs("#metricLlm")) qs("#metricLlm").textContent = health.llm_configured ? "Sẵn sàng" : "Chưa cấu hình";
+    if (qs("#metricLoop")) {
+      qs("#metricLoop").textContent = health.latest_evaluation_pass
+        ? `${health.passed_cases}/${health.total_cases} OK`
+        : "Chưa pass";
+    }
+
+    if (statusCard) {
+      statusCard.className = `vercel-status-card ${statusClass(health.service_status)}`;
+    }
+    if (statusTitle) statusTitle.textContent = health.service_status?.title || "Sẵn sàng";
+    if (statusDesc) statusDesc.textContent = health.service_status?.message || "Hệ thống đang hoạt động bình thường.";
+
+    applyStatus(health.service_status);
   } catch (error) {
-    setStatus("bad", "Khong ghi duoc phan hoi", error.message);
+    if (qs("#metricDocs")) qs("#metricDocs").textContent = "-";
+    if (qs("#metricConnection")) qs("#metricConnection").textContent = "Mất kết nối";
+    if (qs("#metricLlm")) qs("#metricLlm").textContent = "-";
+    if (qs("#metricLoop")) qs("#metricLoop").textContent = "-";
+    
+    if (statusCard) statusCard.className = "vercel-status-card bad";
+    if (statusTitle) statusTitle.textContent = "Mất kết nối";
+    if (statusDesc) statusDesc.textContent = error.message || "Không thể kết nối máy chủ nội bộ.";
+    
+    applyStatus({ state: "offline", can_chat: false });
   }
 }
 
-askBtn.addEventListener("click", askQuestion);
-healthBtn.addEventListener("click", checkHealth);
-feedbackBox.addEventListener("click", (event) => {
-  const feedback = event.target?.dataset?.feedback;
-  if (feedback) {
-    sendFeedback(feedback);
-  }
-});
-questionInput.addEventListener("keydown", (event) => {
-  if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
-    askQuestion();
-  }
-});
+async function init() {
+  window.addEventListener("mousemove", (e) => {
+    document.body.style.setProperty("--global-mouse-x", `${e.clientX}px`);
+    document.body.style.setProperty("--global-mouse-y", `${e.clientY}px`);
+  });
 
-if (demoTokenInput.value) {
-  checkHealth();
+  qs("#chatForm").addEventListener("submit", submitChat);
+  qs("#newChatBtn").addEventListener("click", resetChat);
+  qs("#toggleDrawerBtn").addEventListener("click", () => {
+    state.drawerHidden = !state.drawerHidden;
+    syncDrawer();
+  });
+  qs("#closeDrawerBtn").addEventListener("click", () => {
+    state.drawerHidden = true;
+    syncDrawer();
+  });
+  document.querySelectorAll(".drawer-tab").forEach((button) => {
+    button.addEventListener("click", () => switchDrawerTab(button.dataset.tab));
+  });
+  
+  const queryInput = qs("#queryInput");
+  queryInput.addEventListener("input", autoGrowTextarea);
+  queryInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      qs("#chatForm").requestSubmit();
+    }
+  });
+
+  qs("#demoToken").addEventListener("change", () => {
+    const token = qs("#demoToken").value.trim();
+    if (token) {
+      localStorage.setItem("demoToken", token);
+      checkHealth().then(() => {
+        api("/api/bootstrap").then((bootstrap) => {
+          state.bootstrap = bootstrap;
+          renderBootstrap();
+          startHeartbeat();
+        }).catch((err) => {
+          toast(err.message || "Không tải được dữ liệu khởi tạo.");
+        });
+      });
+    }
+  });
+
+  const storedToken = localStorage.getItem("demoToken") || "";
+  qs("#demoToken").value = storedToken;
+
+  renderSources([]);
+  renderTrace([]);
+  
+  if (storedToken) {
+    try {
+      state.bootstrap = await api("/api/bootstrap");
+      renderBootstrap();
+      startHeartbeat();
+      checkHealth();
+    } catch (error) {
+      qs("#statusText").textContent = "Chưa kết nối";
+      qs("#railStatus").className = "rail-status bad";
+      toast(error.message || "Vui lòng kiểm tra mã truy cập demo.");
+    }
+  } else {
+    qs("#statusText").textContent = "Nhập mã";
+    qs("#railStatus").className = "rail-status bad";
+    switchDrawerTab("status");
+    ensureDrawerVisible();
+  }
+  syncDrawer();
 }
+
+init();

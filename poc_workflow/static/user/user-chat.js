@@ -49,27 +49,44 @@ function parseMarkdown(text) {
   if (!text) return "";
   
   // First escape HTML to prevent XSS
-  let html = escapeHtml(text);
-  
-  // Handle bold: **text** -> <strong>text</strong>
-  html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
-  
-  // Handle italic: *text* -> <em>$1</em>
-  html = html.replace(/\*(.*?)\*/g, "<em>$1</em>");
-  
-  // Handle inline code: `code` -> <code>code</code>
-  html = html.replace(/`(.*?)`/g, "<code>$1</code>");
-  
-  // Handle links: [text](url) -> <a href="url" target="_blank" rel="noopener noreferrer">text</a>
-  html = html.replace(/\[(.*?)\]\((.*?)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
-  
+  const html = escapeHtml(text);
   const lines = html.split("\n");
   const result = [];
   let inUl = false;
   let inOl = false;
+  let inCode = false;
+  let codeLang = "";
+  let codeLines = [];
   
   for (let line of lines) {
     const trimmed = line.trim();
+
+    if (trimmed.startsWith("```")) {
+      if (inCode) {
+        result.push(renderCodeBlock(codeLang, codeLines.join("\n")));
+        inCode = false;
+        codeLang = "";
+        codeLines = [];
+      } else {
+        if (inUl) {
+          result.push("</ul>");
+          inUl = false;
+        }
+        if (inOl) {
+          result.push("</ol>");
+          inOl = false;
+        }
+        inCode = true;
+        codeLang = trimmed.slice(3).trim().toLowerCase();
+        codeLines = [];
+      }
+      continue;
+    }
+
+    if (inCode) {
+      codeLines.push(line);
+      continue;
+    }
     
     // Unordered lists: starts with "- " or "* "
     if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
@@ -82,7 +99,7 @@ function parseMarkdown(text) {
         inUl = true;
       }
       const content = trimmed.substring(2);
-      result.push(`<li>${content}</li>`);
+      result.push(`<li>${formatInlineMarkdown(content)}</li>`);
       continue;
     }
     
@@ -98,7 +115,7 @@ function parseMarkdown(text) {
         inOl = true;
       }
       const content = olMatch[2];
-      result.push(`<li>${content}</li>`);
+      result.push(`<li>${formatInlineMarkdown(content)}</li>`);
       continue;
     }
     
@@ -114,22 +131,80 @@ function parseMarkdown(text) {
     
     // Headings
     if (trimmed.startsWith("### ")) {
-      result.push(`<h3>${trimmed.substring(4)}</h3>`);
+      result.push(`<h3>${formatInlineMarkdown(trimmed.substring(4))}</h3>`);
     } else if (trimmed.startsWith("## ")) {
-      result.push(`<h2>${trimmed.substring(3)}</h2>`);
+      result.push(`<h2>${formatInlineMarkdown(trimmed.substring(3))}</h2>`);
     } else if (trimmed.startsWith("# ")) {
-      result.push(`<h1>${trimmed.substring(2)}</h1>`);
+      result.push(`<h1>${formatInlineMarkdown(trimmed.substring(2))}</h1>`);
     } else if (trimmed === "") {
       result.push('<p class="markdown-empty-line"></p>');
     } else {
-      result.push(`<p class="markdown-para">${line}</p>`);
+      result.push(`<p class="markdown-para">${formatInlineMarkdown(line)}</p>`);
     }
   }
   
   if (inUl) result.push("</ul>");
   if (inOl) result.push("</ol>");
+  if (inCode) result.push(renderCodeBlock(codeLang, codeLines.join("\n")));
   
   return result.join("\n");
+}
+
+function formatInlineMarkdown(value) {
+  let html = String(value ?? "");
+  html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/\*(.*?)\*/g, "<em>$1</em>");
+  html = html.replace(/`(.*?)`/g, "<code>$1</code>");
+  html = html.replace(
+    /\[(.*?)\]\(((?:https?:\/\/|\/)[^\s)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
+  );
+  return html;
+}
+
+function renderCodeBlock(lang, code) {
+  if (lang === "mermaid") {
+    return renderMermaidWorkflow(code);
+  }
+  return `<pre class="markdown-code"><code>${code}</code></pre>`;
+}
+
+function renderMermaidWorkflow(code) {
+  const labels = [];
+  const seen = new Set();
+  const nodePattern = /([A-Za-z][A-Za-z0-9_-]*)\[(?:(?:"|&quot;)(.*?)(?:"|&quot;)|([^\]]+))\]/g;
+  for (const line of code.split("\n")) {
+    for (const match of line.matchAll(nodePattern)) {
+      if (seen.has(match[1])) continue;
+      seen.add(match[1]);
+      const label = (match[2] || match[3] || "").trim();
+      if (label) labels.push(label);
+    }
+  }
+  if (!labels.length) {
+    return `<pre class="markdown-code"><code>${code}</code></pre>`;
+  }
+  return `
+    <div class="workflow-diagram">
+      <div class="workflow-nodes">
+        ${labels
+          .map(
+            (label, index) => `
+              <div class="workflow-node">
+                <span>${index + 1}</span>
+                <p>${label}</p>
+              </div>
+              ${index < labels.length - 1 ? '<div class="workflow-arrow" aria-hidden="true">&darr;</div>' : ""}
+            `,
+          )
+          .join("")}
+      </div>
+      <details class="workflow-source">
+        <summary>Mermaid</summary>
+        <pre class="markdown-code"><code>${code}</code></pre>
+      </details>
+    </div>
+  `;
 }
 
 function toast(message) {
@@ -203,6 +278,7 @@ function renderAnswerStyles() {
     { id: "brief", label: "Ngắn gọn" },
     { id: "steps", label: "Từng bước" },
     { id: "checklist", label: "Checklist" },
+    { id: "workflow", label: "Workflow" },
   ];
   qs("#answerStyle").innerHTML = styles
     .map((style) => `<option value="${escapeHtml(style.id)}">${escapeHtml(style.label)}</option>`)
@@ -356,7 +432,9 @@ async function submitChat(event) {
   qs("#sendBtn").disabled = true;
   appendMessage("user", escapeHtml(query));
   const pending = appendMessage("assistant", renderLoadingMessage());
-  ensureDrawerVisible();
+  if (!isCompactLayout()) {
+    ensureDrawerVisible();
+  }
   switchDrawerTab("trace");
   renderTrace(LOADING_STEPS.map((label) => ({ label, status: "empty", detail: "" })));
 
@@ -423,7 +501,8 @@ function renderSources(citations) {
         <article class="source-card">
           <div class="source-title">${index + 1}. ${escapeHtml(citation.title || citation.doc_id || "Nguồn")}</div>
           <div class="source-meta">
-            ${escapeHtml(citation.doc_id || "-")} | v${escapeHtml(citation.version || "-")}
+            ${escapeHtml(citation.display_code || citation.doc_id || "-")} | v${escapeHtml(citation.version || "-")}
+            ${citation.display_code && citation.doc_id ? ` | ${escapeHtml(citation.doc_id)}` : ""}
           </div>
           <div class="source-excerpt">${escapeHtml(citation.excerpt || "Không có đoạn trích công khai.")}</div>
         </article>

@@ -22,7 +22,7 @@
   --amber: #f59e0b;
   --red-alert: #ef4444;
 
-  --radius: 16px;
+  --radius: 8px;
   --radius-sm: 8px;
 
   /* Diffused shadows to convey weightlessness */
@@ -48,7 +48,7 @@ body {
   font-family: var(--font);
   font-size: 15px;
   line-height: 1.65;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   overflow: hidden;
 }
 
@@ -73,7 +73,7 @@ button,
 textarea,
 select {
   font: inherit;
-  letter-spacing: inherit;
+  letter-spacing: 0;
 }
 
 button:focus-visible,
@@ -82,54 +82,6 @@ select:focus-visible,
 a:focus-visible {
   outline: none;
   box-shadow: var(--focus);
-}
-
-/* Premium Interactive Background Blobs */
-.glow-bg {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100vw;
-  height: 100vh;
-  overflow: hidden;
-  z-index: -1;
-  pointer-events: none;
-}
-
-.blob {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(120px);
-  opacity: 0.12;
-  will-change: transform;
-}
-
-.blob-1 {
-  top: -10%;
-  right: 15%;
-  width: 450px;
-  height: 450px;
-  background: var(--red);
-  animation: float-blob-1 20s infinite alternate ease-in-out;
-}
-
-.blob-2 {
-  bottom: -10%;
-  left: -5%;
-  width: 500px;
-  height: 500px;
-  background: #f43f5e;
-  animation: float-blob-2 25s infinite alternate ease-in-out;
-}
-
-@keyframes float-blob-1 {
-  0% { transform: translate(0, 0) scale(1); }
-  100% { transform: translate(-80px, 60px) scale(1.15); }
-}
-
-@keyframes float-blob-2 {
-  0% { transform: translate(0, 0) scale(1.1); }
-  100% { transform: translate(90px, -40px) scale(0.9); }
 }
 
 .user-shell {
@@ -186,7 +138,7 @@ a:focus-visible {
 .brand-text {
   font-size: 11px;
   font-weight: 800;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
   color: #f8fafc;
 }
 
@@ -315,7 +267,7 @@ a:focus-visible {
   font-size: 18px;
   font-weight: 800;
   color: var(--ink);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .assistant-line {
@@ -403,7 +355,7 @@ a:focus-visible {
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
   border: 1px solid rgba(225, 29, 72, 0.12);
   margin-bottom: 16px;
   box-shadow: var(--shadow-sm);
@@ -412,7 +364,7 @@ a:focus-visible {
 .welcome-eyebrow {
   font-size: 30px;
   font-weight: 900;
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
   background: linear-gradient(135deg, #0f172a 30%, var(--red) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -602,6 +554,93 @@ a:focus-visible {
   border-bottom-style: solid;
 }
 
+.markdown-code {
+  max-width: 100%;
+  margin: 10px 0 12px;
+  padding: 12px;
+  overflow-x: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.markdown-code code {
+  display: block;
+  min-width: max-content;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #334155;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.workflow-diagram {
+  margin: 12px 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: #fffafa;
+  padding: 12px;
+}
+
+.workflow-nodes {
+  display: grid;
+  gap: 8px;
+}
+
+.workflow-node {
+  min-height: 44px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  border: 1px solid rgba(225, 29, 72, 0.14);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 8px 10px;
+}
+
+.workflow-node span {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: var(--red);
+  color: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.workflow-node p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.workflow-arrow {
+  color: var(--red);
+  font-weight: 800;
+  line-height: 1;
+  text-align: center;
+}
+
+.workflow-source {
+  margin-top: 10px;
+}
+
+.workflow-source summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
 
 .message-actions {
   display: flex;
@@ -710,7 +749,7 @@ a:focus-visible {
   font-size: 11px;
   font-weight: 800;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0;
 }
 
 .select-wrapper {
@@ -862,7 +901,7 @@ a:focus-visible {
   font-size: 15px;
   font-weight: 800;
   color: var(--ink);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .drawer-header-content span {

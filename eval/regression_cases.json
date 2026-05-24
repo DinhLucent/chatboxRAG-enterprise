@@ -6,7 +6,58 @@
     "expected_doc_ids": [
       "KT-QT-215"
     ],
-    "expected_category": "procedure"
+    "expected_category": "procedure",
+    "expected_answer_terms": ["Tóm tắt", "Nguồn"],
+    "source_support_terms": ["kiểm soát tài liệu"]
+  },
+  {
+    "id": "technical-procedure-count-direct",
+    "query": "Quy trình phòng kỹ thuật có bao nhiêu tài liệu?",
+    "should_answer": true,
+    "expected_doc_ids": [
+      "KT-QT-215"
+    ],
+    "expected_category": "procedure",
+    "answer_style": "steps",
+    "expected_answer_terms": ["Phòng Kỹ thuật", "tài liệu quy trình", "Nguồn"],
+    "source_support_terms": ["Kỹ thuật", "Quy trình"]
+  },
+  {
+    "id": "technical-procedure-count-variant",
+    "query": "Có bao nhiêu tài liệu quy trình kỹ thuật?",
+    "should_answer": true,
+    "expected_doc_ids": [
+      "KT-QT-215"
+    ],
+    "expected_category": "procedure",
+    "answer_style": "steps",
+    "expected_answer_terms": ["Phòng Kỹ thuật", "tài liệu quy trình", "Nguồn"],
+    "source_support_terms": ["Kỹ thuật", "Quy trình"]
+  },
+  {
+    "id": "incident-workflow-user-chat",
+    "query": "Trong quy trình xử lý sự cố kỹ thuật, quy trình như thế nào?",
+    "should_answer": true,
+    "expected_doc_ids": [
+      "KT-QT-003"
+    ],
+    "expected_category": "procedure",
+    "answer_style": "brief",
+    "user_chat": true,
+    "expected_answer_terms": ["Tóm tắt", "Các bước", "Nguồn"],
+    "source_support_terms": ["tiếp nhận", "ticket", "đóng ticket"],
+    "forbidden_answer_terms": ["<table", "rowspan", "provider timeout"]
+  },
+  {
+    "id": "ambiguous-procedure-asks-clarification",
+    "query": "Quy trình này gồm những bước nào?",
+    "should_answer": false,
+    "expected_doc_ids": [],
+    "answer_style": "brief",
+    "user_chat": true,
+    "should_clarify": true,
+    "expected_answer_terms": ["mã hoặc tên tài liệu", "KT-QT-003"],
+    "forbidden_answer_terms": ["Không tìm thấy căn cứ"]
   },
   {
     "id": "unknown-vendor-error",

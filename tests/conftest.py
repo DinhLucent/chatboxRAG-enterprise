@@ -2,8 +2,15 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 import pytest
+
+
+_WORKSPACE_TMP = Path(__file__).resolve().parents[1] / ".pytest-tmp-codex"
+_WORKSPACE_TMP.mkdir(parents=True, exist_ok=True)
+for _name in ("TMP", "TEMP", "TMPDIR"):
+    os.environ[_name] = str(_WORKSPACE_TMP)
 
 
 if sys.platform == "win32":

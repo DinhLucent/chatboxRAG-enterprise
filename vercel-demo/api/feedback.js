@@ -15,11 +15,12 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  await forwardJson(req, res, "/api/feedback", {
+  await forwardJson(req, res, "/api/user/feedback", {
     method: "POST",
     body: {
-      query_log_id: body.query_log_id,
-      feedback: body.feedback,
+      log_id: body.query_log_id || body.log_id,
+      rating: body.feedback || body.rating,
+      session_id: body.session_id,
     },
   });
 };

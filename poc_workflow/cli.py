@@ -13,6 +13,7 @@ from .data_maintenance import (
     audit_manifest_taxonomy,
     backfill_missing_qa_reports,
     plan_taxonomy_remediation,
+    scope_active_set,
 )
 from .database import QualityDatabase
 from .evaluation import run_evaluation
@@ -180,6 +181,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Record status to include. Defaults to active and pending_review; only auto-safe pending_review records are changed.",
     )
 
+    scope_active = sub.add_parser("scope-active-set", help="Limit active documents to files under an approved source root.")
+    scope_active.add_argument("--active-root", required=True, help="Approved root_source folder whose file hashes remain active.")
+    scope_active.add_argument("--scope-id", default="engineering_procedures_v1")
+    scope_active.add_argument("--approved-by", default="scope-active-set")
+    scope_active.add_argument("--apply", action="store_true", help="Write manifest/metadata/index changes. Defaults to dry run.")
+
     return parser
 
 
@@ -327,6 +334,14 @@ def main(argv: list[str] | None = None) -> int:
                 statuses=set(args.status) if args.status else None,
                 dry_run=not args.apply,
                 limit=args.limit,
+            )
+        elif args.command == "scope-active-set":
+            result = scope_active_set(
+                root,
+                Path(args.active_root),
+                scope_id=args.scope_id,
+                approved_by=args.approved_by,
+                dry_run=not args.apply,
             )
         else:
             parser.error(f"Unknown command: {args.command}")

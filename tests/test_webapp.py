@@ -73,6 +73,43 @@ def write_context_source(root: Path) -> None:
     )
 
 
+def write_catalog_source(root: Path) -> None:
+    path = root / "source" / "technical" / "procedure" / "KT-QT-215_v1.0.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        (
+            "# Danh sach SOP\n\n"
+            "| TT | Loại tài liệu | Mã số | Tên tài liệu | Tình trạng | Ghi chú |\n"
+            "| --- | --- | --- | --- | --- | --- |\n"
+            "| VII | Kỹ thuật |  |  |  |  |\n"
+            "| 36 | Quy trình |  | Quy trình lắp đặt máy móc, thiết bị | Đã có bản draff |  |\n"
+            "| 37 | Quy trình |  | Quy trình Sửa chữa máy móc, thiết bị | Đã có bản draff |  |\n"
+            "| 38 | Quy trình |  | Quy trình bảo dưỡng thiết bị | Đã có bản draff |  |\n"
+            "| VIII | APP |  |  |  |  |\n"
+        ),
+        encoding="utf-8",
+    )
+    path.with_name(path.stem + ".metadata.json").write_text(
+        json.dumps(
+            {
+                "doc_id": "KT-QT-215",
+                "title": "PD IC A 001 Rev 10. Quy trình kiểm soát tài liệu, hồ sơ",
+                "department": "technical",
+                "category": "procedure",
+                "source_type": "internal_procedure",
+                "language": "vi",
+                "version": "1.0",
+                "effective_from": "2026-03-16",
+                "review_at": "2027-03-16",
+                "owner": "Phong Ky thuat",
+                "access_group": "technical",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_web_health_manifest_and_chat(tmp_path: Path) -> None:
     write_source(tmp_path)
     process_sources(tmp_path)
@@ -136,7 +173,7 @@ def test_user_chat_app_public_api_safe_citations_policy_and_feedback(tmp_path: P
     page = client.get("/chat")
     assert page.status_code == 200
     assert "sourceDrawer" in page.text
-    assert "Bạn muốn hỏi gì?" in page.text
+    assert "Tôi có thể giúp gì cho bạn hôm nay?" in page.text
     assert "Policy" not in page.text
     assert "Liên quan" not in page.text
     assert "Pin" not in page.text
@@ -146,12 +183,12 @@ def test_user_chat_app_public_api_safe_citations_policy_and_feedback(tmp_path: P
     boot = bootstrap.json()
     assert boot["ui"]["default_drawer_tab"] == "sources"
     assert boot["ui"]["show_policy_debug"] is False
-    assert {style["id"] for style in boot["answer_styles"]} == {"brief", "steps", "checklist"}
+    assert {style["id"] for style in boot["answer_styles"]} == {"brief", "steps", "checklist", "workflow"}
     assert [card["label"] for card in boot["welcome_cards"]] == [
-        "Tra cứu quy trình",
-        "Tìm biểu mẫu",
-        "Hỏi lỗi kỹ thuật",
-        "Tìm tài liệu hãng",
+        "Quy trình kỹ thuật",
+        "Biểu mẫu kỹ thuật",
+        "Xử lý sự cố",
+        "Tài liệu hãng",
     ]
     assert "policy_id" not in boot["policy"]
     assert {group["id"] for group in boot["templates"]["groups"]} == {
@@ -184,6 +221,12 @@ def test_user_chat_app_public_api_safe_citations_policy_and_feedback(tmp_path: P
     assert "provider" not in json.dumps(body.get("trace", {}), ensure_ascii=False)
     assert "policy_version" not in json.dumps(body.get("trace", {}), ensure_ascii=False)
     assert body["trace"]["source_count"] == len(body["citations"])
+    public_text = json.dumps(body, ensure_ascii=False)
+    assert "answer_source" not in body
+    assert "llm_used" not in body
+    assert "llm_error" not in body
+    assert "fallback_reason" not in body
+    assert "provider timeout" not in public_text
     assert body["trace_steps"]
     assert body["answer_style"] == "checklist"
     assert "Tóm tắt:" in body["answer"]
@@ -225,7 +268,44 @@ def test_user_chat_rejects_unknown_template_and_no_answer_trace(tmp_path: Path) 
     assert body["answer"] == NO_SOURCE_ANSWER
     assert body["citations"] == []
     assert body["trace"]["source_count"] == 0
-    assert body["trace"]["no_answer_reason"]
+    assert "no_answer_reason" not in body["trace"]
+
+    clarification = client.post(
+        "/api/user/chat",
+        json={
+            "query": "Quy trình này gồm những bước nào?",
+            "session_id": "session-clarification",
+            "use_llm": False,
+        },
+    )
+    assert clarification.status_code == 200
+    clarify_body = clarification.json()
+    assert clarify_body["needs_clarification"] is True
+    assert clarify_body["answer"] != NO_SOURCE_ANSWER
+    assert "mã hoặc tên tài liệu" in clarify_body["answer"]
+    assert clarify_body["citations"] == []
+    assert clarify_body["trace"]["source_count"] == 0
+
+
+def test_user_chat_asks_for_context_when_question_is_ambiguous(tmp_path: Path) -> None:
+    client = TestClient(create_app(tmp_path))
+
+    response = client.post(
+        "/api/user/chat",
+        json={
+            "query": "Quy trình này gồm những bước nào?",
+            "session_id": "clarify-session",
+            "use_llm": False,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["needs_clarification"] is True
+    assert body["citations"] == []
+    assert "mã hoặc tên tài liệu" in body["answer"]
+    assert "Không tìm thấy căn cứ" not in body["answer"]
+    assert any("Cần thêm" in step["detail"] for step in body["trace_steps"])
 
 
 def test_user_chat_keeps_context_for_follow_up_questions(tmp_path: Path) -> None:
@@ -270,6 +350,110 @@ def test_user_chat_keeps_context_for_follow_up_questions(tmp_path: Path) -> None
     turns = QualityDatabase(tmp_path).recent_user_chat_turns("context-session")
     assert len(turns) == 2
     assert "Boi canh hoi thoai" in turns[-1]["effective_query"]
+
+    deictic_follow_up = client.post(
+        "/api/user/chat",
+        json={
+            "query": "quy trinh nay gom nhung buoc nao",
+            "session_id": "context-session",
+            "device_id": "device-a",
+            "use_llm": False,
+        },
+    )
+    assert deictic_follow_up.status_code == 200
+    deictic_body = deictic_follow_up.json()
+    assert deictic_body["needs_clarification"] is False
+    assert deictic_body["answer_style"] == "steps"
+    assert deictic_body["citations"]
+    assert deictic_body["citations"][0]["doc_id"] == "KT-QT-CTX"
+    assert deictic_body["trace"]["context"]["context_used"] is True
+
+    unrelated = client.post(
+        "/api/user/chat",
+        json={
+            "query": "Bien tan E-07 encoder parameter P191 cach sua nhu the nao?",
+            "session_id": "context-session",
+            "device_id": "device-a",
+            "use_llm": False,
+        },
+    )
+    assert unrelated.status_code == 200
+    unrelated_body = unrelated.json()
+    assert unrelated_body["answer"] == NO_SOURCE_ANSWER
+    assert unrelated_body["citations"] == []
+    assert unrelated_body["trace"]["context"]["context_used"] is False
+
+
+def test_user_chat_infers_workflow_style_and_returns_mermaid(tmp_path: Path) -> None:
+    write_context_source(tmp_path)
+    process_sources(tmp_path)
+    approve_record(tmp_path, "KT-QT-CTX", "1.0", "Lead")
+    client = TestClient(create_app(tmp_path))
+
+    response = client.post(
+        "/api/user/chat",
+        json={
+            "query": "Flow quy trinh bao tri may nen tu tiep nhan den luu ho so",
+            "answer_style": "brief",
+            "session_id": "workflow-session",
+            "use_llm": False,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer_style"] == "workflow"
+    assert body["citations"][0]["doc_id"] == "KT-QT-CTX"
+    assert "Workflow:" in body["answer"]
+    assert "```mermaid" in body["answer"]
+    assert "flowchart TD" in body["answer"]
+    assert "KT-QT-CTX v1.0" in body["answer"]
+    assert any(step["id"] == "verify_answer" and step["status"] == "done" for step in body["trace_steps"])
+
+
+def test_user_chat_lists_technical_department_procedures_from_active_catalog(tmp_path: Path) -> None:
+    write_catalog_source(tmp_path)
+    process_sources(tmp_path)
+    approve_record(tmp_path, "KT-QT-215", "1.0", "Lead")
+    client = TestClient(create_app(tmp_path))
+
+    queries = [
+        "cac quy trinh cua phong ky thuat",
+        "Quy trình phòng kỹ thuật có bao nhiêu tài liệu?",
+        "Có bao nhiêu tài liệu quy trình kỹ thuật?",
+    ]
+    for index, query in enumerate(queries, start=1):
+        response = client.post(
+            "/api/user/chat",
+            json={
+                "query": query,
+                "answer_style": "steps",
+                "session_id": f"catalog-session-{index}",
+                "use_llm": False,
+            },
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["citations"][0]["doc_id"] == "KT-QT-215"
+        assert "Phòng Kỹ thuật có 3 tài liệu quy trình" in body["answer"]
+        assert "Quy trình lắp đặt máy móc, thiết bị" in body["answer"]
+        assert "Quy trình Sửa chữa máy móc, thiết bị" in body["answer"]
+        assert "Quy trình bảo dưỡng thiết bị" in body["answer"]
+
+    count_variant = client.post(
+        "/api/user/chat",
+        json={
+            "query": "Quy trình phòng kỹ thuật có bao nhiêu tài liệu?",
+            "answer_style": "steps",
+            "session_id": "catalog-count-session",
+            "use_llm": False,
+        },
+    )
+    assert count_variant.status_code == 200
+    count_body = count_variant.json()
+    assert count_body["citations"][0]["doc_id"] == "KT-QT-215"
+    assert "Phòng Kỹ thuật có 3 tài liệu quy trình" in count_body["answer"]
 
 
 def test_user_session_heartbeat_and_stale_cleanup(tmp_path: Path) -> None:

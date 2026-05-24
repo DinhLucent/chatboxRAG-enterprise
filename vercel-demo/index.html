@@ -3,115 +3,173 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Tr&#7907; L&#253; AI Tra C&#7913;u Quy Tr&#236;nh</title>
+    <title>DL-RAG | Trợ lý phòng Kỹ thuật</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Crect x='2' y='2' width='20' height='20' rx='6' fill='%23e11d48'/%3E%3Cpath d='M7 9C7 7.89543 7.89543 7 9 7H15C16.1046 7 17 7.89543 17 9V13C17 14.1046 16.1046 15 15 15H11.5L8.5 17.5V15H9C7.89543 15 7 14.1046 7 13V9Z' fill='white'/%3E%3Ccircle cx='10' cy='11' r='1.2' fill='%23dc2626'/%3E%3Ccircle cx='14' cy='11' r='1.2' fill='%23dc2626'/%3E%3C/svg%3E" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main class="shell">
-      <section class="hero">
-        <div>
-          <p class="eyebrow">Demo &#273;i&#7873;u h&#224;nh n&#7897;i b&#7897;</p>
-          <h1>Tr&#7907; l&#253; AI tra c&#7913;u quy tr&#236;nh</h1>
-          <p class="subtitle">
-            Giao di&#7879;n demo ch&#7841;y tr&#234;n web. D&#7919; li&#7879;u v&#224; h&#7879; th&#7889;ng x&#7917; l&#253; v&#7851;n n&#7857;m trong m&#225;y n&#7897;i b&#7897; c&#7911;a doanh nghi&#7879;p.
-          </p>
-        </div>
-        <div class="status" id="statusCard">
-          <span class="dot"></span>
-          <div>
-            <strong id="statusTitle">Ch&#432;a ki&#7875;m tra k&#7871;t n&#7889;i</strong>
-            <span id="statusText">Nh&#7853;p m&#227; demo v&#224; b&#7845;m Ki&#7875;m tra.</span>
+    <div class="user-shell">
+      <aside class="rail" aria-label="Điều hướng">
+        <div class="rail-brand" aria-label="DL-RAG Trợ lý phòng Kỹ thuật">
+          <div class="rail-mark-container">
+            <svg class="logo-svg" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect x="2" y="2" width="20" height="20" rx="6" fill="url(#logo-grad)"/>
+              <path d="M7 9C7 7.89543 7.89543 7 9 7H15C16.1046 7 17 7.89543 17 9V13C17 14.1046 16.1046 15 15 15H11.5L8.5 17.5V15H9C7.89543 15 7 14.1046 7 13V9Z" fill="white" fill-opacity="0.95"/>
+              <circle cx="10" cy="11" r="1.2" fill="#dc2626"/>
+              <circle cx="14" cy="11" r="1.2" fill="#dc2626"/>
+              <defs>
+                <linearGradient id="logo-grad" x1="2" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+                  <stop stop-color="#e11d48"/>
+                  <stop offset="1" stop-color="#9f1239"/>
+                </linearGradient>
+              </defs>
+            </svg>
           </div>
+          <span class="brand-text">DL-RAG</span>
         </div>
-      </section>
+        
+        <div class="rail-nav">
+          <button id="newChatBtn" class="rail-button active" type="button" title="Cuộc trò chuyện mới">
+            <svg class="rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+            <span class="rail-label">Mới</span>
+          </button>
+          
+          <button class="rail-button muted" type="button" disabled title="Lịch sử (Sắp ra mắt)">
+            <svg class="rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <polyline points="12 6 12 12 16 14"/>
+            </svg>
+            <span class="rail-label">Lịch sử</span>
+          </button>
+          
+          <button id="toggleDrawerBtn" class="rail-button" type="button" title="Xem nguồn tham chiếu">
+            <svg class="rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="16" y1="13" x2="8" y2="13"/>
+              <line x1="16" y1="17" x2="8" y2="17"/>
+            </svg>
+            <span class="rail-label">Nguồn</span>
+          </button>
+        </div>
 
-      <section class="flow" aria-label="Lu&#7891;ng ho&#7841;t &#273;&#7897;ng">
-        <div class="flow-card">
-          <span class="icon">1</span>
-          <strong>Ng&#432;&#7901;i d&#249;ng h&#7887;i</strong>
-          <p>Nh&#226;n vi&#234;n h&#7887;i v&#7873; quy tr&#236;nh, bi&#7875;u m&#7851;u, h&#432;&#7899;ng d&#7851;n.</p>
+        <div class="rail-auth">
+          <label for="demoToken">Mã Demo</label>
+          <input id="demoToken" type="password" placeholder="Mã..." autocomplete="off" />
         </div>
-        <span class="arrow">&rarr;</span>
-        <div class="flow-card">
-          <span class="icon">2</span>
-          <strong>Giao di&#7879;n demo</strong>
-          <p>Hi&#7875;n th&#7883; c&#226;u h&#7887;i, c&#226;u tr&#7843; l&#7901;i v&#224; ngu&#7891;n tham chi&#7871;u.</p>
-        </div>
-        <span class="arrow">&rarr;</span>
-        <div class="flow-card">
-          <span class="icon">3</span>
-          <strong>M&#225;y n&#7897;i b&#7897; x&#7917; l&#253;</strong>
-          <p>Tra c&#7913;u t&#224;i li&#7879;u &#273;&#227; duy&#7879;t, l&#7885;c b&#7843;n hi&#7879;n h&#224;nh.</p>
-        </div>
-        <span class="arrow">&rarr;</span>
-        <div class="flow-card">
-          <span class="icon">4</span>
-          <strong>Tr&#7843; l&#7901;i c&#243; c&#259;n c&#7913;</strong>
-          <p>K&#7871;t qu&#7843; ng&#7855;n g&#7885;n, k&#232;m t&#224;i li&#7879;u ngu&#7891;n v&#224; ph&#7843;n h&#7891;i.</p>
-        </div>
-      </section>
 
-      <section class="panel-grid">
-        <article class="panel chat-panel">
-          <div class="panel-head">
-            <div>
-              <h2>H&#7887;i th&#7917; quy tr&#236;nh</h2>
-              <p>V&#237; d&#7909;: Quy tr&#236;nh x&#7917; l&#253; s&#7921; c&#7889; k&#7929; thu&#7853;t g&#7891;m nh&#7919;ng b&#432;&#7899;c n&#224;o?</p>
+        <div class="rail-status" id="railStatus">
+          <div class="status-pulse-container">
+            <span class="status-dot"></span>
+            <span class="status-dot-pulse"></span>
+          </div>
+          <span id="statusText">Đang kết nối</span>
+        </div>
+      </aside>
+
+      <main class="chat-main">
+        <header class="chat-header">
+          <div class="header-content">
+            <h1>Trợ lý Tri thức phòng Kỹ thuật</h1>
+            <div id="assistantLine" class="assistant-line">Trợ lý đang dùng: Tài liệu đang hiệu lực</div>
+          </div>
+        </header>
+
+        <section id="templateGroups" class="template-groups" aria-label="Câu hỏi mẫu"></section>
+
+        <section id="messages" class="messages" aria-live="polite">
+          <div id="welcomeState" class="welcome-state">
+            <div class="welcome-hero">
+              <div class="welcome-badge">Hệ thống RAG phòng Kỹ thuật</div>
+              <p class="welcome-eyebrow">Tôi có thể giúp gì cho bạn hôm nay?</p>
+              <p class="welcome-sub">Tìm kiếm nhanh chóng, trích dẫn chính xác từ kho tài liệu và quy trình phòng Kỹ thuật.</p>
             </div>
-            <button id="healthBtn" class="secondary">Ki&#7875;m tra</button>
+            <div id="welcomeCards" class="welcome-cards" aria-label="Gợi ý bắt đầu"></div>
           </div>
+        </section>
 
-          <label for="demoToken">M&#227; truy c&#7853;p demo</label>
-          <input id="demoToken" type="password" placeholder="Nh&#7853;p m&#227; demo" autocomplete="off" />
-
-          <label for="question">C&#226;u h&#7887;i</label>
-          <textarea id="question" rows="4" placeholder="Nh&#7853;p c&#226;u h&#7887;i v&#7873; quy tr&#236;nh...">Quy tr&#236;nh x&#7917; l&#253; s&#7921; c&#7889; k&#7929; thu&#7853;t g&#7891;m nh&#7919;ng b&#432;&#7899;c n&#224;o?</textarea>
-
-          <div class="actions">
-            <button id="askBtn">G&#7917;i c&#226;u h&#7887;i</button>
-            <label class="toggle">
-              <input id="useLlm" type="checkbox" checked />
-              <span>D&#249;ng AI &#273;&#7875; di&#7877;n gi&#7843;i</span>
-            </label>
-          </div>
-
-          <div class="answer" id="answerBox">
-            <span class="muted">C&#226;u tr&#7843; l&#7901;i s&#7869; hi&#7875;n th&#7883; t&#7841;i &#273;&#226;y.</span>
-          </div>
-
-          <div class="feedback" id="feedbackBox" hidden>
-            <span>&#272;&#225;nh gi&#225; c&#226;u tr&#7843; l&#7901;i:</span>
-            <button data-feedback="correct">&#272;&#250;ng</button>
-            <button data-feedback="wrong">Sai</button>
-            <button data-feedback="missing_source">Thi&#7871;u ngu&#7891;n</button>
-            <button data-feedback="wrong_source">Ngu&#7891;n sai</button>
-          </div>
-        </article>
-
-        <aside class="panel">
-          <h2>V&#236; sao ph&#249; h&#7907;p demo cho Ban Gi&#225;m &#272;&#7889;c?</h2>
-          <ul class="check-list">
-            <li>Kh&#244;ng c&#7847;n &#273;&#432;a to&#224;n b&#7897; kho t&#224;i li&#7879;u l&#234;n web.</li>
-            <li>Ng&#432;&#7901;i xem ch&#7881; th&#7845;y workflow v&#224; k&#7871;t qu&#7843;.</li>
-            <li>M&#7895;i c&#226;u tr&#7843; l&#7901;i c&#243; ngu&#7891;n tham chi&#7871;u.</li>
-            <li>C&#243; th&#7875; ghi nh&#7853;n c&#226;u h&#7887;i sai ho&#7863;c thi&#7871;u t&#224;i li&#7879;u.</li>
-            <li>Chi ph&#237; demo th&#7845;p, m&#7903; r&#7897;ng t&#7915;ng b&#432;&#7899;c.</li>
-          </ul>
-
-          <div class="mini-metrics" id="metrics">
-            <div>
-              <strong>-</strong>
-              <span>T&#224;i li&#7879;u active</span>
+        <form id="chatForm" class="composer">
+          <div class="composer-container">
+            <div class="composer-settings">
+              <label class="answer-style-label" for="answerStyle">Kiểu trả lời:</label>
+              <div class="select-wrapper">
+                <select id="answerStyle" class="answer-style-select"></select>
+              </div>
             </div>
-            <div>
-              <strong>-</strong>
-              <span>K&#7871;t n&#7889;i n&#7897;i b&#7897;</span>
+            <div class="textarea-wrapper">
+              <textarea id="queryInput" rows="1" placeholder="Nhập câu hỏi về tài liệu hiện hành..."></textarea>
+            </div>
+            <div class="composer-actions">
+              <div id="selectedTemplate" class="selected-template">Không dùng mẫu</div>
+              <button id="sendBtn" class="send-button" type="submit">
+                <span class="btn-text">Gửi</span>
+                <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="22" y1="2" x2="11" y2="13"/>
+                  <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+                </svg>
+              </button>
             </div>
           </div>
-        </aside>
-      </section>
-    </main>
+        </form>
+      </main>
 
+      <aside id="sourceDrawer" class="source-drawer" aria-label="Nguồn và quá trình">
+        <div class="drawer-header">
+          <div class="drawer-header-content">
+            <h2>Căn cứ tham chiếu</h2>
+            <span id="drawerMeta">Chưa có câu trả lời</span>
+          </div>
+          <button id="closeDrawerBtn" class="icon-button mobile-only" type="button">Ẩn</button>
+        </div>
+        <div class="drawer-tabs" role="tablist">
+          <button class="drawer-tab active" data-tab="sources" type="button">Tài liệu nguồn</button>
+          <button class="drawer-tab" data-tab="trace" type="button">Quá trình RAG</button>
+          <button class="drawer-tab" data-tab="status" type="button">Hệ thống</button>
+        </div>
+        <section id="sourcesPanel" class="drawer-panel active"></section>
+        <section id="tracePanel" class="drawer-panel"></section>
+        <section id="statusPanel" class="drawer-panel">
+          <div class="vercel-status-card" id="vercelStatusCard">
+            <div class="status-pulse-container">
+              <span class="status-dot"></span>
+              <span class="status-dot-pulse"></span>
+            </div>
+            <div class="status-info">
+              <strong id="statusTitle">Chưa kiểm tra</strong>
+              <p id="statusDesc">Nhập mã demo để tải trạng thái hệ thống.</p>
+            </div>
+          </div>
+          <div class="vercel-metrics" id="vercelMetrics">
+            <div class="metric-card">
+              <strong id="metricDocs">-</strong>
+              <span>Tài liệu active</span>
+            </div>
+            <div class="metric-card">
+              <strong id="metricConnection">-</strong>
+              <span>Kết nối nội bộ</span>
+            </div>
+            <div class="metric-card">
+              <strong id="metricLlm">-</strong>
+              <span>Trạng thái AI</span>
+            </div>
+            <div class="metric-card">
+              <strong id="metricLoop">-</strong>
+              <span>Loop-check</span>
+            </div>
+          </div>
+        </section>
+      </aside>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="/app.js"></script>
   </body>
 </html>

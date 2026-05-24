@@ -34,8 +34,10 @@ module.exports = async function handler(req, res) {
 
   const payload = {
     query: body.query,
-    user_id: body.user_id || "vercel-demo",
-    provider: body.provider || "local",
+    template_id: body.template_id || null,
+    answer_style: body.answer_style || "brief",
+    session_id: body.session_id || null,
+    device_id: body.device_id || "vercel-demo",
     use_llm: body.use_llm !== false,
   };
 
@@ -44,7 +46,7 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  await forwardJson(req, res, "/api/chat", {
+  await forwardJson(req, res, "/api/user/chat", {
     method: "POST",
     body: payload,
     transform: (data, response) => {
@@ -59,15 +61,19 @@ module.exports = async function handler(req, res) {
               version: citation.version,
               title: citation.title,
               category: citation.category,
-              score: citation.score,
+              display_code: citation.display_code,
+              excerpt: citation.excerpt || "",
             }))
           : [],
-        query_log_id: data.query_log_id,
+        trace: data.trace,
+        trace_steps: data.trace_steps || (data.trace ? data.trace.steps : []),
+        query_log_id: data.query_log_id || data.log_id,
         knowledge_gap_id: data.knowledge_gap_id,
         latency_ms: data.latency_ms,
         provider: data.provider,
         llm_used: Boolean(data.llm_used),
-        llm_error: data.llm_error ? "AI answer fallback used" : null,
+        session_id: data.session_id,
+        session: data.session,
       };
     },
   });

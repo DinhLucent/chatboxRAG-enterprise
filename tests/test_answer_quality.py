@@ -5,6 +5,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from poc_workflow.chatbot import ask
 from poc_workflow.llm import LLMError, OpenAICompatibleConfig
 from poc_workflow.pipeline import approve_record, process_sources
 from poc_workflow.rag_index import LocalRagIndex
@@ -145,6 +146,19 @@ def test_retrieval_prefers_business_content_over_aggregate_document_list(tmp_pat
     assert "Tong hop danh sach" not in hits[0].text
 
 
+def test_cli_ask_infers_step_format_for_how_to_questions(tmp_path: Path) -> None:
+    write_dirty_procedure(tmp_path)
+    process_sources(tmp_path)
+    approve_record(tmp_path, "KT-FAQ-008", "1.0", "Lead")
+
+    result = ask(tmp_path, "Quy trinh xu ly su co ky thuat lam sao?", provider="local", use_llm=False)
+
+    assert result["citations"]
+    assert "Các bước / Nội dung chính:" in result["answer"]
+    assert "1." in result["answer"]
+    assert "Nguồn:" in result["answer"]
+
+
 def test_user_answer_formatter_normalizes_llm_markdown_headings_without_wrapping_again() -> None:
     answer = (
         "**Tom tắt:** Quy trinh yeu cau tiep nhan va xu ly su co.\n\n"
@@ -197,16 +211,18 @@ def test_user_chat_fallback_is_clean_and_audited_when_llm_fails(tmp_path: Path, 
 
     assert response.status_code == 200
     body = response.json()
-    assert body["answer_source"] == "fallback_clean_excerpt"
-    assert body["llm_used"] is False
-    assert body["llm_error"] == "provider timeout"
-    assert body["fallback_reason"] == "llm_error"
+    public_text = json.dumps(body, ensure_ascii=False)
+    assert "answer_source" not in body
+    assert "llm_used" not in body
+    assert "llm_error" not in body
+    assert "fallback_reason" not in body
+    assert "provider timeout" not in public_text
     assert_no_raw_markup(body["answer"])
     assert body["citations"]
     assert all(set(citation) == {"title", "doc_id", "version", "excerpt"} for citation in body["citations"])
     for citation in body["citations"]:
         assert_no_raw_markup(citation["excerpt"])
-    assert any("trich doan da lam sach" in step["detail"].lower() for step in body["trace_steps"])
+    assert any("trích đoạn tài liệu đã làm sạch" in step["detail"].lower() for step in body["trace_steps"])
 
     latest_query = client.get("/api/queries").json()[0]
     assert latest_query["llm_used"] == 0
@@ -261,12 +277,12 @@ def test_user_chat_uses_llm_and_retries_dirty_model_answer(tmp_path: Path, monke
     assert response.status_code == 200
     body = response.json()
     assert calls == [None, "clean_answer"]
-    assert body["answer_source"] == "llm"
-    assert body["llm_used"] is True
-    assert body["llm_error"] is None
-    assert body["fallback_reason"] is None
+    assert "answer_source" not in body
+    assert "llm_used" not in body
+    assert "llm_error" not in body
+    assert "fallback_reason" not in body
     assert_no_raw_markup(body["answer"])
-    assert any("LLM" in step["detail"] for step in body["trace_steps"])
+    assert all("LLM" not in step["detail"] for step in body["trace_steps"])
 
     latest_query = client.get("/api/queries").json()[0]
     assert latest_query["llm_used"] == 1
