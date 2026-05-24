@@ -22,6 +22,33 @@ ANSWER_STYLE_LABELS = {
 MIN_LOCAL_CONFIDENCE_SCORE = 3
 
 
+def filter_only_latest_active(root: Path, items: list, is_hit: bool = True) -> list:
+    from .manifest import ManifestStore, latest_active_records
+    try:
+        store = ManifestStore(root)
+        active_records = latest_active_records(store.load())
+        latest_versions = {r.doc_id: r.version for r in active_records}
+    except Exception:
+        return items
+    filtered = []
+    for item in items:
+        if is_hit:
+            doc_id = getattr(item, "doc_id", None)
+            version = getattr(item, "version", None)
+        else:
+            doc_id = item.get("doc_id")
+            version = item.get("version")
+        if not doc_id or not version:
+            filtered.append(item)
+            continue
+        if doc_id in latest_versions:
+            if version == latest_versions[doc_id]:
+                filtered.append(item)
+        else:
+            filtered.append(item)
+    return filtered
+
+
 def infer_category(query: str) -> str | None:
     lowered = query.lower()
     normalized_query = normalized_text(query)
@@ -87,6 +114,7 @@ def ask(
                 ragflow_answer = answer_with_ragflow(query, config)
                 answer = str(ragflow_answer.get("answer") or "").strip()
                 citations = ragflow_answer.get("citations") or []
+                citations = filter_only_latest_active(root, citations, is_hit=False)
                 if not answer:
                     answer = NO_SOURCE_ANSWER
                 latency_ms = int((time.perf_counter() - start) * 1000)
@@ -247,6 +275,7 @@ def ask(
     hits = index.search(query, category=category, limit=3)
     if not hits and category:
         hits = index.search(query, category=None, limit=3)
+    hits = filter_only_latest_active(root, hits, is_hit=True)
     hits = confident_hits(hits)
 
     if not hits:

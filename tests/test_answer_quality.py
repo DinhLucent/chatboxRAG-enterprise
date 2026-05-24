@@ -160,7 +160,7 @@ def test_user_answer_formatter_normalizes_llm_markdown_headings_without_wrapping
     assert formatted.count("Tóm tắt:") == 1
     assert "**Tom tắt:**" not in formatted
     assert "Tóm tắt: **" not in formatted
-    assert formatted.startswith("Tóm tắt:")
+    assert formatted.startswith("### Tóm tắt:")
 
 
 def test_user_chat_fallback_is_clean_and_audited_when_llm_fails(tmp_path: Path, monkeypatch) -> None:

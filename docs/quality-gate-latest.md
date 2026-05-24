@@ -3,9 +3,9 @@
 - Status: `accepted`
 - Mode: `local`
 - Provider: `local`
-- Started: `2026-05-24T15:42:17+00:00`
-- Finished: `2026-05-24T15:42:30+00:00`
-- Latency: `12419 ms`
+- Started: `2026-05-24T17:37:38+00:00`
+- Finished: `2026-05-24T17:37:49+00:00`
+- Latency: `11032 ms`
 - Cases: `13`
 
 ## Summary
@@ -23,16 +23,16 @@
 
 | Gate | Severity | Status | Latency | Evidence | Detail |
 | --- | --- | --- | ---: | --- | --- |
-| preflight | warning | warn | 75 ms | `git ls-files; git status --short` | No tracked raw documents or runtime artifacts were detected. |
-| static | blocker | pass | 129 ms | `JSON parse; compileall; FastAPI route inventory` | JSON files parse, package compiles, API route inventory is valid. |
-| frontend_static | blocker | pass | 85 ms | `frontend ID/status/forbidden-text checks + UTF-8 mojibake scan` | Frontend static UI, Upload workflow labels, auth unlock path, and text encoding checks passed. |
-| unit_integration | blocker | pass | 8761 ms | `C:\Users\ADMIN\miniconda3\envs\prismaflex\python.exe -m pytest -o addopts= --basetemp=D:\MyProject\demo-chatbot-engineerworkflow\.quality-sandbox\2026-05-24T154217Z0000\pytest` | Pytest passed. |
-| retrieval_eval | blocker | pass | 550 ms | `evaluate_case loop over eval/regression_cases_69.json` | Regression retrieval, citation, no-answer, and latency targets passed. |
-| workspace_eval | blocker | pass | 1493 ms | `evaluate_case loop over eval/regression_cases.json` | Workspace regression cases passed. |
-| user_workflow | blocker | pass | 462 ms | `FastAPI TestClient sandbox workflow` | Upload queue, prompt generation, review detail, and chat workflow passed in sandbox. |
-| security_jailbreak | blocker | pass | 16 ms | `ask() safety cases + OpenAICompatibleClient payload inspection` | Security and jailbreak deterministic checks passed. |
-| data_audit | warning | warn | 301 ms | `manifest duplicate/version/metadata/Markdown/QA audit` | Manifest/data audit completed. |
-| production_readiness | warning | warn | 57 ms | `python -m poc_workflow readiness` | Local readiness has non-blocking production gaps. |
+| preflight | warning | warn | 73 ms | `git ls-files; git status --short` | No tracked raw documents or runtime artifacts were detected. |
+| static | blocker | pass | 130 ms | `JSON parse; compileall; FastAPI route inventory` | JSON files parse, package compiles, API route inventory is valid. |
+| frontend_static | blocker | pass | 54 ms | `frontend ID/status/forbidden-text checks + UTF-8 mojibake scan` | Frontend static UI, Upload workflow labels, auth unlock path, and text encoding checks passed. |
+| unit_integration | blocker | pass | 8922 ms | `C:\Users\ADMIN\miniconda3\envs\prismaflex\python.exe -m pytest -o addopts= --basetemp=D:\MyProject\demo-chatbot-engineerworkflow-antigravity\.quality-sandbox\2026-05-24T173738Z0000\pytest` | Pytest passed. |
+| retrieval_eval | blocker | pass | 506 ms | `evaluate_case loop over eval/regression_cases_69.json` | Regression retrieval, citation, no-answer, and latency targets passed. |
+| workspace_eval | blocker | pass | 333 ms | `evaluate_case loop over eval/regression_cases.json` | Workspace regression cases passed. |
+| user_workflow | blocker | pass | 400 ms | `FastAPI TestClient sandbox workflow` | Upload queue, prompt generation, review detail, and chat workflow passed in sandbox. |
+| security_jailbreak | blocker | pass | 13 ms | `ask() safety cases + OpenAICompatibleClient payload inspection` | Security and jailbreak deterministic checks passed. |
+| data_audit | warning | warn | 192 ms | `manifest duplicate/version/metadata/Markdown/QA audit` | Manifest/data audit completed. |
+| production_readiness | warning | warn | 19 ms | `python -m poc_workflow readiness` | Local readiness has non-blocking production gaps. |
 | performance_smoke | blocker | pass | 21 ms | `ask() over eval/quality_gate_cases.json representative queries` | Representative query latency smoke passed. |
 
 ## Open Risks

@@ -136,7 +136,7 @@ def test_user_chat_app_public_api_safe_citations_policy_and_feedback(tmp_path: P
     page = client.get("/chat")
     assert page.status_code == 200
     assert "sourceDrawer" in page.text
-    assert "Bạn muốn hỏi gì?" in page.text
+    assert "Tôi có thể giúp gì cho bạn hôm nay?" in page.text
     assert "Policy" not in page.text
     assert "Liên quan" not in page.text
     assert "Pin" not in page.text

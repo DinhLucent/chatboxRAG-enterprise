@@ -7,7 +7,11 @@ from pathlib import Path
 from .config import ACTIVE_DATASET, ARCHIVE_DATASET
 from .models import ManifestRecord
 from .text_cleaning import (
+    CONTENT_HEADING_TERMS,
+    LOW_VALUE_TERMS,
     clean_retrieval_text,
+    contains_raw_markup,
+    is_aggregate_document_list,
     is_low_value_retrieval_text,
     is_procedure_like,
     normalized_text,
@@ -57,6 +61,28 @@ class LocalRagIndex:
                     cleaned = clean_retrieval_text(text)
                     chunks = [cleaned] if cleaned and not is_low_value_retrieval_text(cleaned) else []
                 for index, chunk in enumerate(chunks):
+                    # Pre-calculate fields for search optimization
+                    cleaned_chunk = clean_retrieval_text(chunk)
+                    norm_chunk = normalized_text(cleaned_chunk)
+                    norm_title = normalized_text(record.title)
+                    norm_category = normalized_text(record.category)
+                    norm_target = f"{norm_title} {norm_chunk}"
+                    
+                    # terms
+                    terms_text = f"{cleaned_chunk} {record.title} {record.doc_id}"
+                    terms = list(tokenize(normalized_text(terms_text)))
+                    
+                    # content hits and low hits
+                    normalized_adj = f"{norm_chunk} {norm_title} {norm_category}"
+                    content_hits = sum(1 for term in CONTENT_HEADING_TERMS if term in normalized_adj)
+                    low_hits = sum(1 for term in LOW_VALUE_TERMS if term in norm_chunk)
+                    
+                    # other flags
+                    is_agg = is_aggregate_document_list(cleaned_chunk, record.title)
+                    has_markup = contains_raw_markup(chunk)
+                    is_low = is_low_value_retrieval_text(cleaned_chunk)
+                    is_proc = is_procedure_like(record.title, record.category)
+
                     payload = {
                         "dataset": dataset,
                         "doc_id": record.doc_id,
@@ -71,6 +97,15 @@ class LocalRagIndex:
                         "text": chunk,
                         "source_path": record.source_path,
                         "normalized_path": record.normalized_path,
+                        # Optimized search fields
+                        "terms": terms,
+                        "norm_target": norm_target,
+                        "content_hits": content_hits,
+                        "low_hits": low_hits,
+                        "is_aggregate": is_agg,
+                        "contains_raw_markup": has_markup,
+                        "is_low_value": is_low,
+                        "is_procedure_like": is_proc,
                     }
                     handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
@@ -86,6 +121,10 @@ class LocalRagIndex:
         if not path.exists():
             return []
         query_terms = set(tokenize(normalized_text(query)))
+        norm_query = normalized_text(query)
+        is_query_procedure = any(term in norm_query for term in ["quy trinh", "quy dinh", "huong dan", "chinh sach", "sop", "policy"])
+        has_quy_trinh_in_query = "quy trinh" in norm_query
+
         hits: list[SearchHit] = []
         with path.open("r", encoding="utf-8") as handle:
             for line in handle:
@@ -98,10 +137,15 @@ class LocalRagIndex:
                     continue
                 if category and not category_matches(payload, category):
                     continue
-                text = clean_retrieval_text(payload.get("text") or "")
-                if not text or is_low_value_retrieval_text(text):
-                    continue
-                text_terms = set(tokenize(normalized_text(text + " " + payload["title"] + " " + payload["doc_id"])))
+                
+                text = payload.get("text") or ""
+                # Use pre-calculated terms if available
+                terms_list = payload.get("terms")
+                if terms_list is not None:
+                    text_terms = set(terms_list)
+                else:
+                    text_terms = set(tokenize(normalized_text(text + " " + payload["title"] + " " + payload["doc_id"])))
+                
                 score = len(text_terms & query_terms)
                 if payload["doc_id"].lower() in query.lower():
                     score += 5
@@ -109,13 +153,39 @@ class LocalRagIndex:
                     score += 10
                 if score <= 0:
                     continue
-                score += phrase_score(query=query, text=text, title=payload.get("title") or "")
-                score += retrieval_quality_adjustment(
-                    text=text,
-                    title=payload.get("title"),
-                    category=payload.get("category"),
+                
+                # phrase score using pre-calculated target if available
+                score += phrase_score(
                     query=query,
+                    text=text,
+                    title=payload.get("title") or "",
+                    norm_target=payload.get("norm_target"),
                 )
+                
+                # Optimized adjustment using pre-calculated hits if available
+                if "content_hits" in payload:
+                    adjustment = 0
+                    content_hits = payload["content_hits"]
+                    if content_hits >= 2 and is_query_procedure:
+                        adjustment += content_hits * 2
+                    adjustment -= payload["low_hits"]
+                    if payload["is_aggregate"]:
+                        adjustment -= 30
+                    if payload["contains_raw_markup"]:
+                        adjustment -= 2
+                    if payload["is_low_value"]:
+                        adjustment -= 4
+                    if has_quy_trinh_in_query and payload["is_procedure_like"]:
+                        adjustment += 4
+                    score += adjustment
+                else:
+                    score += retrieval_quality_adjustment(
+                        text=text,
+                        title=payload.get("title"),
+                        category=payload.get("category"),
+                        query=query,
+                    )
+                
                 if score <= 0:
                     continue
                 hits.append(
@@ -160,9 +230,9 @@ def category_matches(payload: dict[str, object], category: str) -> bool:
     return False
 
 
-def phrase_score(*, query: str, text: str, title: object = "") -> int:
+def phrase_score(*, query: str, text: str, title: object = "", norm_target: str | None = None) -> int:
     normalized_query = normalized_text(query)
-    normalized_target = normalized_text(f"{title} {text}")
+    normalized_target = norm_target if norm_target is not None else normalized_text(f"{title} {text}")
     score = 0
     if "xu ly su co" in normalized_query and "xu ly su co" in normalized_target:
         score += 8
@@ -171,3 +241,4 @@ def phrase_score(*, query: str, text: str, title: object = "") -> int:
     if "quy trinh" in normalized_query and "quy trinh" in normalized_target:
         score += 2
     return score
+

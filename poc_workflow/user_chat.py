@@ -20,6 +20,20 @@ DEFAULT_SESSION_TTL_SECONDS = 30 * 60
 DEFAULT_CONTEXT_TURN_LIMIT = 6
 DEFAULT_ANSWER_STYLE = "brief"
 
+
+def sanitize_debug_string(value: Any) -> str | None:
+    if not value:
+        return None
+    text = str(value)
+    # Remove Windows file paths
+    text = re.sub(r'[A-Za-z]:\\[^ \n\r\t\"\'\<\>]+', '[PATH]', text)
+    # Remove Unix file paths
+    text = re.sub(r'/[^ \n\r\t\"\'\<\>]+/[^ \n\r\t\"\'\<\>]+', '[PATH]', text)
+    # Remove token/api key looking patterns
+    text = re.sub(r'sk-[a-zA-Z0-9]{20,}', '[KEY]', text)
+    text = re.sub(r'Bearer\s+[a-zA-Z0-9\.\-_]{10,}', 'Bearer [TOKEN]', text, flags=re.IGNORECASE)
+    return text
+
 ANSWER_STYLES = [
     {"id": "brief", "label": "Ngắn gọn"},
     {"id": "steps", "label": "Từng bước"},
@@ -188,10 +202,10 @@ def user_chat_response(
         "policy": public_policy_summary(policy),
         "template_id": template_id,
         "answer_style": active_answer_style,
-        "answer_source": result.get("answer_source") or "no_answer",
+        "answer_source": sanitize_debug_string(result.get("answer_source") or "no_answer"),
         "llm_used": bool(result.get("llm_used")),
-        "llm_error": result.get("llm_error"),
-        "fallback_reason": result.get("fallback_reason"),
+        "llm_error": sanitize_debug_string(result.get("llm_error")),
+        "fallback_reason": sanitize_debug_string(result.get("fallback_reason")),
         "session_id": active_session_id,
         "session": {
             "session_id": active_session_id,
@@ -300,11 +314,14 @@ def format_user_answer(answer: str, citations: list[dict[str, Any]], answer_styl
     text = answer.strip() or NO_SOURCE_ANSWER
     if contains_raw_markup(text):
         text = clean_retrieval_text(text)
-    if text == NO_SOURCE_ANSWER or not citations:
-        return NO_SOURCE_ANSWER if not citations else text
+    
+    normalized_ans = normalized_text(text)
+    if "khong tim thay can cu" in normalized_ans or text == NO_SOURCE_ANSWER or not citations:
+        return NO_SOURCE_ANSWER
+        
     if has_answer_headings(text):
         return normalize_answer_headings(text)
-    if "Tóm tắt:" in text and "Nguồn:" in text:
+    if "### Tóm tắt:" in text and "### Nguồn:" in text:
         return text
     source_text = ", ".join(
         f"{citation.get('doc_id')} v{citation.get('version')}"
@@ -316,7 +333,7 @@ def format_user_answer(answer: str, citations: list[dict[str, Any]], answer_styl
         body = "\n".join(f"- [ ] {item}" for item in _answer_points(text))
     elif answer_style == "steps":
         body = "\n".join(f"{index}. {item}" for index, item in enumerate(_answer_points(text), start=1))
-    return f"Tóm tắt:\n{text}\n\nCác bước / Nội dung chính:\n{body}\n\nNguồn:\n{source_text}"
+    return f"### Tóm tắt:\n{text}\n\n### Các bước / Nội dung chính:\n{body}\n\n### Nguồn:\n{source_text}"
 
 
 def has_answer_headings(text: str) -> bool:
@@ -335,11 +352,11 @@ def normalize_answer_headings(text: str) -> str:
         normalized_heading = normalized_text(heading)
         rest = rest.strip().strip("*").strip()
         if "tom tat" in normalized_heading:
-            lines.append("Tóm tắt:" + (f" {rest}" if rest else ""))
+            lines.append("### Tóm tắt:" + (f" {rest}" if rest else ""))
         elif "cac buoc" in normalized_heading or "noi dung chinh" in normalized_heading:
-            lines.append("Các bước / Nội dung chính:" + (f" {rest}" if rest else ""))
+            lines.append("### Các bước / Nội dung chính:" + (f" {rest}" if rest else ""))
         elif "nguon" in normalized_heading:
-            lines.append("Nguồn:" + (f" {rest}" if rest else ""))
+            lines.append("### Nguồn:" + (f" {rest}" if rest else ""))
         else:
             lines.append(line)
     return "\n".join(lines).strip()
