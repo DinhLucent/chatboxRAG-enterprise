@@ -14,6 +14,8 @@ const state = {
   llmTestStatus: null,
   lastQueryLogId: null,
   generatedPrompt: null,
+  promptTemplates: { default_mode: "process_raw", modes: [] },
+  activePromptTab: "task",
   adminUnlocked: false,
   authStatus: { required: true, configured: false },
   selectedReviewRecord: null,
@@ -23,6 +25,59 @@ const state = {
 };
 
 const ADMIN_VIEWS = new Set(["upload", "review", "operations"]);
+
+const UPLOAD_WORKFLOW_STEPS = [
+  { id: "waiting", label: "Chờ file", hint: "File nằm trong inbox và chưa được agent nhận xử lý." },
+  { id: "prepare", label: "Nhận file", hint: "Tạo workplace xử lý tuần tự cho một file." },
+  { id: "classify", label: "Phân loại", hint: "Nhận diện nhóm tài liệu và hướng xử lý." },
+  { id: "mineru_convert", label: "MinerU", hint: "Convert/extract bằng MinerU, gồm OCR khi cần." },
+  { id: "compare_sources", label: "So sánh nguồn", hint: "So sánh PDF/XLSX và chọn bản sạch hơn." },
+  { id: "preclean", label: "Pre-clean", hint: "Loại nhiễu rõ ràng, giữ tối đa nội dung nguồn." },
+  { id: "domain_agent", label: "Domain agent", hint: "Chuẩn hóa nội dung theo domain quy trình." },
+  { id: "handoff_check", label: "Handoff", hint: "Kiểm tra bàn giao giữa các sub-agent." },
+  { id: "qa", label: "QA", hint: "Đối chiếu ý nghĩa, cấu trúc, citation và lỗi synthetic." },
+  { id: "repair_loop", label: "Repair", hint: "Trả về đúng agent để sửa nếu QA fail." },
+  { id: "rag_ready", label: "RAG-ready", hint: "Đóng schema, metadata và chunk/citation map." },
+  { id: "review", label: "Human review", hint: "Admin duyệt trước khi đồng bộ tri thức." },
+  { id: "done", label: "Approved", hint: "File đã pass và sẵn sàng cho knowledge base." },
+  { id: "ocr_required", label: "Cần OCR", hint: "Cần OCR hoặc kiểm tra thủ công trước khi tiếp tục." },
+  { id: "failed", label: "Lỗi", hint: "Workflow dừng vì lỗi cần xử lý." },
+];
+
+const WORKFLOW_STEP_ALIASES = {
+  waiting: "waiting",
+  prepare: "prepare",
+  classify: "classify",
+  route: "classify",
+  check_service: "mineru_convert",
+  submit: "mineru_convert",
+  queue: "mineru_convert",
+  parse: "mineru_convert",
+  download: "mineru_convert",
+  build_outputs: "mineru_convert",
+  mineru: "mineru_convert",
+  mineru_convert: "mineru_convert",
+  source_probe: "compare_sources",
+  compare_sources: "compare_sources",
+  preclean: "preclean",
+  clean: "preclean",
+  normalize: "domain_agent",
+  domain_agent: "domain_agent",
+  handoff: "handoff_check",
+  handoff_check: "handoff_check",
+  qa: "qa",
+  verify: "qa",
+  repair: "repair_loop",
+  repair_loop: "repair_loop",
+  rag_ready: "rag_ready",
+  formatter: "rag_ready",
+  review: "review",
+  done: "done",
+  ocr_required: "ocr_required",
+  failed: "failed",
+};
+
+const WORKFLOW_EXCEPTION_STEPS = new Set(["ocr_required", "failed"]);
 
 class AuthRequiredError extends Error {
   constructor(message) {
@@ -105,11 +160,25 @@ function escapeHtml(value) {
 }
 
 async function refreshAll() {
-  const [authStatus, health, manifest, uploadQueue, gaps, queries, runs, incidents, diagnostics, llmPresets, llmConfig] = await Promise.all([
+  const [
+    authStatus,
+    health,
+    manifest,
+    uploadQueue,
+    promptTemplates,
+    gaps,
+    queries,
+    runs,
+    incidents,
+    diagnostics,
+    llmPresets,
+    llmConfig,
+  ] = await Promise.all([
     api("/api/auth-status"),
     api("/api/health"),
     api("/api/manifest"),
     api("/api/upload-queue"),
+    api("/api/agent-prompts/templates"),
     api("/api/gaps"),
     api("/api/queries"),
     api("/api/ingestion-runs"),
@@ -118,7 +187,7 @@ async function refreshAll() {
     api("/api/llm/presets"),
     api("/api/llm/config"),
   ]);
-  Object.assign(state, { authStatus, health, manifest, uploadQueue, gaps, queries, runs, incidents, diagnostics, llmPresets, llmConfig });
+  Object.assign(state, { authStatus, health, manifest, uploadQueue, promptTemplates, gaps, queries, runs, incidents, diagnostics, llmPresets, llmConfig });
   syncAdminAccess();
   if (!state.llmDraft) {
     state.llmDraft = llmConfigToDraft(llmConfig, llmPresets);
@@ -134,6 +203,7 @@ async function refreshAll() {
   renderServiceBanner();
   renderProviderOptions();
   renderInbox();
+  renderPromptTemplates();
   renderManifest();
   renderPending();
   renderQuality();
@@ -197,6 +267,8 @@ function renderUploadWorkflow() {
   if (!cardsTarget || !rowsTarget) return;
 
   const summary = state.uploadQueue?.summary || {};
+  const items = state.uploadQueue?.items || [];
+  const overviewTarget = qs("#uploadWorkflowOverview");
   const statusOrder = ["queue", "processing", "done", "ocr_required", "failed"];
   cardsTarget.innerHTML = statusOrder
     .map((status) => `
@@ -206,8 +278,10 @@ function renderUploadWorkflow() {
       </div>
     `)
     .join("");
+  if (overviewTarget) {
+    overviewTarget.innerHTML = renderWorkflowOverview(items);
+  }
 
-  const items = state.uploadQueue?.items || [];
   rowsTarget.innerHTML = items.length
     ? items.map(renderQueueRow).join("")
     : `
@@ -236,10 +310,64 @@ function renderUploadWorkflow() {
   }
 }
 
+function renderPromptTemplates() {
+  const select = qs("#promptModeSelect");
+  const help = qs("#promptModeHelp");
+  const branchInput = qs("#goalBranchInput");
+  if (branchInput && !branchInput.dataset.touched) {
+    branchInput.value = state.promptTemplates?.default_goal_branch || branchInput.value || "codex/upload-data-long-run";
+  }
+  if (!select) {
+    renderPromptTabs();
+    return;
+  }
+  const templates = state.promptTemplates?.modes || [];
+  const current = select.value || state.promptTemplates?.default_mode || "process_raw";
+  select.innerHTML = templates.length
+    ? templates
+        .map(
+          (mode) => `
+            <option value="${escapeHtml(mode.id)}">${escapeHtml(mode.label || mode.id)}</option>
+          `
+        )
+        .join("")
+    : `<option value="process_raw">Xu ly raw data</option>`;
+  const nextValue = templates.some((mode) => mode.id === current)
+    ? current
+    : state.promptTemplates?.default_mode || templates[0]?.id || "process_raw";
+  select.value = nextValue;
+  renderPromptModeHelp();
+  renderPromptTabs();
+}
+
+function renderPromptModeHelp() {
+  const select = qs("#promptModeSelect");
+  const help = qs("#promptModeHelp");
+  if (!select || !help) return;
+  const mode = (state.promptTemplates?.modes || []).find((item) => item.id === select.value);
+  help.textContent = mode?.description || "Chon che do prompt de dieu phoi AI agent xu ly data dung workflow.";
+}
+
+function renderPromptTabs() {
+  document.querySelectorAll(".prompt-tab-button").forEach((button) => {
+    button.classList.toggle("active", button.dataset.promptTab === state.activePromptTab);
+  });
+  document.querySelectorAll(".prompt-tab-pane").forEach((pane) => {
+    pane.classList.toggle("active", pane.id === `${state.activePromptTab}PromptPane`);
+  });
+}
+
+function selectPromptTab(tab) {
+  state.activePromptTab = tab === "goal" ? "goal" : "task";
+  renderPromptTabs();
+}
+
 function renderQueueRow(item) {
   const selectable = ["queue", "processing"].includes(item.status);
   const trace = item.prompt_id
-    ? `<br>Prompt: ${escapeHtml(item.prompt_id)}${item.prompt_version ? ` | ${escapeHtml(item.prompt_version)}` : ""}`
+    ? `<br>Prompt: ${escapeHtml(item.prompt_id)}${item.prompt_version ? ` | ${escapeHtml(item.prompt_version)}` : ""}${
+        item.prompt_mode ? ` | ${escapeHtml(item.prompt_mode)}` : ""
+      }`
     : "";
   return `
     <tr>
@@ -268,14 +396,107 @@ function renderQueueRow(item) {
 
 function renderProcessingStage(item) {
   const step = item.processing_step || defaultStepForStatus(item.status);
+  const visualStep = workflowVisualStep(item);
   const label = item.processing_step_label || processingStepLabel(step);
+  const visualLabel = processingStepLabel(visualStep);
+  const rawLabel = label && label !== visualLabel ? `<span class="stage-raw">${escapeHtml(label)}</span>` : "";
   const detail = item.processing_detail ? `<div class="item-meta">${escapeHtml(item.processing_detail)}</div>` : "";
   const qa = item.qa_status
     ? `<div class="item-meta">QA: ${escapeHtml(item.qa_status)}${
         item.qa_issues?.length ? ` | ${escapeHtml(item.qa_issues.join(", "))}` : ""
       }</div>`
     : "";
-  return `<div class="stage-cell"><span class="status stage-${escapeHtml(step)}">${escapeHtml(label)}</span>${detail}${qa}</div>`;
+  return `
+    <div class="stage-cell">
+      <div class="stage-current">
+        <span class="status stage-${escapeHtml(visualStep)}">${escapeHtml(visualLabel)}</span>
+        ${rawLabel}
+      </div>
+      ${renderWorkflowTimeline(item)}
+      ${detail}${qa}
+    </div>
+  `;
+}
+
+function renderWorkflowOverview(items) {
+  const activeCounts = items.reduce((counts, item) => {
+    const step = workflowVisualStep(item);
+    counts[step] = (counts[step] || 0) + 1;
+    return counts;
+  }, {});
+  return `
+    <div class="workflow-overview-rail" role="list">
+      ${UPLOAD_WORKFLOW_STEPS.map((step, index) => {
+        const count = activeCounts[step.id] || 0;
+        const stateClass = count ? "active" : "waiting";
+        return `
+          <div class="workflow-overview-step ${stateClass}" role="listitem" title="${escapeHtml(step.hint)}">
+            <span class="workflow-step-index">${index + 1}</span>
+            <span class="workflow-step-label">${escapeHtml(step.label)}</span>
+            <span class="workflow-step-count">${escapeHtml(count)}</span>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function renderWorkflowTimeline(item) {
+  const activeStep = workflowVisualStep(item);
+  const history = workflowHistorySteps(item);
+  const activeIndex = workflowStepIndex(activeStep);
+  const terminalException = WORKFLOW_EXCEPTION_STEPS.has(activeStep);
+  return `
+    <div class="workflow-rail" role="list" aria-label="Workflow xử lý data">
+      ${UPLOAD_WORKFLOW_STEPS.map((step, index) => {
+        const stateClass = workflowTimelineState(step.id, index, activeStep, activeIndex, history, terminalException);
+        return `
+          <span class="workflow-step ${stateClass}" role="listitem" title="${escapeHtml(step.label)} - ${escapeHtml(step.hint)}">
+            <span class="workflow-step-dot" aria-hidden="true"></span>
+            <span class="workflow-step-label">${escapeHtml(step.label)}</span>
+          </span>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function workflowTimelineState(stepId, index, activeStep, activeIndex, history, terminalException) {
+  if (stepId === activeStep) {
+    return activeStep === "failed" ? "failed active" : "active";
+  }
+  if (history.has(stepId) || (!terminalException && activeIndex > index)) {
+    return "done";
+  }
+  return "waiting";
+}
+
+function workflowVisualStep(item) {
+  const rawStep = item.processing_step || defaultStepForStatus(item.status);
+  if (item.status === "done") return "done";
+  if (item.status === "ocr_required") return "ocr_required";
+  if (item.status === "failed") return "failed";
+  return normalizeWorkflowStep(rawStep);
+}
+
+function workflowHistorySteps(item) {
+  const steps = new Set();
+  (item.processing_history || []).forEach((event) => {
+    const step = normalizeWorkflowStep(event.step);
+    if (step) {
+      steps.add(step);
+    }
+  });
+  return steps;
+}
+
+function normalizeWorkflowStep(step) {
+  const key = String(step || "").trim();
+  return WORKFLOW_STEP_ALIASES[key] || key || "waiting";
+}
+
+function workflowStepIndex(step) {
+  return UPLOAD_WORKFLOW_STEPS.findIndex((candidate) => candidate.id === step);
 }
 
 function renderQueueAction(item) {
@@ -360,13 +581,22 @@ function processingStepLabel(step) {
   const labels = {
     waiting: "Đợi xử lý",
     prepare: "Chuẩn bị",
+    classify: "Phân loại",
     check_service: "Kiểm tra dịch vụ",
     submit: "Gửi xử lý",
     queue: "Vào hàng chờ",
     parse: "Phân tích",
     download: "Tải kết quả",
     build_outputs: "Dựng đầu ra",
+    mineru_convert: "MinerU convert",
+    compare_sources: "So sánh nguồn",
+    preclean: "Pre-clean",
+    domain_agent: "Domain agent",
+    handoff_check: "Handoff check",
     qa: "Kiểm tra QA",
+    repair_loop: "Repair loop",
+    rag_ready: "RAG-ready",
+    review: "Human review",
     done: "Hoàn tất",
     ocr_required: "Cần OCR",
     failed: "Lỗi",
@@ -930,6 +1160,92 @@ function renderMarkdownPreview(markdown, citation, citationPreview = null) {
   return renderReadableMarkdownViewer(viewerLines);
 }
 
+function renderSourcePreview(source) {
+  if (!source?.exists) {
+    return `<div class="empty compact-empty">Không tìm thấy file gốc để đối chiếu.</div>`;
+  }
+  const kind = source.kind || "binary";
+  if (kind === "pdf") {
+    return `
+      <iframe
+        class="source-preview-iframe"
+        title="File PDF gốc"
+        src="${escapeHtml(source.file_url || "")}"
+      ></iframe>
+    `;
+  }
+  if (kind === "image") {
+    return `<img class="source-preview-image" src="${escapeHtml(source.file_url || "")}" alt="File gốc" />`;
+  }
+  if (kind === "excel") {
+    return renderExcelPreview(source.excel || {});
+  }
+  if (kind === "text") {
+    const content = source.text?.content || "";
+    const lines = content.split(/\r?\n/).slice(0, 500).map((line, index) => ({
+      line: index + 1,
+      text: line,
+      highlight: false,
+    }));
+    return renderReadableMarkdownViewer(lines);
+  }
+  return `
+    <div class="review-alert info">
+      <strong>File gốc không render trực tiếp</strong>
+      <span>${escapeHtml(source.file_name || source.path || "Nguồn")} có thể mở bằng ứng dụng phù hợp trên máy.</span>
+    </div>
+  `;
+}
+
+function renderExcelPreview(excel) {
+  if (excel.error) {
+    return `<div class="review-alert warning"><strong>Không đọc được XLSX</strong><span>${escapeHtml(excel.error)}</span></div>`;
+  }
+  const sheet = (excel.sheets || [])[0];
+  if (!sheet?.rows?.length) {
+    return `<div class="empty compact-empty">Không có bảng preview trong file Excel.</div>`;
+  }
+  return `
+    <div class="excel-preview">
+      <div class="item-meta">Sheet: ${escapeHtml(sheet.name)} | ${escapeHtml(excel.sheet_count || 1)} sheet</div>
+      <div class="excel-preview-scroll">
+        <table class="excel-preview-table">
+          <tbody>
+            ${sheet.rows.map((row) => `
+              <tr>
+                ${row.map((cell) => `<td>${escapeHtml(cell || "")}</td>`).join("")}
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function renderSourceCompare(detail) {
+  const source = detail.source_preview || {};
+  const markdown = detail.markdown || {};
+  return `
+    <div class="source-compare-grid">
+      <section class="source-compare-pane">
+        <div class="source-compare-heading">
+          <strong>File gốc</strong>
+          <span>${escapeHtml(source.file_name || source.path || "-")}</span>
+        </div>
+        <div class="source-preview-frame">${renderSourcePreview(source)}</div>
+      </section>
+      <section class="source-compare-pane">
+        <div class="source-compare-heading">
+          <strong>Bản render / Markdown</strong>
+          <span>${escapeHtml(markdown.path || "-")}</span>
+        </div>
+        <div class="source-preview-frame">${renderMarkdownPreview(markdown, null, null)}</div>
+      </section>
+    </div>
+  `;
+}
+
 async function copyText(content, message = "Đã sao chép") {
   if (!String(content || "").trim()) {
     toast("Không có nội dung để sao chép");
@@ -1007,6 +1323,7 @@ function renderDocumentInspector(targetSelector, detail, options = {}) {
 
     <div class="inspector-tabs" role="tablist" aria-label="Các phần hồ sơ tài liệu">
       <button class="inspector-tab active" type="button" data-tab="metadata">Metadata</button>
+      <button class="inspector-tab" type="button" data-tab="compare">Đối chiếu</button>
       <button class="inspector-tab" type="button" data-tab="markdown">Markdown</button>
       <button class="inspector-tab" type="button" data-tab="qa">Báo cáo QA</button>
       <button class="inspector-tab" type="button" data-tab="versions">Phiên bản</button>
@@ -1014,6 +1331,9 @@ function renderDocumentInspector(targetSelector, detail, options = {}) {
 
     <div class="inspector-section" data-section="metadata">
       <pre class="json-box compact">${jsonBlock({ manifest: record, source_metadata: metadataSidecar })}</pre>
+    </div>
+    <div class="inspector-section" data-section="compare" hidden>
+      ${renderSourceCompare(detail)}
     </div>
     <div class="inspector-section" data-section="markdown" hidden>
       ${markdown.truncated ? `<div class="review-alert warning">Bản xem trước Markdown đã được rút gọn để giữ hiệu năng trình duyệt.</div>` : ""}
@@ -1776,7 +2096,18 @@ function switchView(viewName) {
   qs(`#view-${viewName}`)?.classList.add("active");
   const metrics = qs("#metrics");
   if (metrics) {
-    metrics.hidden = viewName === "upload";
+    metrics.hidden = (viewName === "upload" || viewName === "architecture");
+  }
+  if (viewName === "architecture") {
+    const activeTabButton = document.querySelector("[data-arch-tab].active");
+    const activeTab = activeTabButton ? activeTabButton.dataset.archTab : "runtime";
+    if (typeof mermaid !== 'undefined') {
+      requestAnimationFrame(() => {
+        mermaid.run({
+          querySelector: `#arch-${activeTab}-pane .mermaid`,
+        }).catch((err) => console.error("Mermaid trigger error:", err));
+      });
+    }
   }
   if (window.matchMedia("(max-width: 980px)").matches) {
     const activeView = qs(`#view-${viewName}`);
@@ -1801,14 +2132,42 @@ async function generateAgentPrompt(paths = null) {
     toast("Chọn ít nhất một file trong hàng chờ");
     return;
   }
+  const promptMode = qs("#promptModeSelect")?.value || state.promptTemplates?.default_mode || "process_raw";
+  const adminRequest = qs("#promptRequestInput")?.value?.trim() || "";
   const result = await api("/api/agent-prompts/generate", {
     method: "POST",
-    body: JSON.stringify({ relative_paths: relativePaths }),
+    body: JSON.stringify({
+      relative_paths: relativePaths,
+      prompt_mode: promptMode,
+      admin_request: adminRequest,
+    }),
   });
   state.generatedPrompt = result;
   await refreshUploadQueue();
   renderAgentPrompt(result.prompt, result);
   toast("Đã tạo prompt tác nhân");
+}
+
+async function generateAgentGoalPrompt(paths = null) {
+  const relativePaths = paths || selectedQueuePaths();
+  if (!relativePaths.length) {
+    toast("Chọn ít nhất một file trong hàng chờ");
+    return;
+  }
+  const result = await api("/api/agent-prompts/generate-goal", {
+    method: "POST",
+    body: JSON.stringify({
+      relative_paths: relativePaths,
+      goal_target: qs("#goalTargetInput")?.value?.trim() || null,
+      branch: qs("#goalBranchInput")?.value?.trim() || state.promptTemplates?.default_goal_branch || null,
+      verification: qs("#goalVerificationInput")?.value?.trim() || null,
+      admin_request: qs("#goalRequestInput")?.value?.trim() || "",
+    }),
+  });
+  state.generatedPrompt = result;
+  await refreshUploadQueue();
+  renderAgentPrompt(result.prompt, result);
+  toast("Đã tạo GOAL prompt long-run");
 }
 
 function renderAgentPrompt(prompt, trace = null) {
@@ -1819,7 +2178,9 @@ function renderAgentPrompt(prompt, trace = null) {
   const traceTarget = qs("#promptTrace");
   if (traceTarget) {
     if (trace?.prompt_id) {
-      traceTarget.textContent = `prompt_id: ${trace.prompt_id} | prompt_version: ${trace.prompt_version || "-"} | số file: ${
+      traceTarget.textContent = `prompt_id: ${trace.prompt_id} | prompt_version: ${trace.prompt_version || "-"} | prompt_mode: ${
+        trace.prompt_mode || "-"
+      } | so file: ${
         trace.files?.length ?? "-"
       }`;
     } else {
@@ -1943,6 +2304,14 @@ function setupActions() {
     toast("Đã quét thư mục nguồn");
   });
   qs("#generatePromptBtn").addEventListener("click", () => generateAgentPrompt().catch((err) => toast(err.message)));
+  qs("#generateGoalPromptBtn")?.addEventListener("click", () => generateAgentGoalPrompt().catch((err) => toast(err.message)));
+  qs("#goalBranchInput")?.addEventListener("input", (event) => {
+    event.target.dataset.touched = "true";
+  });
+  document.querySelectorAll(".prompt-tab-button").forEach((button) => {
+    button.addEventListener("click", () => selectPromptTab(button.dataset.promptTab));
+  });
+  qs("#promptModeSelect")?.addEventListener("change", renderPromptModeHelp);
   qs("#copyPromptBtn").addEventListener("click", () => copyPrompt().catch((err) => toast(err.message)));
   qs("#copySelectedPromptBtn").addEventListener("click", async () => {
     const selected = selectedQueuePaths()
@@ -1955,6 +2324,7 @@ function setupActions() {
     renderAgentPrompt(selected[0].prompt, {
       prompt_id: selected[0].prompt_id,
       prompt_version: selected[0].prompt_version,
+      prompt_mode: selected[0].prompt_mode,
       files: selected,
     });
     await copyPrompt(selected[0].prompt);
@@ -2140,8 +2510,62 @@ function readFileAsDataUrl(file) {
   });
 }
 
+function initMermaid() {
+  if (typeof mermaid !== 'undefined') {
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'neutral',
+      securityLevel: 'loose',
+      flowchart: {
+        useWidth: true,
+        htmlLabels: true
+      }
+    });
+  }
+}
+
+function setupArchitectureTabs() {
+  document.querySelectorAll("[data-arch-tab]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const activeTab = button.dataset.archTab;
+      
+      // Update buttons
+      document.querySelectorAll("[data-arch-tab]").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.archTab === activeTab);
+      });
+      
+      // Update diagrams
+      document.querySelectorAll("#view-architecture .prompt-tab-pane").forEach((pane) => {
+        pane.classList.remove("active");
+      });
+      const targetPane = document.getElementById(`arch-${activeTab}-pane`);
+      if (targetPane) {
+        targetPane.classList.add("active");
+      }
+      
+      // Update descriptions
+      document.querySelectorAll(".arch-desc-pane").forEach((desc) => {
+        desc.classList.remove("active-desc");
+      });
+      const targetDesc = document.getElementById(`arch-${activeTab}-desc`);
+      if (targetDesc) {
+        targetDesc.classList.add("active-desc");
+      }
+      
+      // Re-run mermaid for the newly opened tab
+      if (typeof mermaid !== 'undefined') {
+        mermaid.run({
+          querySelector: `#arch-${activeTab}-pane .mermaid`,
+        }).catch(() => {});
+      }
+    });
+  });
+}
+
+initMermaid();
 setupNavigation();
 setupActions();
+setupArchitectureTabs();
 setupAuthPanel();
 syncAdminAccess();
 refreshAll().catch((err) => {

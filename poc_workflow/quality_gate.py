@@ -17,6 +17,7 @@ from .agent_prompt_queue import list_upload_queue
 from .chatbot import ask
 from .config import REQUIRED_METADATA_FIELDS
 from .data_maintenance import audit_manifest_taxonomy
+from .data_workflow import REQUIRED_SKILLS, validate_agent_skill_registry
 from .document_qa import mojibake_score
 from .evaluation import evaluate_case, load_cases, resolve_cases_path, summarize_results
 from .llm import OpenAICompatibleClient, OpenAICompatibleConfig
@@ -71,8 +72,11 @@ REQUIRED_API_ROUTES = {
     "/api/health",
     "/api/manifest",
     "/api/documents/{doc_id}/{version}",
+    "/api/documents/{doc_id}/{version}/source-file",
     "/api/upload-queue",
+    "/api/agent-prompts/templates",
     "/api/agent-prompts/generate",
+    "/api/agent-prompts/generate-goal",
     "/api/upload-queue/status",
     "/api/approve",
     "/api/reject",
@@ -90,7 +94,13 @@ FRONTEND_REQUIRED_HTML_IDS = {
     "authPanel",
     "operatorAccessBtn",
     "uploadStatusCards",
+    "uploadWorkflowOverview",
     "uploadQueueRows",
+    "promptModeSelect",
+    "promptRequestInput",
+    "goalPromptTab",
+    "goalPromptPane",
+    "generateGoalPromptBtn",
     "agentPromptBox",
     "generatePromptBtn",
     "copyPromptBtn",
@@ -196,6 +206,7 @@ def run_quality_gate(
         checks.append(_timed_check("preflight", lambda: preflight_gate(root)))
         checks.append(_timed_check("static", lambda: static_gate(root, cases, sandbox_path / "static_route_smoke")))
         checks.append(_timed_check("frontend_static", lambda: frontend_static_gate(root)))
+        checks.append(_timed_check("agent_skills", lambda: agent_skills_gate(root)))
         checks.append(
             _timed_check(
                 "unit_integration",
@@ -540,6 +551,73 @@ def static_gate(root: Path, cases: list[QualityGateCase], route_workspace: Path 
     )
 
 
+def agent_skills_gate(root: Path) -> dict[str, Any]:
+    failed_cases: list[str] = []
+    skills_root = Path(__file__).resolve().parent / "agent_skills"
+    registry_path = skills_root / "registry.json"
+    registry: dict[str, Any] = {}
+    if not registry_path.exists():
+        failed_cases.append("Missing agent_skills/registry.json")
+    else:
+        try:
+            registry = json.loads(registry_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            failed_cases.append(f"registry.json does not parse: {exc}")
+
+    default_order = registry.get("default_order") if registry else []
+    if registry:
+        failed_cases.extend(validate_agent_skill_registry(registry))
+        if (
+            "ragflow-schema-indexer" in default_order
+            and "source-output-quality-auditor" in default_order
+            and default_order.index("ragflow-schema-indexer")
+            < max(index for index, skill in enumerate(default_order) if skill == "source-output-quality-auditor")
+        ):
+            failed_cases.append("ragflow-schema-indexer must run after the final source-output-quality-auditor")
+
+    for skill_name in sorted(REQUIRED_SKILLS):
+        skill_path = skills_root / skill_name / "SKILL.md"
+        if not skill_path.exists():
+            failed_cases.append(f"Missing skill file: {skill_name}/SKILL.md")
+            continue
+        text = skill_path.read_text(encoding="utf-8")
+        for fragment in (
+            "description:",
+            "## When to Use",
+            "## When NOT to Use",
+            "## Workflow",
+            "## Inputs",
+            "## Outputs / Handoff JSON",
+            "## Failure Handling",
+            "## Quality Gates",
+        ):
+            if fragment not in text:
+                failed_cases.append(f"{skill_name} missing required fragment: {fragment}")
+        for json_block in re.findall(r"```json\s*(.*?)```", text, flags=re.DOTALL):
+            try:
+                json.loads(json_block)
+            except Exception as exc:
+                failed_cases.append(f"{skill_name} has invalid JSON example: {exc}")
+
+    if failed_cases:
+        return check_result(
+            "agent_skills",
+            "fail",
+            "blocker",
+            "Agent skill registry or skill contracts are incomplete.",
+            "agent_skills registry + SKILL.md contract scan",
+            failed_cases=failed_cases,
+        )
+    return check_result(
+        "agent_skills",
+        "pass",
+        "blocker",
+        "Agent skill registry and handoff contracts are present.",
+        "agent_skills registry + SKILL.md contract scan",
+        metrics={"skills": sorted(REQUIRED_SKILLS), "default_order": default_order},
+    )
+
+
 def frontend_static_gate(root: Path) -> dict[str, Any]:
     failed_cases: list[str] = []
     metrics: dict[str, Any] = {}
@@ -592,8 +670,16 @@ def frontend_static_gate(root: Path) -> dict[str, Any]:
         "/api/auth-status": "frontend must fetch auth status so local demo unlocks operator views",
         "function isAdminUnlocked": "frontend must centralize admin unlock logic",
         "copyPrompt": "frontend must keep Clipboard API prompt copy path",
+        "/api/agent-prompts/templates": "frontend must load versioned Upload prompt templates through the server",
         "/api/agent-prompts/generate": "frontend must generate agent prompts through the server",
+        "/api/agent-prompts/generate-goal": "frontend must generate Codex GOAL long-run prompts through the server",
+        "generateAgentGoalPrompt": "Upload prompt panel must support GOAL mode prompt generation",
+        "prompt_mode": "frontend must send the selected prompt mode to the server",
+        "admin_request": "frontend must send admin request context to the server",
         "/api/upload-queue/status": "frontend must update demo queue status through the server",
+        "const UPLOAD_WORKFLOW_STEPS": "Upload must expose the AI-agent data workflow stages",
+        "renderWorkflowTimeline": "Upload queue rows must show active workflow progress per file",
+        "renderSourceCompare": "document inspector must support side-by-side source and Markdown review",
         "openCitationInInspector": "dashboard chat citations must open the Markdown inspector",
         "citation_preview": "dashboard citation navigation must render the server-provided Markdown preview",
         "renderReadableMarkdownViewer": "dashboard citation preview must render readable Markdown instead of raw line text",
@@ -627,6 +713,14 @@ def frontend_static_gate(root: Path) -> dict[str, Any]:
 
     required_css_fragments = (
         ".upload-grid",
+        ".workflow-overview-step",
+        ".workflow-step.active",
+        ".prompt-controls",
+        ".prompt-tabs",
+        ".prompt-tab-pane",
+        ".goal-prompt-grid",
+        ".prompt-mode-help",
+        ".source-compare-grid",
         ".documents-layout",
         "@media (max-width: 1180px)",
         "overflow-x: hidden",
@@ -932,17 +1026,49 @@ def user_workflow_gate(sandbox: Path) -> dict[str, Any]:
             metrics["upload_queue_summary"] = queue.json().get("summary")
             if queue.json().get("summary", {}).get("queue") != 1:
                 failed_cases.append("upload queue did not show one queued file")
+        templates = client.get("/api/agent-prompts/templates")
+        expect_status(templates, 200, "agent prompt templates", failed_cases)
+        if templates.status_code == 200:
+            modes = [mode.get("id") for mode in templates.json().get("modes", [])]
+            metrics["prompt_modes"] = modes
+            for required_mode in ("process_raw", "classify_discuss", "policy_change", "repair_from_qa"):
+                if required_mode not in modes:
+                    failed_cases.append(f"agent prompt templates missing mode: {required_mode}")
         prompt = client.post(
             "/api/agent-prompts/generate",
-            json={"relative_paths": ["procedure/quality_gate_upload_v1.0.md"]},
+            json={
+                "relative_paths": ["procedure/quality_gate_upload_v1.0.md"],
+                "prompt_mode": "process_raw",
+                "admin_request": "Quality gate smoke prompt.",
+            },
         )
         expect_status(prompt, 200, "generate agent prompt", failed_cases)
         if prompt.status_code == 200:
             body = prompt.json()
             metrics["prompt_id"] = body.get("prompt_id")
             metrics["prompt_version"] = body.get("prompt_version")
+            metrics["prompt_mode"] = body.get("prompt_mode")
             if not body.get("prompt_id") or not body.get("prompt_version"):
                 failed_cases.append("prompt_id or prompt_version missing")
+            if body.get("prompt_mode") != "process_raw":
+                failed_cases.append("prompt_mode missing from generated prompt response")
+        goal_prompt = client.post(
+            "/api/agent-prompts/generate-goal",
+            json={
+                "relative_paths": ["procedure/quality_gate_upload_v1.0.md"],
+                "branch": "codex/quality-gate-goal",
+                "admin_request": "Quality gate GOAL prompt.",
+            },
+        )
+        expect_status(goal_prompt, 200, "generate agent goal prompt", failed_cases)
+        if goal_prompt.status_code == 200:
+            goal_body = goal_prompt.json()
+            metrics["goal_prompt_version"] = goal_body.get("prompt_version")
+            metrics["goal_prompt_mode"] = goal_body.get("prompt_mode")
+            if goal_body.get("prompt_mode") != "goal_long_run":
+                failed_cases.append("GOAL prompt response did not report goal_long_run mode")
+            if not str(goal_body.get("prompt", "")).startswith("/goal "):
+                failed_cases.append("GOAL prompt must start with /goal")
         active = client.post(
             "/api/upload-queue/status",
             json={"relative_paths": ["procedure/quality_gate_upload_v1.0.md"], "status": "active"},

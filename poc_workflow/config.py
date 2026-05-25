@@ -42,6 +42,7 @@ DEFAULT_DIRS = [
     "manifest",
     "archive",
     "failed",
+    "rag_ready",
     "ragflow_index",
     "data",
     "eval",

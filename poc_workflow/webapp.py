@@ -7,6 +7,8 @@ import os
 import re
 import shutil
 import unicodedata
+import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +17,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from .agent_prompt_queue import generate_agent_prompt, list_upload_queue, update_upload_status
+from .agent_prompt_queue import (
+    generate_agent_goal_prompt,
+    generate_agent_prompt,
+    list_agent_prompt_templates,
+    list_upload_queue,
+    update_upload_status,
+)
 from .auth import public_auth_status, require_operator_auth
 from .chatbot import apply_feedback, ask
 from .database import QualityDatabase
@@ -161,6 +169,16 @@ class UploadInboxRequest(BaseModel):
 
 class GenerateAgentPromptRequest(BaseModel):
     relative_paths: list[str]
+    prompt_mode: str | None = None
+    admin_request: str | None = None
+
+
+class GenerateAgentGoalPromptRequest(BaseModel):
+    relative_paths: list[str]
+    goal_target: str | None = None
+    branch: str | None = None
+    verification: str | None = None
+    admin_request: str | None = None
 
 
 class UploadQueueStatusRequest(BaseModel):
@@ -292,6 +310,140 @@ def _read_json_preview(path: Path | None) -> dict[str, Any]:
         return {"exists": True, "path": str(path), "data": read_json(path)}
     except Exception as exc:
         return {"exists": True, "path": str(path), "data": None, "error": str(exc)}
+
+
+def _source_preview_payload(path: Path | None) -> dict[str, Any]:
+    if not path or not path.exists():
+        return {"exists": False, "kind": "missing", "path": str(path) if path else None}
+    suffix = path.suffix.lower()
+    payload: dict[str, Any] = {
+        "exists": True,
+        "kind": _source_preview_kind(suffix),
+        "path": str(path),
+        "file_name": path.name,
+        "suffix": suffix,
+        "size_bytes": path.stat().st_size,
+    }
+    if suffix in {".md", ".markdown", ".txt", ".csv", ".json", ".html", ".htm", ".xml"}:
+        payload["text"] = _read_text_preview(path, max_chars=80_000)
+    elif suffix == ".xlsx":
+        payload["excel"] = _xlsx_preview(path)
+    elif suffix == ".xls":
+        payload["note"] = "Legacy XLS preview is not rendered in browser; open the original source file for review."
+    return payload
+
+
+def _source_preview_kind(suffix: str) -> str:
+    if suffix == ".pdf":
+        return "pdf"
+    if suffix in {".xlsx", ".xls"}:
+        return "excel"
+    if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+        return "image"
+    if suffix in {".md", ".markdown", ".txt", ".csv", ".json", ".html", ".htm", ".xml"}:
+        return "text"
+    return "binary"
+
+
+def _xlsx_preview(path: Path, *, max_rows: int = 40, max_cols: int = 12) -> dict[str, Any]:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            shared_strings = _xlsx_shared_strings(archive)
+            sheets = _xlsx_sheet_paths(archive)
+            previews = []
+            for sheet in sheets[:3]:
+                rows = _xlsx_sheet_rows(
+                    archive,
+                    sheet["path"],
+                    shared_strings=shared_strings,
+                    max_rows=max_rows,
+                    max_cols=max_cols,
+                )
+                previews.append({"name": sheet["name"], "rows": rows, "truncated": len(rows) >= max_rows})
+            return {"sheets": previews, "sheet_count": len(sheets), "error": None}
+    except Exception as exc:
+        return {"sheets": [], "sheet_count": 0, "error": str(exc)}
+
+
+def _xlsx_shared_strings(archive: zipfile.ZipFile) -> list[str]:
+    if "xl/sharedStrings.xml" not in archive.namelist():
+        return []
+    root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+    strings: list[str] = []
+    for item in root.findall(".//{*}si"):
+        text = "".join(node.text or "" for node in item.findall(".//{*}t"))
+        strings.append(text)
+    return strings
+
+
+def _xlsx_sheet_paths(archive: zipfile.ZipFile) -> list[dict[str, str]]:
+    workbook = ET.fromstring(archive.read("xl/workbook.xml"))
+    rels = ET.fromstring(archive.read("xl/_rels/workbook.xml.rels"))
+    rel_lookup = {
+        rel.attrib.get("Id"): rel.attrib.get("Target", "")
+        for rel in rels.findall(".//{*}Relationship")
+    }
+    sheets: list[dict[str, str]] = []
+    for sheet in workbook.findall(".//{*}sheet"):
+        rel_id = sheet.attrib.get("{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id")
+        target = rel_lookup.get(rel_id, "")
+        if not target:
+            continue
+        sheet_path = target if target.startswith("xl/") else f"xl/{target.lstrip('/')}"
+        sheets.append({"name": sheet.attrib.get("name", "Sheet"), "path": sheet_path})
+    return sheets
+
+
+def _xlsx_sheet_rows(
+    archive: zipfile.ZipFile,
+    sheet_path: str,
+    *,
+    shared_strings: list[str],
+    max_rows: int,
+    max_cols: int,
+) -> list[list[str]]:
+    root = ET.fromstring(archive.read(sheet_path))
+    rows: list[list[str]] = []
+    for row in root.findall(".//{*}sheetData/{*}row"):
+        values = [""] * max_cols
+        has_value = False
+        for cell in row.findall("{*}c"):
+            col_index = _xlsx_column_index(cell.attrib.get("r", ""))
+            if col_index is None or col_index >= max_cols:
+                continue
+            value = _xlsx_cell_value(cell, shared_strings)
+            if value:
+                has_value = True
+            values[col_index] = value
+        if has_value:
+            rows.append(values)
+        if len(rows) >= max_rows:
+            break
+    return rows
+
+
+def _xlsx_column_index(cell_ref: str) -> int | None:
+    match = re.match(r"([A-Z]+)", cell_ref.upper())
+    if not match:
+        return None
+    index = 0
+    for char in match.group(1):
+        index = index * 26 + (ord(char) - ord("A") + 1)
+    return index - 1
+
+
+def _xlsx_cell_value(cell: ET.Element, shared_strings: list[str]) -> str:
+    cell_type = cell.attrib.get("t")
+    if cell_type == "inlineStr":
+        return "".join(node.text or "" for node in cell.findall(".//{*}t")).strip()
+    value_node = cell.find("{*}v")
+    raw_value = value_node.text if value_node is not None else ""
+    if cell_type == "s":
+        try:
+            return shared_strings[int(raw_value)].strip()
+        except Exception:
+            return raw_value.strip()
+    return raw_value.strip()
 
 
 def _markdown_quality(content: str) -> dict[str, int]:
@@ -482,6 +634,8 @@ def _document_detail_payload(
 
     markdown = _read_text_preview(normalized_path)
     markdown["quality"] = _markdown_quality(str(markdown.get("content") or ""))
+    source_preview = _source_preview_payload(source_path)
+    source_preview["file_url"] = f"/api/documents/{doc_id}/{version}/source-file" if source_preview.get("exists") else None
     qa_report = _read_json_preview(qa_path)
     metadata_sidecar = _read_json_preview(metadata_path)
 
@@ -566,6 +720,7 @@ def _document_detail_payload(
         "metadata_sidecar": metadata_sidecar,
         "qa_report": qa_report,
         "markdown": markdown,
+        "source_preview": source_preview,
         "canonical_key": canonical_key,
         "current_revision": current_revision,
         "latest_related_revision": latest_revision,
@@ -877,6 +1032,19 @@ def create_app(root: Path | None = None) -> FastAPI:
     ) -> dict[str, Any]:
         return _document_detail_payload(workspace, doc_id, version, anchor_id=anchor_id, excerpt=excerpt)
 
+    @app.get("/api/documents/{doc_id}/{version}/source-file")
+    def document_source_file(doc_id: str, version: str) -> FileResponse:
+        record = next(
+            (item for item in ManifestStore(workspace).load() if item.doc_id == doc_id and item.version == version),
+            None,
+        )
+        if not record:
+            raise HTTPException(status_code=404, detail="Document not found")
+        source_path = _record_path(workspace, record.source_path)
+        if not source_path or not source_path.exists():
+            raise HTTPException(status_code=404, detail="Source file not found")
+        return FileResponse(source_path, filename=source_path.name)
+
     @app.get("/api/documents/{doc_id}/{version}/citation")
     def document_citation_by_excerpt(doc_id: str, version: str, excerpt: str | None = None) -> dict[str, Any]:
         return _document_detail_payload(workspace, doc_id, version, excerpt=excerpt)
@@ -905,6 +1073,10 @@ def create_app(root: Path | None = None) -> FastAPI:
     def upload_queue_api() -> dict[str, Any]:
         return list_upload_queue(workspace)
 
+    @app.get("/api/agent-prompts/templates")
+    def agent_prompt_templates_api() -> dict[str, Any]:
+        return list_agent_prompt_templates()
+
     @app.post("/api/inbox/upload")
     def upload_inbox_api(payload: UploadInboxRequest) -> dict[str, Any]:
         try:
@@ -928,7 +1100,12 @@ def create_app(root: Path | None = None) -> FastAPI:
     @app.post("/api/agent-prompts/generate")
     def generate_agent_prompt_api(payload: GenerateAgentPromptRequest) -> dict[str, Any]:
         try:
-            return generate_agent_prompt(workspace, payload.relative_paths)
+            return generate_agent_prompt(
+                workspace,
+                payload.relative_paths,
+                prompt_mode=payload.prompt_mode,
+                admin_request=payload.admin_request,
+            )
         except Exception as exc:
             record_incident(
                 workspace,
@@ -936,7 +1113,35 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "intake",
                 "Agent prompt generation failed",
                 str(exc),
-                {"relative_paths": payload.relative_paths},
+                {
+                    "relative_paths": payload.relative_paths,
+                    "prompt_mode": payload.prompt_mode,
+                },
+            )
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/agent-prompts/generate-goal")
+    def generate_agent_goal_prompt_api(payload: GenerateAgentGoalPromptRequest) -> dict[str, Any]:
+        try:
+            return generate_agent_goal_prompt(
+                workspace,
+                payload.relative_paths,
+                goal_target=payload.goal_target,
+                branch=payload.branch,
+                verification=payload.verification,
+                admin_request=payload.admin_request,
+            )
+        except Exception as exc:
+            record_incident(
+                workspace,
+                "error",
+                "intake",
+                "Agent GOAL prompt generation failed",
+                str(exc),
+                {
+                    "relative_paths": payload.relative_paths,
+                    "branch": payload.branch,
+                },
             )
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

@@ -3,8 +3,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
+from poc_workflow.agent_prompt_queue import record_processing_status
 from poc_workflow.chatbot import NO_SOURCE_ANSWER, ask, apply_feedback
 from poc_workflow.database import QualityDatabase
+from poc_workflow.data_workflow import DataWorkflowError, append_workflow_handoff, make_handoff
 from poc_workflow.manifest import ManifestStore
 from poc_workflow.models import ManifestRecord
 from poc_workflow.converter import OcrRequiredError
@@ -168,7 +172,76 @@ def test_processing_status_and_qa_repair_basic_mojibake(tmp_path: Path) -> None:
     assert item["status"] == "done"
     assert item["processing_step"] == "done"
     assert item["qa_status"] == "repaired"
-    assert [event["step"] for event in item["processing_history"]][-2:] == ["qa", "done"]
+    history_steps = [event["step"] for event in item["processing_history"]]
+    assert "qa" in history_steps
+    assert "rag_ready" in history_steps
+    assert history_steps[-1] == "done"
+    rag_ready = tmp_path / "rag_ready" / "technical" / "procedure" / "KT-QT-005_v1.0"
+    assert (rag_ready / "schema_manifest.json").exists()
+    assert (rag_ready / "citation_manifest.json").exists()
+    assert (rag_ready / "index_manifest.json").exists()
+    workflow_log = tmp_path / ".Workplace" / "artifacts" / "procedure" / "KT-QT-005_v1.0" / "workflow" / "handoffs.jsonl"
+    assert workflow_log.exists()
+    assert '"step": "audit"' in workflow_log.read_text(encoding="utf-8")
+
+
+def test_processing_status_rejects_unknown_workflow_step(tmp_path: Path) -> None:
+    init_workspace(tmp_path)
+
+    with pytest.raises(DataWorkflowError):
+        record_processing_status(
+            tmp_path,
+            "procedure/example.md",
+            status="processing",
+            step="made_up_step",
+        )
+
+
+def test_workflow_handoff_enforces_order_and_repair_limit(tmp_path: Path) -> None:
+    artifact_root = tmp_path / ".Workplace" / "artifacts" / "procedure" / "KT-QT-009_v1.0"
+    run_id = "ragflow-run-test"
+    source_id = "KT-QT-009_v1.0"
+
+    with pytest.raises(DataWorkflowError):
+        append_workflow_handoff(
+            tmp_path,
+            artifact_root,
+            make_handoff(run_id=run_id, step="convert", status="passed", source_id=source_id, next_skill="audit"),
+        )
+
+    append_workflow_handoff(
+        tmp_path,
+        artifact_root,
+        make_handoff(run_id=run_id, step="plan", status="ready", source_id=source_id, next_skill="mineru-source-converter"),
+    )
+    append_workflow_handoff(
+        tmp_path,
+        artifact_root,
+        make_handoff(run_id=run_id, step="convert", status="passed", source_id=source_id, next_skill="source-output-quality-auditor"),
+    )
+    for _ in range(3):
+        append_workflow_handoff(
+            tmp_path,
+            artifact_root,
+            make_handoff(run_id=run_id, step="audit", status="needs_repair", source_id=source_id, next_skill="rag-markdown-repairer"),
+        )
+        append_workflow_handoff(
+            tmp_path,
+            artifact_root,
+            make_handoff(run_id=run_id, step="repair", status="passed", source_id=source_id, next_skill="source-output-quality-auditor"),
+        )
+
+    append_workflow_handoff(
+        tmp_path,
+        artifact_root,
+        make_handoff(run_id=run_id, step="audit", status="needs_repair", source_id=source_id, next_skill="rag-markdown-repairer"),
+    )
+    with pytest.raises(DataWorkflowError):
+        append_workflow_handoff(
+            tmp_path,
+            artifact_root,
+            make_handoff(run_id=run_id, step="repair", status="passed", source_id=source_id, next_skill="source-output-quality-auditor"),
+        )
 
 
 def test_query_log_feedback_and_knowledge_gap(tmp_path: Path) -> None:

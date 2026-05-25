@@ -59,19 +59,19 @@ def write_pilot_xlsx(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     workbook = Workbook()
     sheet = workbook.active
-    sheet.title = "Quy trình"
-    sheet.append(["Mã tài liệu", PILOT_DISPLAY_CODE])
-    sheet.append(["Phiên bản", "Rev 04"])
-    sheet.append(["Mục đích"])
-    sheet.append(["Đảm bảo hoạt động bảo dưỡng được thực hiện đúng kế hoạch."])
-    sheet.append(["Trách nhiệm"])
-    sheet.append(["Kỹ thuật Vùng", "Thực hiện bảo dưỡng và ghi nhận kết quả."])
-    sheet.append(["Quy trình thực hiện"])
-    sheet.append(["Bước 1", "Lập kế hoạch bảo dưỡng"])
-    sheet.append(["Bước 2", "Thông báo khách hàng và chuẩn bị công cụ"])
-    sheet.append(["Bước 3", "Thực hiện bảo dưỡng và ký BBDVKT"])
-    sheet.append(["Hồ sơ / biểu mẫu liên quan"])
-    sheet.append(["PD-TECH-A-02/BM-06", "Biên bản dịch vụ kỹ thuật"])
+    sheet.title = "Quy trinh"
+    sheet.append(["Ma tai lieu", PILOT_DISPLAY_CODE])
+    sheet.append(["Phien ban", "Rev 04"])
+    sheet.append(["Muc dich"])
+    sheet.append(["Dam bao hoat dong bao duong duoc thuc hien dung ke hoach."])
+    sheet.append(["Trach nhiem"])
+    sheet.append(["Ky thuat Vung", "Thuc hien bao duong va ghi nhan ket qua."])
+    sheet.append(["Quy trinh thuc hien"])
+    sheet.append(["Buoc 1", "Lap ke hoach bao duong"])
+    sheet.append(["Buoc 2", "Thong bao khach hang va chuan bi cong cu"])
+    sheet.append(["Buoc 3", "Thuc hien bao duong va ky BBDVKT"])
+    sheet.append(["Ho so / bieu mau lien quan"])
+    sheet.append(["PD-TECH-A-02/BM-06", "Bien ban dich vu ky thuat"])
     workbook.save(path)
 
 
@@ -86,8 +86,8 @@ def write_pilot_pdf(path: Path) -> None:
 
 
 def test_pdtech_a02_pilot_builds_single_approved_primary_record(tmp_path: Path) -> None:
-    xlsx = tmp_path / "root_source" / "technical" / "PD-TECH-A-02.Rev 04. Quy trình bảo dưỡng_29.05.23.xlsx"
-    pdf = tmp_path / "root_source" / "technical" / "PD-TECH-A-02. Rev 04. Quy trình bảo dưỡng.pdf"
+    xlsx = tmp_path / "root_source" / "technical" / "PD-TECH-A-02.Rev 04. Quy trinh bao duong_29.05.23.xlsx"
+    pdf = tmp_path / "root_source" / "technical" / "PD-TECH-A-02. Rev 04. Quy trinh bao duong.pdf"
     write_pilot_xlsx(xlsx)
     write_pilot_pdf(pdf)
     duplicate_md = tmp_path / "normalized" / "technical" / "procedure" / "KT-QT-401_v1.0.md"
@@ -97,7 +97,7 @@ def test_pdtech_a02_pilot_builds_single_approved_primary_record(tmp_path: Path) 
         [
             ManifestRecord(
                 doc_id="KT-QT-401",
-                title="PD TECH A 02. Rev 04. Quy trình bảo dưỡng",
+                title="PD TECH A 02. Rev 04. Quy trinh bao duong",
                 department="technical",
                 category="procedure",
                 source_type="internal_procedure",
@@ -135,7 +135,7 @@ def test_pdtech_a02_pilot_builds_single_approved_primary_record(tmp_path: Path) 
     assert paths.citation_map.exists()
     assert paths.normalized.name == f"{PILOT_ARTIFACT_STEM}.md"
     assert "Lap ke hoach bao duong tu MinerU raw" in paths.normalized.read_text(encoding="utf-8")
-    assert "hoáº¡ch báº£o dÆ°á»¡ng" not in paths.normalized.read_text(encoding="utf-8")
+    assert "mojibake" not in paths.normalized.read_text(encoding="utf-8")
     assert fake_mineru.calls == [xlsx.resolve()]
 
     records = ManifestStore(tmp_path).load()
@@ -160,8 +160,8 @@ def test_pdtech_a02_pilot_builds_single_approved_primary_record(tmp_path: Path) 
 
 
 def test_pdtech_a02_pilot_requires_mineru_for_raw_conversion(tmp_path: Path) -> None:
-    xlsx = tmp_path / "root_source" / "technical" / "PD-TECH-A-02.Rev 04. Quy trÃ¬nh báº£o dÆ°á»¡ng_29.05.23.xlsx"
-    pdf = tmp_path / "root_source" / "technical" / "PD-TECH-A-02. Rev 04. Quy trÃ¬nh báº£o dÆ°á»¡ng.pdf"
+    xlsx = tmp_path / "root_source" / "technical" / "PD-TECH-A-02.Rev 04. Quy trinh bao duong_29.05.23.xlsx"
+    pdf = tmp_path / "root_source" / "technical" / "PD-TECH-A-02. Rev 04. Quy trinh bao duong.pdf"
     write_pilot_xlsx(xlsx)
     write_pilot_pdf(pdf)
 
@@ -179,7 +179,7 @@ def test_pdtech_a02_pilot_requires_mineru_for_raw_conversion(tmp_path: Path) -> 
 
 def test_pilot_verify_blocks_synthetic_headings(tmp_path: Path) -> None:
     markdown = tmp_path / "draft.md"
-    markdown.write_text("# Quy trình bảo dưỡng\n\n## Fixing Metadata\n\nKhông hợp lệ.\n", encoding="utf-8")
+    markdown.write_text("# Quy trnh bo dng\n\n## Fixing Metadata\n\nKhng hp l.\n", encoding="utf-8")
     citation_map = tmp_path / "citation_map.json"
     citation_map.write_text(
         json.dumps(
@@ -187,7 +187,7 @@ def test_pilot_verify_blocks_synthetic_headings(tmp_path: Path) -> None:
                 {
                     "anchor_id": "KT-QT-002-S01-C01",
                     "source_type": "xlsx",
-                    "source_locator": {"sheet": "Quy trình", "row_start": 1, "row_end": 2},
+                    "source_locator": {"sheet": "Quy trnh", "row_start": 1, "row_end": 2},
                 }
             ]
         ),
@@ -202,7 +202,7 @@ def test_pilot_verify_blocks_synthetic_headings(tmp_path: Path) -> None:
 
 def test_pilot_verify_blocks_synthetic_heading_in_mineru_raw(tmp_path: Path) -> None:
     markdown = tmp_path / "draft.md"
-    markdown.write_text("# Quy trÃ¬nh báº£o dÆ°á»¡ng\n\n## Má»¥c Ä‘Ã­ch\n\nNá»™i dung.\n", encoding="utf-8")
+    markdown.write_text("# Quy trnh bo dng\n\n## Mc ch\n\nNi dung.\n", encoding="utf-8")
     raw = tmp_path / "raw.md"
     raw.write_text("# PD-TECH-A-02 Rev 04\n\n## Smart Fix\n\nPrompt leak.\n", encoding="utf-8")
     citation_map = tmp_path / "citation_map.json"
@@ -212,7 +212,7 @@ def test_pilot_verify_blocks_synthetic_heading_in_mineru_raw(tmp_path: Path) -> 
                 {
                     "anchor_id": "KT-QT-002-S01-C01",
                     "source_type": "xlsx",
-                    "source_locator": {"sheet": "Quy trÃ¬nh", "row_start": 1, "row_end": 2},
+                    "source_locator": {"sheet": "Quy trnh", "row_start": 1, "row_end": 2},
                 }
             ]
         ),
@@ -235,7 +235,7 @@ def test_pilot_verify_blocks_synthetic_heading_in_mineru_raw(tmp_path: Path) -> 
 
 def test_pilot_verify_blocks_missing_citation_anchor(tmp_path: Path) -> None:
     markdown = tmp_path / "draft.md"
-    markdown.write_text("# Quy trình bảo dưỡng\n\n## Mục đích\n\nNội dung.\n", encoding="utf-8")
+    markdown.write_text("# Quy trnh bo dng\n\n## Mc ch\n\nNi dung.\n", encoding="utf-8")
     citation_map = tmp_path / "citation_map.json"
     citation_map.write_text("[]", encoding="utf-8")
 
@@ -249,8 +249,8 @@ def test_ragflow_sync_uploads_only_passed_primary_source_record(tmp_path: Path, 
     pilot_md = tmp_path / "normalized" / "technical" / "procedure" / f"{PILOT_ARTIFACT_STEM}.md"
     support_md = tmp_path / "normalized" / "technical" / "procedure" / "KT-QT-401_v1.0.md"
     pilot_md.parent.mkdir(parents=True, exist_ok=True)
-    pilot_md.write_text("# Quy trình bảo dưỡng\n\nNội dung sạch.", encoding="utf-8")
-    support_md.write_text("# Quy trình bảo dưỡng\n\nBản trùng.", encoding="utf-8")
+    pilot_md.write_text("# Quy trnh bo dng\n\nNi dung sch.", encoding="utf-8")
+    support_md.write_text("# Quy trnh bo dng\n\nBn trng.", encoding="utf-8")
     citation_map = tmp_path / "indexes" / f"{PILOT_ARTIFACT_STEM}_citation_map.json"
     citation_map.parent.mkdir(parents=True, exist_ok=True)
     citation_map.write_text("[{}]", encoding="utf-8")
@@ -258,7 +258,7 @@ def test_ragflow_sync_uploads_only_passed_primary_source_record(tmp_path: Path, 
         [
             ManifestRecord(
                 doc_id=PILOT_DOC_ID,
-                title="PD-TECH-A-02 Rev 04 - Quy trình bảo dưỡng",
+                title="PD-TECH-A-02 Rev 04 - Quy trnh bo dng",
                 department="technical",
                 category="procedure",
                 source_type="internal_procedure",
@@ -289,7 +289,7 @@ def test_ragflow_sync_uploads_only_passed_primary_source_record(tmp_path: Path, 
             ),
             ManifestRecord(
                 doc_id="KT-QT-401",
-                title="PD TECH A 02. Rev 04. Quy trình bảo dưỡng",
+                title="PD TECH A 02. Rev 04. Quy trnh bo dng",
                 department="technical",
                 category="procedure",
                 source_type="internal_procedure",

@@ -10,6 +10,7 @@ from poc_workflow.pipeline import rebuild_indexes
 from poc_workflow.quality_gate import (
     audit_tracked_runtime_paths,
     assert_path_within,
+    agent_skills_gate,
     cleanup_quality_sandbox,
     create_quality_sandbox,
     data_audit_gate,
@@ -158,6 +159,36 @@ def test_frontend_static_gate_checks_upload_workflow_and_encoding(tmp_path: Path
     assert result["status"] == "pass"
     assert result["metrics"]["upload_status_order"] == ["queue", "processing", "done", "ocr_required", "failed"]
     assert result["metrics"]["text_files_scanned"] > 0
+    static_root = Path(__file__).parents[1] / "poc_workflow" / "static"
+    index = (static_root / "index.html").read_text(encoding="utf-8")
+    app_js = (static_root / "app.js").read_text(encoding="utf-8")
+    styles = (static_root / "styles.css").read_text(encoding="utf-8")
+    assert 'id="uploadWorkflowOverview"' in index
+    assert 'id="promptModeSelect"' in index
+    assert 'id="promptRequestInput"' in index
+    assert 'id="goalPromptTab"' in index
+    assert 'id="goalPromptPane"' in index
+    assert 'id="generateGoalPromptBtn"' in index
+    assert "const UPLOAD_WORKFLOW_STEPS" in app_js
+    assert "/api/agent-prompts/templates" in app_js
+    assert "/api/agent-prompts/generate-goal" in app_js
+    assert "function generateAgentGoalPrompt" in app_js
+    assert "prompt_mode" in app_js
+    assert "function renderWorkflowTimeline" in app_js
+    assert "function renderSourceCompare" in app_js
+    assert ".workflow-step.active" in styles
+    assert ".prompt-controls" in styles
+    assert ".prompt-tabs" in styles
+    assert ".goal-prompt-grid" in styles
+    assert ".source-compare-grid" in styles
+
+
+def test_agent_skills_gate_checks_data_workflow_skill_pack(tmp_path: Path) -> None:
+    result = agent_skills_gate(tmp_path)
+
+    assert result["status"] == "pass"
+    assert "mineru-source-converter" in result["metrics"]["skills"]
+    assert "source-output-quality-auditor" in result["metrics"]["default_order"]
 
 
 def test_smoke_web_script_asserts_runtime_workflow_contract() -> None:

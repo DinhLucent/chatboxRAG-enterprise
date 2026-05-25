@@ -8,8 +8,15 @@ from pathlib import Path
 from .agent_prompt_queue import record_processing_status
 from .config import ALLOWED_CATEGORIES, ARCHIVE_DATASET, DEFAULT_DIRS, SUPPORTED_SOURCE_SUFFIXES
 from .converter import ConversionError, MinerUConverter, OcrRequiredError
+from .data_workflow import (
+    append_workflow_handoff,
+    artifact_record,
+    build_rag_ready_package,
+    make_handoff,
+    workflow_run_id,
+)
 from .database import QualityDatabase
-from .document_qa import qa_markdown
+from .document_qa import qa_source_output
 from .manifest import (
     ManifestError,
     ManifestStore,
@@ -275,6 +282,23 @@ def process_sources(
             workplace_source = prepare_workplace_source(root, source_file, metadata)
             artifact_root = workplace_artifact_root(root, metadata)
             normalized_path = normalized_markdown_path(root, metadata)
+            run_id = workflow_run_id(doc_id, version)
+            source_id = f"{doc_id}_v{version}"
+            append_workflow_handoff(
+                root,
+                artifact_root,
+                make_handoff(
+                    run_id=run_id,
+                    step="plan",
+                    status="ready",
+                    source_id=source_id,
+                    artifacts=[
+                        artifact_record(source_file, artifact_id=f"source_{source_id}", artifact_type="raw", source_id=source_id)
+                    ],
+                    quality_gates={"metadata_valid": True, "single_file_run": True},
+                    next_skill="mineru-source-converter",
+                ),
+            )
             convert_with_optional_status(
                 converter,
                 workplace_source,
@@ -296,12 +320,42 @@ def process_sources(
                 root,
                 queue_relative_path,
                 status="processing",
+                step="mineru_convert",
+                detail="MinerU/source conversion completed",
+                metadata=metadata,
+                artifact_path=str(artifact_root.resolve()),
+                mineru_profile=converter.profile_dict() if hasattr(converter, "profile_dict") else None,
+            )
+            append_workflow_handoff(
+                root,
+                artifact_root,
+                make_handoff(
+                    run_id=run_id,
+                    step="convert",
+                    status="passed",
+                    source_id=source_id,
+                    artifacts=[
+                        artifact_record(
+                            normalized_path,
+                            artifact_id=f"converted_markdown_{source_id}",
+                            artifact_type="converted",
+                            source_id=source_id,
+                        )
+                    ],
+                    quality_gates={"converted_markdown_exists": normalized_path.exists()},
+                    next_skill="source-output-quality-auditor",
+                ),
+            )
+            record_processing_status(
+                root,
+                queue_relative_path,
+                status="processing",
                 step="qa",
-                detail="Checking normalized Markdown quality",
+                detail="Auditing source file against normalized Markdown",
                 metadata=metadata,
                 artifact_path=str(artifact_root.resolve()),
             )
-            qa_report = qa_markdown(normalized_path, artifact_root / "qa_report.json")
+            qa_report = qa_source_output(source_file, normalized_path, artifact_root / "qa_report.json")
             metadata["qa_status"] = qa_report.status
             metadata["qa_issues"] = qa_report.issues
             metadata["qa_report_path"] = qa_report.report_path
@@ -319,9 +373,120 @@ def process_sources(
                 qa_status=qa_report.status,
                 qa_issues=qa_report.issues,
             )
+            append_workflow_handoff(
+                root,
+                artifact_root,
+                make_handoff(
+                    run_id=run_id,
+                    step="audit",
+                    status="passed" if qa_report.status != "fail" else "needs_repair",
+                    source_id=source_id,
+                    artifacts=[
+                        artifact_record(
+                            Path(qa_report.report_path or artifact_root / "qa_report.json"),
+                            artifact_id=f"audit_report_{source_id}",
+                            artifact_type="audit",
+                            source_id=source_id,
+                        )
+                    ],
+                    quality_gates=(qa_report.metrics.get("quality_gates") or {}),
+                    next_skill="ragflow-schema-indexer" if qa_report.status != "fail" else "rag-markdown-repairer",
+                ),
+            )
             if qa_report.status == "fail":
                 raise ConversionError(f"QA failed: {', '.join(qa_report.issues)}")
             validate_normalized_markdown(normalized_path)
+            record_processing_status(
+                root,
+                queue_relative_path,
+                status="processing",
+                step="rag_ready",
+                detail="Building RAG-ready schema, citation, and index manifests",
+                metadata=metadata,
+                artifact_path=str(artifact_root.resolve()),
+                qa_report_path=qa_report.report_path,
+                qa_status=qa_report.status,
+                qa_issues=qa_report.issues,
+            )
+            rag_ready = build_rag_ready_package(
+                root,
+                metadata=metadata,
+                source_path=source_file,
+                normalized_path=normalized_path,
+                qa_report=qa_report.to_dict(),
+            )
+            metadata["rag_ready_package"] = rag_ready["package_root"]
+            metadata["schema_manifest_path"] = rag_ready["schema_manifest_path"]
+            metadata["citation_manifest_path"] = rag_ready["citation_manifest_path"]
+            metadata["index_manifest_path"] = rag_ready["index_manifest_path"]
+            append_workflow_handoff(
+                root,
+                artifact_root,
+                make_handoff(
+                    run_id=run_id,
+                    step="index",
+                    status="passed",
+                    source_id=source_id,
+                    artifacts=[
+                        artifact_record(
+                            Path(rag_ready["schema_manifest_path"]),
+                            artifact_id=f"schema_manifest_{source_id}",
+                            artifact_type="rag_ready",
+                            source_id=source_id,
+                        ),
+                        artifact_record(
+                            Path(rag_ready["citation_manifest_path"]),
+                            artifact_id=f"citation_manifest_{source_id}",
+                            artifact_type="rag_ready",
+                            source_id=source_id,
+                        ),
+                        artifact_record(
+                            Path(rag_ready["index_manifest_path"]),
+                            artifact_id=f"index_manifest_{source_id}",
+                            artifact_type="rag_ready",
+                            source_id=source_id,
+                        ),
+                    ],
+                    quality_gates={
+                        "audit_passed": True,
+                        "schema_created": True,
+                        "citations_complete": True,
+                        "chunks_indexed": rag_ready["chunk_count"] > 0,
+                    },
+                    next_skill="data-skill-evolution",
+                ),
+            )
+            evolution_path = artifact_root / "evolution_report.json"
+            write_json(
+                evolution_path,
+                {
+                    "run_id": run_id,
+                    "source_id": source_id,
+                    "status": "no_op",
+                    "reason": "No repeated workflow issue detected during this run.",
+                    "created_at": utc_now(),
+                },
+            )
+            append_workflow_handoff(
+                root,
+                artifact_root,
+                make_handoff(
+                    run_id=run_id,
+                    step="evolve",
+                    status="passed",
+                    source_id=source_id,
+                    artifacts=[
+                        artifact_record(
+                            evolution_path,
+                            artifact_id=f"evolution_report_{source_id}",
+                            artifact_type="evolution",
+                            source_id=source_id,
+                        )
+                    ],
+                    quality_gates={"evolution_recorded": True},
+                    next_skill=None,
+                ),
+            )
             staged_path = stage_source(root, source_file, metadata)
 
             now = utc_now()

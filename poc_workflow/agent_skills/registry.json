@@ -1,0 +1,85 @@
+{
+  "registry_version": "1.0.0",
+  "workflow_name": "ragflow_data_pipeline",
+  "description": "Sequential end-to-end workflow for converting PDF/XLSX sources with MinerU, auditing against originals, repairing RAG Markdown, building RAGFlow-ready schema/index artifacts, and evolving data skills after each loop.",
+  "default_order": [
+    "data-pipeline-orchestrator",
+    "mineru-source-converter",
+    "source-output-quality-auditor",
+    "rag-markdown-repairer",
+    "source-output-quality-auditor",
+    "ragflow-schema-indexer",
+    "data-skill-evolution"
+  ],
+  "workflow_steps": [
+    {
+      "step": "plan",
+      "skill": "data-pipeline-orchestrator",
+      "input_artifacts": ["raw_manifest", "run_config"],
+      "output_artifacts": ["run_plan", "batch_manifest"],
+      "next": "convert"
+    },
+    {
+      "step": "convert",
+      "skill": "mineru-source-converter",
+      "input_artifacts": ["batch_manifest", "raw_sources"],
+      "output_artifacts": ["conversion_manifest", "converted_outputs", "conversion_log"],
+      "next": "audit"
+    },
+    {
+      "step": "audit",
+      "skill": "source-output-quality-auditor",
+      "input_artifacts": ["raw_sources", "conversion_manifest", "converted_outputs"],
+      "output_artifacts": ["audit_report", "issue_list", "repair_request"],
+      "next": "repair_or_index"
+    },
+    {
+      "step": "repair",
+      "skill": "rag-markdown-repairer",
+      "input_artifacts": ["repair_request", "converted_outputs", "audit_report"],
+      "output_artifacts": ["repair_manifest", "repaired_outputs", "repair_log"],
+      "next": "audit"
+    },
+    {
+      "step": "index",
+      "skill": "ragflow-schema-indexer",
+      "input_artifacts": ["repaired_outputs", "audit_report", "run_plan"],
+      "output_artifacts": ["rag_ready_folder", "schema_manifest", "citation_manifest", "index_manifest"],
+      "next": "evolve"
+    },
+    {
+      "step": "evolve",
+      "skill": "data-skill-evolution",
+      "input_artifacts": ["run_plan", "conversion_log", "audit_report", "repair_log", "index_manifest"],
+      "output_artifacts": ["evolution_report", "rule_candidates", "registry_patch_request"],
+      "next": "done"
+    }
+  ],
+  "loop_policy": {
+    "repair_loop": {
+      "from": "audit",
+      "to": "repair",
+      "max_iterations": 3,
+      "exit_when": "all_required_quality_gates_pass",
+      "escalate_when": "same_issue_repeats_or_source_is_ambiguous"
+    }
+  },
+  "handoff_contract": {
+    "required_keys": ["run_id", "step", "status", "source_ids", "artifacts", "quality_gates", "next_skill"],
+    "status_values": ["ready", "passed", "needs_repair", "blocked", "failed"],
+    "artifact_record": {
+      "artifact_id": "string",
+      "path": "string",
+      "type": "raw|converted|audit|repair|rag_ready|evolution",
+      "source_id": "string",
+      "checksum": "string|null"
+    }
+  },
+  "quality_gate_summary": [
+    "Source files are processed sequentially and every output links back to source_id.",
+    "QA compares converted output against original PDF/Excel, not only against derived text.",
+    "Markdown repairs preserve citations, tables, headings, and page/sheet references.",
+    "RAG-ready folder contains schema_manifest.json, citation_manifest.json, index_manifest.json, and normalized Markdown chunks.",
+    "Evolution report is written after each loop with concrete rule changes or no-op rationale."
+  ]
+}

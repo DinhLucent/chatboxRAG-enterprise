@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
+import zipfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .utils import utc_now, write_json
+from .utils import tokenize, utc_now, write_json
 
 
 MOJIBAKE_PATTERNS = (
@@ -16,6 +18,22 @@ MOJIBAKE_PATTERNS = (
     re.compile(r"\u00c4[\u0080-\u01b0]"),
     re.compile(r"\u00c6[\u0080-\u01b0]"),
 )
+COMMON_MOJIBAKE_MARKERS = tuple(
+    "".join(chr(codepoint) for codepoint in codepoints)
+    for codepoints in (
+        (0x00C4,),
+        (0x00C5,),
+        (0x00C6,),
+        (0x00C7,),
+        (0x00C8,),
+        (0x00C9,),
+        (0x00E1, 0x00BA),
+        (0x00E1, 0x00BB),
+        (0x00EF, 0x00BC),
+        (0x00E2, 0x20AC),
+    )
+)
+A_TILDE_MARKER = chr(0x00C3)
 
 
 @dataclass
@@ -87,10 +105,150 @@ def qa_markdown(markdown_path: Path, report_path: Path | None = None) -> Markdow
     return result
 
 
+def qa_source_output(source_path: Path, markdown_path: Path, report_path: Path | None = None) -> MarkdownQaResult:
+    result = qa_markdown(markdown_path)
+    markdown_status = result.status
+    markdown_text = markdown_path.read_text(encoding="utf-8", errors="replace")
+    source_text, extraction = extract_source_text(source_path)
+    source_compared = bool(source_text.strip())
+    source_terms = _meaningful_terms(source_text)
+    markdown_terms = _meaningful_terms(markdown_text)
+    matched_terms = sorted(source_terms & markdown_terms)
+    coverage = round(len(matched_terms) / max(1, len(source_terms)), 4) if source_terms else 0.0
+    source_issues: list[str] = []
+
+    if not source_compared:
+        source_issues.append("source_text_unavailable")
+    elif len(source_terms) >= 30 and coverage < 0.08:
+        source_issues.append("source_output_coverage_too_low")
+    elif len(source_terms) >= 10 and coverage < 0.03:
+        source_issues.append("source_output_coverage_too_low")
+
+    issues = [*result.issues, *source_issues]
+    hard_failures = {"markdown_empty_or_too_short", "possible_mojibake", "replacement_characters_present", "source_text_unavailable"}
+    if any(issue in hard_failures for issue in issues):
+        status = "fail"
+    elif "source_output_coverage_too_low" in issues:
+        status = "fail"
+    elif result.corrections:
+        status = "repaired"
+    else:
+        status = result.status
+
+    result.status = status
+    result.issues = issues
+    result.metrics = {
+        **result.metrics,
+        "source_path": str(source_path.resolve()),
+        "source_type": source_path.suffix.lower().lstrip(".") or "file",
+        "source_compared": source_compared,
+        "source_extraction": extraction,
+        "source_terms": len(source_terms),
+        "matched_source_terms": len(matched_terms),
+        "source_token_coverage": coverage,
+        "sample_matched_terms": matched_terms[:25],
+        "quality_gates": {
+            "source_compared": source_compared,
+            "required_coverage_passed": "source_output_coverage_too_low" not in source_issues and source_compared,
+            "markdown_quality_passed": markdown_status in {"pass", "repaired"},
+        },
+    }
+    result.report_path = str(report_path.resolve()) if report_path else None
+    if report_path:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(report_path, result.to_dict())
+    return result
+
+
+def extract_source_text(path: Path) -> tuple[str, dict[str, Any]]:
+    suffix = path.suffix.lower()
+    try:
+        if suffix in {".md", ".markdown", ".txt", ".csv", ".json", ".xml", ".html", ".htm"}:
+            return path.read_text(encoding="utf-8", errors="replace"), {"method": "text"}
+        if suffix == ".xlsx":
+            return _extract_xlsx_text(path), {"method": "xlsx_xml"}
+        if suffix == ".docx":
+            return _extract_docx_text(path), {"method": "docx_xml"}
+        if suffix == ".pdf":
+            return _extract_pdf_text(path), {"method": "pdf_text"}
+    except Exception as exc:
+        return "", {"method": suffix.lstrip(".") or "unknown", "error": str(exc)}
+    return "", {"method": "unsupported", "suffix": suffix}
+
+
+def _extract_pdf_text(path: Path) -> str:
+    try:
+        import pdfplumber
+
+        parts: list[str] = []
+        with pdfplumber.open(path) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+                if text.strip():
+                    parts.append(text)
+                for table in page.extract_tables() or []:
+                    for row in table:
+                        parts.append(" ".join(str(cell or "") for cell in row))
+        return "\n".join(parts)
+    except Exception:
+        from pypdf import PdfReader
+
+        reader = PdfReader(str(path))
+        return "\n".join((page.extract_text() or "") for page in reader.pages)
+
+
+def _extract_xlsx_text(path: Path) -> str:
+    with zipfile.ZipFile(path) as archive:
+        shared_strings = _xlsx_shared_strings(archive)
+        parts: list[str] = []
+        for sheet_path in sorted(name for name in archive.namelist() if name.startswith("xl/worksheets/") and name.endswith(".xml")):
+            root = ET.fromstring(archive.read(sheet_path))
+            for cell in root.findall(".//{*}c"):
+                value = _xlsx_cell_value(cell, shared_strings)
+                if value:
+                    parts.append(value)
+        return "\n".join(parts)
+
+
+def _extract_docx_text(path: Path) -> str:
+    with zipfile.ZipFile(path) as archive:
+        root = ET.fromstring(archive.read("word/document.xml"))
+        return "\n".join(node.text or "" for node in root.findall(".//{*}t"))
+
+
+def _xlsx_shared_strings(archive: zipfile.ZipFile) -> list[str]:
+    if "xl/sharedStrings.xml" not in archive.namelist():
+        return []
+    root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+    return ["".join(node.text or "" for node in item.findall(".//{*}t")) for item in root.findall(".//{*}si")]
+
+
+def _xlsx_cell_value(cell: ET.Element, shared_strings: list[str]) -> str:
+    cell_type = cell.attrib.get("t")
+    if cell_type == "inlineStr":
+        return "".join(node.text or "" for node in cell.findall(".//{*}t")).strip()
+    value_node = cell.find("{*}v")
+    raw_value = value_node.text if value_node is not None else ""
+    if cell_type == "s":
+        try:
+            return shared_strings[int(raw_value)].strip()
+        except Exception:
+            return raw_value.strip()
+    return raw_value.strip()
+
+
+def _meaningful_terms(text: str) -> set[str]:
+    return {term for term in tokenize(text) if len(term) >= 3 and not term.isdigit()}
+
+
 def mojibake_score(text: str) -> int:
-    return text.count("\ufffd") + text.count("\u00ef\u00bf\u00bd") + sum(
-        len(pattern.findall(text)) for pattern in MOJIBAKE_PATTERNS
-    )
+    score = text.count("\ufffd") + text.count("\u00ef\u00bf\u00bd")
+    score += sum(len(pattern.findall(text)) for pattern in MOJIBAKE_PATTERNS)
+    score += sum(text.count(marker) for marker in COMMON_MOJIBAKE_MARKERS)
+    suspicious_a_tilde = text.count(A_TILDE_MARKER)
+    if suspicious_a_tilde >= 2:
+        score += suspicious_a_tilde
+    return score
 
 
 def repair_mojibake(text: str) -> str | None:

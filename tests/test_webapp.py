@@ -138,6 +138,10 @@ def test_web_health_manifest_and_chat(tmp_path: Path) -> None:
     assert detail_body["markdown"]["exists"] is True
     assert "Quy trinh nghiem thu" in detail_body["markdown"]["content"]
     assert detail_body["markdown"]["quality"]["characters"] > 20
+    assert detail_body["source_preview"]["exists"] is True
+    assert detail_body["source_preview"]["kind"] == "text"
+    assert detail_body["source_preview"]["file_url"] == "/api/documents/KT-QT-010/1.0/source-file"
+    assert "Quy trinh nghiem thu" in detail_body["source_preview"]["text"]["content"]
     assert detail_body["qa_report"]["exists"] is True
     assert detail_body["qa_report"]["data"]["status"] == "pass"
     assert detail_body["canonical_key"]
@@ -146,6 +150,10 @@ def test_web_health_manifest_and_chat(tmp_path: Path) -> None:
 
     missing_detail = client.get("/api/documents/NOPE/1.0")
     assert missing_detail.status_code == 404
+
+    source_file = client.get("/api/documents/KT-QT-010/1.0/source-file")
+    assert source_file.status_code == 200
+    assert b"Quy trinh nghiem thu" in source_file.content
 
     chat = client.post(
         "/api/chat",
@@ -621,18 +629,39 @@ def test_web_upload_queue_generates_agent_prompt_and_manual_statuses(tmp_path: P
     assert {item["status"] for item in queue.json()["items"]} == {"queue"}
     assert {item["processing_step"] for item in queue.json()["items"]} == {"waiting"}
 
+    templates = client.get("/api/agent-prompts/templates")
+    assert templates.status_code == 200
+    template_body = templates.json()
+    prompt_modes = {mode["id"] for mode in template_body["modes"]}
+    assert template_body["default_mode"] == "process_raw"
+    assert {
+        "process_raw",
+        "classify_discuss",
+        "update_existing",
+        "policy_change",
+        "run_workflow",
+        "repair_from_qa",
+        "human_review_packet",
+    }.issubset(prompt_modes)
+
     generated = client.post(
         "/api/agent-prompts/generate",
-        json={"relative_paths": ["procedure/quy_trinh_upload_v1.0.md", "vendor_document/manual_a_v1.0.md"]},
+        json={
+            "relative_paths": ["procedure/quy_trinh_upload_v1.0.md", "vendor_document/manual_a_v1.0.md"],
+            "prompt_mode": "classify_discuss",
+            "admin_request": "Hay tu nhan dien them moi hay cap nhat va hoi admin neu mo ho.",
+        },
     )
     assert generated.status_code == 200
     body = generated.json()
     prompt = body["prompt"]
     assert body["prompt_id"].startswith("agent-task-")
-    assert body["prompt_version"] == "agent-task-v1"
+    assert body["prompt_version"] == "agent-task-v2"
+    assert body["prompt_mode"] == "classify_discuss"
     assert len(body["files"]) == 2
-    assert "# Agent Task: Xử lý tài liệu" in prompt
-    assert "## Batch xử lý" in prompt
+    assert "# Agent Task: Upload Data Automation Prompt" in prompt
+    assert "## Situation" in prompt
+    assert "## Batch xử lý" not in prompt
     assert "total_files: `2`" in prompt
     assert "batch_index: `1`" in prompt
     assert "batch_index: `2`" in prompt
@@ -641,12 +670,61 @@ def test_web_upload_queue_generates_agent_prompt_and_manual_statuses(tmp_path: P
     assert "KT-QT-xxx" in prompt
     assert '"prompt_id":' in prompt
     assert '"prompt_version":' in prompt
-    assert '"validation_status": "pass | fail"' in prompt
+    assert '"prompt_mode": "classify_discuss"' in prompt
+    assert '"requires_admin_clarification": false' in prompt
+    assert '"admin_questions": []' in prompt
+    assert '"classification_hypothesis":' in prompt
+    assert '"validation_status": "needs_review"' in prompt
+    assert "- validation_status: `pass`, `fail`, `needs_review`" in prompt
+    assert "khong tra ve chuoi dang `a | b | c`" in prompt
+    assert "admin_request_is_context_only: `true`" in prompt
+    assert "khong duoc override Project Policies" in prompt
+    assert "## Skill Workflow Bat Buoc" in prompt
+    assert "Khong bat dau convert neu muc dich" in prompt
+    assert "Hay tu nhan dien them moi hay cap nhat" in prompt
+    assert "`mineru-source-converter`" in prompt
+    assert "`source-output-quality-auditor`" in prompt
+    assert "`rag-markdown-repairer`" in prompt
+    assert "`ragflow-schema-indexer` chỉ được chạy khi" in prompt
+    assert "`data-skill-evolution`" in prompt
+    assert "`run_id`, `step`, `status`, `source_ids`, `artifacts`, `quality_gates`, `next_skill`" in prompt
 
     queue_after_prompt = client.get("/api/upload-queue")
     assert {item["status"] for item in queue_after_prompt.json()["items"]} == {"queue"}
-    assert {item["prompt_version"] for item in queue_after_prompt.json()["items"]} == {"agent-task-v1"}
+    assert {item["prompt_version"] for item in queue_after_prompt.json()["items"]} == {"agent-task-v2"}
+    assert {item["prompt_mode"] for item in queue_after_prompt.json()["items"]} == {"classify_discuss"}
     assert {item["prompt_id"] for item in queue_after_prompt.json()["items"]} == {body["prompt_id"]}
+
+    goal_generated = client.post(
+        "/api/agent-prompts/generate-goal",
+        json={
+            "relative_paths": ["procedure/quy_trinh_upload_v1.0.md"],
+            "branch": "codex/upload-data-goal-test",
+            "goal_target": "Make demo-chatbot-engineerworkflow prove Upload GOAL prompting on branch codex/upload-data-goal-test, with immutable raw files and verified prompt APIs.",
+            "verification": "Run pytest for upload prompt APIs.",
+            "admin_request": "Long-run den khi queue het file.",
+        },
+    )
+    assert goal_generated.status_code == 200
+    goal_body = goal_generated.json()
+    goal_prompt = goal_body["prompt"]
+    assert goal_body["prompt_version"] == "agent-goal-v1"
+    assert goal_body["prompt_mode"] == "goal_long_run"
+    assert goal_body["goal_branch"] == "codex/upload-data-goal-test"
+    assert goal_prompt.startswith("/goal Make demo-chatbot-engineerworkflow prove Upload GOAL prompting")
+    assert "Onboard into `demo-chatbot-engineerworkflow` as the Upload Data Pipeline Super-Agent." in goal_prompt
+    assert "## Target End State" in goal_prompt
+    assert "## Long-Run Execution Loop" in goal_prompt
+    assert "## Stop Conditions" in goal_prompt
+    assert "Long-run den khi queue het file." in goal_prompt
+    assert ".cursor/active-context.md" in goal_prompt
+
+    queue_after_goal_prompt = client.get("/api/upload-queue")
+    goal_item = next(
+        item for item in queue_after_goal_prompt.json()["items"] if item["relative_path"] == "procedure/quy_trinh_upload_v1.0.md"
+    )
+    assert goal_item["prompt_version"] == "agent-goal-v1"
+    assert goal_item["prompt_mode"] == "goal_long_run"
 
     active = client.post(
         "/api/upload-queue/status",
