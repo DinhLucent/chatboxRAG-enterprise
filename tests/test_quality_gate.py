@@ -167,7 +167,9 @@ def test_smoke_web_script_asserts_runtime_workflow_contract() -> None:
     assert "/api/upload-queue" in script
     assert "/api/documents/" in script
     assert "known chat question returned no citations" in script
-    assert "known chat question did not cite KT-QT-215" in script
+    assert "known chat question did not cite scoped installation procedure" in script
+    assert "known chat citation did not include anchor_id" in script
+    assert "public citation endpoint did not return highlighted Markdown preview" in script
     assert "evaluation did not pass" in script
     assert "Smoke check failed" in script
 

@@ -1,51 +1,40 @@
 [
   {
-    "id": "procedure-document-control",
-    "query": "Quy trinh kiem soat tai lieu ho so quy dinh gi?",
-    "should_answer": true,
-    "expected_doc_ids": [
-      "KT-QT-215"
-    ],
-    "expected_category": "procedure",
-    "expected_answer_terms": ["Tóm tắt", "Nguồn"],
-    "source_support_terms": ["kiểm soát tài liệu"]
-  },
-  {
-    "id": "technical-procedure-count-direct",
-    "query": "Quy trình phòng kỹ thuật có bao nhiêu tài liệu?",
-    "should_answer": true,
-    "expected_doc_ids": [
-      "KT-QT-215"
-    ],
-    "expected_category": "procedure",
-    "answer_style": "steps",
-    "expected_answer_terms": ["Phòng Kỹ thuật", "tài liệu quy trình", "Nguồn"],
-    "source_support_terms": ["Kỹ thuật", "Quy trình"]
-  },
-  {
-    "id": "technical-procedure-count-variant",
+    "id": "engineering-scope-count-direct",
     "query": "Có bao nhiêu tài liệu quy trình kỹ thuật?",
     "should_answer": true,
-    "expected_doc_ids": [
-      "KT-QT-215"
-    ],
+    "expected_doc_ids": ["KT-QT-142", "KT-QT-144", "KT-QT-146", "KT-QT-148", "KT-QT-150", "KT-QT-152", "KT-QT-356", "KT-QT-360", "KT-QT-376", "KT-QT-401", "KT-QT-426", "KT-QT-431"],
     "expected_category": "procedure",
     "answer_style": "steps",
-    "expected_answer_terms": ["Phòng Kỹ thuật", "tài liệu quy trình", "Nguồn"],
-    "source_support_terms": ["Kỹ thuật", "Quy trình"]
+    "expected_answer_terms": ["12 file active", "6 nhóm quy trình", "Nguồn"]
   },
   {
-    "id": "incident-workflow-user-chat",
-    "query": "Trong quy trình xử lý sự cố kỹ thuật, quy trình như thế nào?",
+    "id": "installation-procedure-steps",
+    "query": "Quy trình lắp đặt như thế nào?",
     "should_answer": true,
-    "expected_doc_ids": [
-      "KT-QT-003"
-    ],
+    "expected_doc_ids": ["KT-QT-426"],
     "expected_category": "procedure",
-    "answer_style": "brief",
+    "answer_style": "steps",
+    "expected_answer_terms": ["Tóm tắt", "Nguồn"]
+  },
+  {
+    "id": "maintenance-procedure-steps",
+    "query": "Quy trình bảo dưỡng gồm những bước nào?",
+    "should_answer": true,
+    "expected_doc_ids": ["KT-QT-401"],
+    "expected_category": "procedure",
+    "answer_style": "steps",
+    "expected_answer_terms": ["Tóm tắt", "Nguồn"]
+  },
+  {
+    "id": "repair-procedure-workflow",
+    "query": "Vẽ workflow quy trình sửa chữa.",
+    "should_answer": true,
+    "expected_doc_ids": ["KT-QT-431"],
+    "expected_category": "procedure",
+    "answer_style": "workflow",
     "user_chat": true,
-    "expected_answer_terms": ["Tóm tắt", "Các bước", "Nguồn"],
-    "source_support_terms": ["tiếp nhận", "ticket", "đóng ticket"],
+    "expected_answer_terms": ["Tóm tắt", "Nguồn"],
     "forbidden_answer_terms": ["<table", "rowspan", "provider timeout"]
   },
   {
@@ -56,12 +45,12 @@
     "answer_style": "brief",
     "user_chat": true,
     "should_clarify": true,
-    "expected_answer_terms": ["mã hoặc tên tài liệu", "KT-QT-003"],
-    "forbidden_answer_terms": ["Không tìm thấy căn cứ"]
+    "expected_answer_terms": ["mã hoặc tên tài liệu", "PD-TECH-A-01"],
+    "forbidden_answer_terms": ["provider timeout"]
   },
   {
     "id": "unknown-vendor-error",
-    "query": "Bien tan E-07 encoder parameter P191",
+    "query": "Biến tần E-07 encoder parameter P191 sửa như thế nào?",
     "should_answer": false,
     "expected_doc_ids": [],
     "expected_category": "vendor_document"

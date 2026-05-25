@@ -28,6 +28,8 @@ from .pipeline import (
     retire_record,
 )
 from .quality_gate import run_quality_gate
+from .qa_test_eval import run_qa_test
+from .pilot_pdtech_a02 import run_pdtech_a02_pilot
 from .ragflow_http import bootstrap_ragflow_resources, sync_active_to_ragflow
 from .readiness import deployment_readiness
 
@@ -56,6 +58,16 @@ def build_parser() -> argparse.ArgumentParser:
     process = sub.add_parser("process-source", help="Convert and validate source files into pending_review records.")
     process.add_argument("--limit", type=int, help="Process at most this many new/changed source files.")
     process.add_argument("--source-path", action="append", help="Process only this source file path. Can be repeated.")
+
+    pilot = sub.add_parser(
+        "pilot-pdtech-a02",
+        help="Run the PD-TECH-A-02 Rev 04 single-document clean/verify pilot with MinerU-only raw conversion.",
+    )
+    pilot.add_argument("--xlsx-path", help="Original PD-TECH-A-02 Rev 04 XLSX path. Defaults to discovery under root_source.")
+    pilot.add_argument("--pdf-path", help="Original PD-TECH-A-02 Rev 04 PDF path. Defaults to discovery under root_source.")
+    pilot.add_argument("--primary-source", choices=["auto", "xlsx", "pdf"], default="auto")
+    pilot.add_argument("--review-approved", action="store_true", help="Write an approved human review and activate the pilot record.")
+    pilot.add_argument("--reviewer", default="human", help="Reviewer name for approved pilot runs.")
 
     ocr_process = sub.add_parser("process-ocr-required", help="Requeue and process a small OCR-required batch.")
     ocr_process.add_argument("--limit", type=int, default=1, help="Files to requeue and process. Default 1, maximum 5.")
@@ -110,6 +122,12 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--provider", choices=["auto", "ragflow", "local"], default="local")
     evaluate.add_argument("--use-llm", action="store_true")
     evaluate.add_argument("--latency-target-ms", type=int, default=12_000)
+
+    qa_test = sub.add_parser("qa-test", help="Run QA-test CSV as an evaluation oracle without changing chatbot answers.")
+    qa_test.add_argument("--cases", help="QA test CSV path. Defaults to QA-test/tech_chatbot_qa_test_cases.csv.")
+    qa_test.add_argument("--provider", choices=["auto", "ragflow", "local"], default="local")
+    qa_test.add_argument("--use-llm", action="store_true")
+    qa_test.add_argument("--no-report", action="store_true")
 
     readiness = sub.add_parser("readiness", help="Check production deployment readiness.")
     readiness.add_argument("--check-network", action="store_true", help="Call RAGFlow health endpoint.")
@@ -211,6 +229,15 @@ def main(argv: list[str] | None = None) -> int:
             source_paths = [Path(path) for path in args.source_path] if args.source_path else None
             records = process_sources(root, limit=args.limit, source_paths=source_paths)
             result = {"processed": [record.to_dict() for record in records]}
+        elif args.command == "pilot-pdtech-a02":
+            result = run_pdtech_a02_pilot(
+                root,
+                xlsx_path=Path(args.xlsx_path) if args.xlsx_path else None,
+                pdf_path=Path(args.pdf_path) if args.pdf_path else None,
+                primary_source=args.primary_source,
+                approve_review=args.review_approved,
+                reviewer=args.reviewer,
+            )
         elif args.command == "process-ocr-required":
             init_workspace(root)
             category = None if args.category == "all" else args.category
@@ -273,6 +300,14 @@ def main(argv: list[str] | None = None) -> int:
                 provider=args.provider,
                 use_llm=args.use_llm,
                 latency_target_ms=args.latency_target_ms,
+            )
+        elif args.command == "qa-test":
+            result = run_qa_test(
+                root,
+                cases_path=args.cases,
+                provider=args.provider,
+                use_llm=args.use_llm,
+                write_report=not args.no_report,
             )
         elif args.command == "readiness":
             result = deployment_readiness(root, check_network=args.check_network)

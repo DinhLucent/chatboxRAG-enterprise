@@ -498,7 +498,7 @@ function renderSources(citations) {
         <article class="source-card">
           <div class="source-title">${index + 1}. ${escapeHtml(citation.title || citation.doc_id || "Nguồn")}</div>
           <div class="source-meta">
-            ${escapeHtml(citation.display_code || citation.doc_id || "-")} | v${escapeHtml(citation.version || "-")}
+            ${escapeHtml(citation.display_code || citation.doc_id || "-")} | ${escapeHtml(citation.display_version || `v${citation.version || "-"}`)}
             ${citation.display_code && citation.doc_id ? ` | ${escapeHtml(citation.doc_id)}` : ""}
           </div>
           <div class="source-excerpt">${escapeHtml(citation.excerpt || "Không có đoạn trích công khai.")}</div>
@@ -715,22 +715,30 @@ async function init() {
   renderSources([]);
   renderTrace([]);
   
-  if (storedToken) {
-    try {
-      state.bootstrap = await api("/api/bootstrap");
-      renderBootstrap();
-      startHeartbeat();
-      checkHealth();
-    } catch (error) {
+  try {
+    state.bootstrap = await api("/api/bootstrap");
+    renderBootstrap();
+    startHeartbeat();
+    checkHealth();
+  } catch (error) {
+    const isAuthError = error.message?.toLowerCase().includes("mã") ||
+                        error.message?.toLowerCase().includes("token") ||
+                        error.message?.toLowerCase().includes("access") ||
+                        error.message?.toLowerCase().includes("unauthorized") ||
+                        !storedToken;
+    if (isAuthError) {
+      qs("#statusText").textContent = "Nhập mã";
+      qs("#railStatus").className = "rail-status bad";
+      switchDrawerTab("status");
+      ensureDrawerVisible();
+      if (storedToken) {
+        toast("Vui lòng kiểm tra lại mã truy cập demo.");
+      }
+    } else {
       qs("#statusText").textContent = "Chưa kết nối";
       qs("#railStatus").className = "rail-status bad";
-      toast(error.message || "Vui lòng kiểm tra mã truy cập demo.");
+      toast(error.message || "Không kết nối được máy chủ nội bộ.");
     }
-  } else {
-    qs("#statusText").textContent = "Nhập mã";
-    qs("#railStatus").className = "rail-status bad";
-    switchDrawerTab("status");
-    ensureDrawerVisible();
   }
   syncDrawer();
 }

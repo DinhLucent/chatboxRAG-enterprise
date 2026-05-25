@@ -12,6 +12,7 @@ from .rag_index import LocalRagIndex, SearchHit
 from .ragflow_http import RAGFlowConfig, RAGFlowHTTPError, answer_with_ragflow
 from .runtime import local_fallback_enabled, provider_allowed
 from .text_cleaning import clean_excerpt, clean_retrieval_text, contains_raw_markup, normalized_text
+from .utils import tokenize
 
 NO_SOURCE_ANSWER = "Không tìm thấy căn cứ trong tài liệu hiện hành."
 ANSWER_SOURCE_LLM = "llm"
@@ -61,6 +62,23 @@ def infer_query_answer_style(query: str, selected_style: str = "brief") -> str:
 def infer_category(query: str) -> str | None:
     lowered = query.lower()
     normalized_query = normalized_text(query)
+    procedure_context_terms = [
+        "quy trinh",
+        "quy dinh",
+        "huong dan",
+        "lap dat",
+        "bao duong",
+        "sua chua",
+        "phu kien",
+        "hieu chuan",
+        "ccdc",
+        "chung chi",
+        "dao tao",
+    ]
+    if any(term in normalized_query for term in procedure_context_terms):
+        return "procedure"
+    if any(term in normalized_query for term in ["bien tan", "encoder", "parameter", "ma loi", "error code", "alarm"]):
+        return "vendor_document"
     if any(term in normalized_query for term in ["quy trinh", "policy", "chinh sach"]):
         return "procedure"
     if any(term in lowered for term in ["bieu mau", "biểu mẫu", "checklist", "mau bao cao", "mẫu báo cáo"]):
@@ -72,6 +90,29 @@ def infer_category(query: str) -> str | None:
     if any(term in lowered for term in ["quy trinh", "quy trình", "policy", "chinh sach", "chính sách"]):
         return "procedure"
     return None
+
+
+def is_out_of_scope_query(query: str) -> bool:
+    normalized = normalized_text(query)
+    out_of_scope_terms = [
+        "nghi phep",
+        "nghi phep nam",
+        "luong thuong",
+        "cong tac",
+        "ma so thue",
+        "so dien thoai hotline",
+        "hotline hien tai",
+        "mua laptop",
+        "truong phong ky thuat hien tai",
+        "dang giu chuc truong phong",
+    ]
+    if any(term in normalized for term in out_of_scope_terms):
+        return True
+    if "hop dong" in normalized and any(term in normalized for term in ["gia tri", "bao nhieu tien", "khach hang a"]):
+        return True
+    if re.search(r"\b[a-z]-?\d{2,}\b", normalized) and any(term in normalized for term in ["model", "ma loi", "sua loi"]):
+        return True
+    return False
 
 
 def ask(
@@ -281,6 +322,33 @@ def ask(
 
     index = LocalRagIndex(root)
     category = infer_category(query)
+    if is_out_of_scope_query(query):
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        log_id = db.log_query(
+            stored_query,
+            user_id,
+            [],
+            False,
+            latency_ms,
+            NO_SOURCE_ANSWER,
+            answer_source=ANSWER_SOURCE_NO_ANSWER,
+        )
+        gap_id = db.create_gap(stored_query, "out_of_active_engineering_scope", category)
+        return {
+            "answer": NO_SOURCE_ANSWER,
+            "citations": [],
+            "query_log_id": log_id,
+            "knowledge_gap_id": gap_id,
+            "latency_ms": latency_ms,
+            "provider": "local",
+            "ragflow_error": ragflow_error,
+            "llm_used": False,
+            "llm_error": None,
+            "answer_source": ANSWER_SOURCE_NO_ANSWER,
+            "fallback_reason": "out_of_active_engineering_scope",
+            "llm_provider": None,
+            "llm_model": None,
+        }
     catalog = build_catalog_answer(root, query, answer_style=answer_style)
     if catalog:
         answer, hits = catalog
@@ -310,10 +378,11 @@ def ask(
             "llm_provider": None,
             "llm_model": None,
         }
-    hits = index.search(query, category=category, limit=3)
-    if not hits and category:
-        hits = index.search(query, category=None, limit=3)
+    hits = index.search(query, category=category, limit=20)
+    if not hits and category == "procedure":
+        hits = index.search(query, category=None, limit=20)
     hits = confident_hits(hits)
+    hits = focus_hits_for_query(hits, query)
 
     if not hits:
         latency_ms = int((time.perf_counter() - start) * 1000)
@@ -365,7 +434,7 @@ def ask(
                     )
                 if contains_raw_markup(answer):
                     llm_error = "LLM returned raw markup after retry"
-                    answer = build_answer(hits, answer_style=answer_style)
+                    answer = build_answer(hits, answer_style=answer_style, query=query)
                     fallback_reason = "llm_dirty_answer"
                 else:
                     llm_used = True
@@ -373,14 +442,14 @@ def ask(
                     fallback_reason = None
             except LLMError as exc:
                 llm_error = str(exc)
-                answer = build_answer(hits, answer_style=answer_style)
+                answer = build_answer(hits, answer_style=answer_style, query=query)
                 fallback_reason = "llm_error"
         else:
             llm_error = "POC_LLM_MODEL and POC_LLM_API_KEY/OPENAI_API_KEY are required for --use-llm"
-            answer = build_answer(hits, answer_style=answer_style)
+            answer = build_answer(hits, answer_style=answer_style, query=query)
             fallback_reason = "llm_not_configured"
     else:
-        answer = build_answer(hits, answer_style=answer_style)
+        answer = build_answer(hits, answer_style=answer_style, query=query)
     latency_ms = int((time.perf_counter() - start) * 1000)
     doc_ids = sorted({hit.doc_id for hit in hits})
     log_id = db.log_query(
@@ -423,9 +492,50 @@ def confident_hits(hits: list[SearchHit]) -> list[SearchHit]:
     for hit in hits:
         key = (hit.doc_id, hit.version)
         current = deduped.get(key)
-        if current is None or hit.score > current.score:
+        if current is None:
             deduped[key] = hit
+            continue
+        if hit.score > current.score:
+            hit.text = combined_hit_text(hit.text, current.text)
+            deduped[key] = hit
+        else:
+            current.text = combined_hit_text(current.text, hit.text)
     return sorted(deduped.values(), key=lambda hit: hit.score, reverse=True)
+
+
+def focus_hits_for_query(hits: list[SearchHit], query: str) -> list[SearchHit]:
+    if len(hits) <= 1 or asks_across_documents(query):
+        return hits
+    best = hits[0]
+    if not best.display_code:
+        return hits
+    same_document_code = [hit for hit in hits if hit.display_code == best.display_code]
+    return same_document_code or hits
+
+
+def asks_across_documents(query: str) -> bool:
+    normalized = normalized_text(query)
+    return any(
+        term in normalized
+        for term in [
+            "cac quy trinh",
+            "nhung quy trinh",
+            "quy trinh nao",
+            "tai lieu nao",
+            "bo tai lieu",
+            "trong bo",
+            "hien tai",
+            "dung trong nhung",
+            "lien quan quy trinh nao",
+        ]
+    )
+
+
+def combined_hit_text(primary: str, secondary: str, max_chars: int = 3600) -> str:
+    if not secondary or secondary in primary:
+        return primary
+    combined = f"{primary}\n{secondary}".strip()
+    return combined[:max_chars].rstrip()
 
 
 def build_catalog_answer(root: Path, query: str, answer_style: str = "brief") -> tuple[str, list[SearchHit]] | None:
@@ -549,12 +659,14 @@ def source_role_label(source_role: str) -> str:
 def source_label_for_record(record: ManifestRecord) -> str:
     display_code = record.extra.get("display_code")
     label = f"{display_code} / {record.doc_id}" if display_code else record.doc_id
-    return f"{label} v{record.version}"
+    version = record.extra.get("display_version") or record.extra.get("source_revision") or f"v{record.version}"
+    return f"{label} {version}"
 
 
 def source_label_for_hit(hit: SearchHit) -> str:
     label = f"{hit.display_code} / {hit.doc_id}" if hit.display_code else hit.doc_id
-    return f"{label} v{hit.version}"
+    version = hit.display_version or hit.source_revision or f"v{hit.version}"
+    return f"{label} {version}"
 
 
 def is_technical_procedure_catalog_query(query: str) -> bool:
@@ -615,14 +727,19 @@ def extract_department_procedure_rows(markdown: str, department: str) -> list[tu
     return rows
 
 
-def build_answer(hits: list[SearchHit], answer_style: str = "brief") -> str:
+def build_answer(hits: list[SearchHit], answer_style: str = "brief", query: str = "") -> str:
     best = hits[0]
     cleaned_text = answer_ready_text(best.text)
-    points = _answer_points(cleaned_text)
+    table_points = procedure_table_points(cleaned_text)
+    ranked_points = relevant_answer_points(hits, query)
+    use_table_points = bool(table_points and is_broad_procedure_steps_query(query))
+    points = table_points if use_table_points else (ranked_points or table_points or _answer_points(cleaned_text))
     sources = ", ".join(source_label_for_hit(hit) for hit in hits)
     style = answer_style if answer_style in ANSWER_STYLE_LABELS else "brief"
     summary_points = points[:1] if style in {"workflow", "steps", "checklist"} else points[:2]
     excerpt = " ".join(summary_points).strip() or " ".join(cleaned_text.split())
+    if use_table_points:
+        excerpt = f"{source_label_for_hit(best)}: phần nội dung công việc của {best.title}."
     if len(excerpt) > 320:
         excerpt = excerpt[:320].rstrip() + "..."
     body_points = answer_body_points(points)
@@ -633,14 +750,216 @@ def build_answer(hits: list[SearchHit], answer_style: str = "brief") -> str:
     elif style == "steps":
         body = "\n".join(f"{index}. {sentence}" for index, sentence in enumerate(body_points[:6], start=1))
     else:
-        body = "\n".join(f"- {sentence}" for sentence in body_points[:4])
+        body = "\n".join(f"- {sentence}" for sentence in body_points[:6])
     return f"Tóm tắt:\n{excerpt}\n\nCác bước / Nội dung chính:\n{body}\n\nNguồn:\n{sources}"
+
+
+ANSWER_STOPWORDS = {
+    "ai",
+    "ban",
+    "bo",
+    "buoc",
+    "cac",
+    "can",
+    "cho",
+    "co",
+    "cua",
+    "duoc",
+    "gi",
+    "gom",
+    "hoi",
+    "khi",
+    "la",
+    "lam",
+    "nao",
+    "neu",
+    "nhu",
+    "nhung",
+    "phai",
+    "quy",
+    "sau",
+    "the",
+    "thi",
+    "trinh",
+    "trong",
+    "truoc",
+}
+
+
+def relevant_answer_points(hits: list[SearchHit], query: str, limit: int = 8) -> list[str]:
+    if not query.strip():
+        return []
+    normalized_query = normalized_text(query)
+    query_terms = {
+        term
+        for term in tokenize(normalized_query)
+        if len(term) > 1 and term not in ANSWER_STOPWORDS
+    }
+    scored: list[tuple[int, int, str]] = []
+    seen: set[str] = set()
+    order = 0
+    for hit in hits:
+        for candidate in answer_candidate_units(answer_ready_text(hit.text)):
+            normalized = normalized_text(candidate)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            score = answer_candidate_score(candidate, query_terms, normalized_query)
+            if score <= 0:
+                continue
+            scored.append((score, order, candidate))
+            order += 1
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [candidate for _, _, candidate in scored[:limit]]
+
+
+def answer_candidate_units(text: str) -> list[str]:
+    units: list[str] = []
+    for raw_line in clean_retrieval_text(text).splitlines():
+        line = re.sub(r"^#{1,6}\s*", "", raw_line.strip()).strip(" .;:-")
+        if not line:
+            continue
+        if not is_answer_candidate_noise(line):
+            units.append(line)
+        if len(line) < 120:
+            continue
+        parts = [
+            part.strip(" .;:-")
+            for part in re.split(r"\s+-\s+|<br\s*/?>", line)
+            if part.strip(" .;:-")
+        ]
+        for part in parts:
+            if not is_answer_candidate_noise(part):
+                units.append(part)
+    return units
+
+
+def answer_candidate_score(candidate: str, query_terms: set[str], normalized_query: str) -> int:
+    normalized = normalized_text(candidate)
+    candidate_terms = set(tokenize(normalized))
+    score = len(candidate_terms & query_terms) * 5
+    intent_rules = [
+        (["muc dich"], ["muc dich", "dam bao", "rui ro", "phoi hop"], 35),
+        (["pham vi", "ap dung", "khi nao"], ["pham vi ap dung", "ap dung khi", "phat sinh"], 35),
+        (["trach nhiem", "chiu trach nhiem"], ["trach nhiem", "phong ky thuat", "chiu trach nhiem"], 45),
+        (["kinh doanh", "buoc dau"], ["kinh doanh", "yeu cau lap dat", "pd-cs"], 40),
+        (["khao sat", "dieu kien"], ["ban dat may", "nhiet do", "do am", "he thong dien", "nuoc"], 40),
+        (["cap nhat thong tin", "phan mem"], ["sn may", "serial", "phu kien", "thoi gian di chuyen", "loi"], 40),
+        (["bbdvkt"], ["bbdvkt", "bien ban dich vu ky thuat", "ky gop"], 40),
+        (["bieu mau", "dinh kem", "ho so"], ["bm-", "ho so", "tai lieu dinh kem", "danh sach"], 40),
+        (["du tru phu kien", "ycmh"], ["du tru phu kien", "ycmh", "mua hang", "xnk"], 35),
+        (["ccdc", "hieu chuan"], ["ccdc", "hieu chuan", "chung chi", "serial"], 35),
+        (["chung chi", "dao tao", "ccdt"], ["chung chi", "dao tao", "bm-075", "tps"], 35),
+    ]
+    for query_markers, candidate_markers, weight in intent_rules:
+        if any(marker in normalized_query for marker in query_markers) and any(marker in normalized for marker in candidate_markers):
+            score += weight
+    header_terms = ["stt", "raci", "responsible", "accountable", "consulted", "informed", "bieu mau/van ban"]
+    if sum(1 for term in header_terms if term in normalized) >= 3:
+        score -= 35
+    return score
+
+
+def is_answer_candidate_noise(candidate: str) -> bool:
+    normalized = normalized_text(candidate)
+    if len(normalized) < 4 or normalized.isdigit():
+        return True
+    if re_fullmatch_noise(normalized):
+        return True
+    exact_noise = {
+        "stt",
+        "so do quy trinh",
+        "raci",
+        "ket qua",
+        "tan suat",
+        "noi dung chi tiet",
+        "bieu mau",
+        "buoc thuc hien/noi dung chinh",
+        "bo phan/nguoi",
+        "thoi gian",
+    }
+    return normalized in exact_noise
+
+
+def is_broad_procedure_steps_query(query: str) -> bool:
+    normalized = normalized_text(query)
+    return any(
+        term in normalized
+        for term in [
+            "cac buoc",
+            "gom cac buoc",
+            "gom nhung buoc",
+            "buoc nao",
+            "tung buoc",
+            "nhu the nao",
+            "lam sao",
+            "workflow",
+            "so do",
+        ]
+    )
 
 
 def answer_body_points(points: list[str]) -> list[str]:
     if len(points) > 1 and normalized_text(points[0]).startswith("tai lieu nay huong dan"):
         return points[1:]
     return points
+
+
+def procedure_table_points(text: str) -> list[str]:
+    normalized = normalized_text(text)
+    if not any(term in normalized for term in ["noi dung cong viec", "noi dung chi tiet", "so do quy trinh"]):
+        return []
+    cells = [cell.strip() for cell in re.split(r"\s*\|\s*", clean_retrieval_text(text)) if cell.strip()]
+    labels: list[str] = []
+    noise_terms = {
+        "stt",
+        "so do quy trinh",
+        "raci",
+        "ket qua",
+        "tan suat",
+        "noi dung chi tiet",
+        "bieu mau",
+        "responsible",
+        "accountable",
+        "consulted",
+        "informed",
+    }
+    for index, cell in enumerate(cells):
+        if add_procedure_label(labels, cell, noise_terms):
+            continue
+        normalized_cell = normalized_text(cell)
+        if re.search(r"(^|\n|\s)\d{1,2}\s*$", normalized_cell):
+            for candidate in cells[index + 1 : index + 5]:
+                if add_procedure_label(labels, candidate, noise_terms, raw_label=True):
+                    break
+        if len(labels) >= 6:
+            break
+    return labels
+
+
+def add_procedure_label(labels: list[str], value: str, noise_terms: set[str], raw_label: bool = False) -> bool:
+    candidates = [value] if raw_label else []
+    candidates.extend(match.group(1) for match in re.finditer(r"(?:^|\n)\s*\d{1,2}\s+([^\n|]{4,90})", value))
+    end_match = re.search(r"^\(?\d{1,2}\)?\s*\n?\s*([^|]{4,90}?)(?:\d{1,2})$", value.strip())
+    if end_match:
+        candidates.append(end_match.group(1))
+    for candidate in candidates:
+        label = workflow_label(candidate)
+        label = re.sub(r"^[↓\d\s.:-]+", "", label).strip()
+        label = re.sub(r"\d{1,2}$", "", label).strip()
+        normalized_label = normalized_text(label)
+        if len(normalized_label) < 4:
+            continue
+        if normalized_label in noise_terms:
+            continue
+        if any(term in normalized_label for term in ["pd-tech", "responsible", "accountable", "consulted", "informed"]):
+            continue
+        if re.fullmatch(r"[irac,\s]+", normalized_label):
+            continue
+        if label not in labels:
+            labels.append(label)
+        return True
+    return False
 
 
 def build_workflow_answer(points: list[str], excerpt: str, sources: str) -> str:
@@ -760,15 +1079,29 @@ def re_split_sentences(text: str) -> list[str]:
 
 
 def citation_payload(hit: SearchHit) -> dict[str, object]:
+    excerpt = clean_excerpt(answer_ready_text(hit.text))
     payload = {
         "doc_id": hit.doc_id,
         "version": hit.version,
         "title": hit.title,
         "category": hit.category,
-        "excerpt": clean_excerpt(answer_ready_text(hit.text)),
+        "excerpt": excerpt,
+        "matched_excerpt": excerpt,
     }
+    if getattr(hit, "chunk_id", None):
+        payload["chunk_id"] = hit.chunk_id
+    if getattr(hit, "anchor_id", None):
+        payload["anchor_id"] = hit.anchor_id
+    if getattr(hit, "line_start", None) is not None:
+        payload["line_start"] = hit.line_start
+    if getattr(hit, "line_end", None) is not None:
+        payload["line_end"] = hit.line_end
     if hit.display_code:
         payload["display_code"] = hit.display_code
+    if getattr(hit, "display_version", None):
+        payload["display_version"] = hit.display_version
+    if getattr(hit, "source_revision", None):
+        payload["source_revision"] = hit.source_revision
     if hit.source_role:
         payload["source_role"] = hit.source_role
     return payload

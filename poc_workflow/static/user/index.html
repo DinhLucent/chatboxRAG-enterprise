@@ -11,7 +11,7 @@
       href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/user/user-chat.css?v=20260525-chat" />
+    <link rel="stylesheet" href="/static/user/user-chat.css?v=20260525-mineru-md" />
   </head>
   <body>
     <div class="user-shell">
@@ -96,7 +96,12 @@
             <div class="composer-settings">
               <label class="answer-style-label" for="answerStyle">Kiểu trả lời:</label>
               <div class="select-wrapper">
-                <select id="answerStyle" class="answer-style-select"></select>
+                <select id="answerStyle" class="answer-style-select">
+                  <option value="brief">Ngắn gọn</option>
+                  <option value="steps">Từng bước</option>
+                  <option value="checklist">Checklist</option>
+                  <option value="workflow">Workflow</option>
+                </select>
               </div>
             </div>
             <div class="textarea-wrapper">
@@ -134,6 +139,6 @@
     </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/static/user/user-chat.js?v=20260525-chat"></script>
+    <script src="/static/user/user-chat.js?v=20260525-mineru-md"></script>
   </body>
 </html>

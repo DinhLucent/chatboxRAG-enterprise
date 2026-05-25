@@ -25,6 +25,8 @@ def test_extract_reference_citations_accepts_openai_reference_list() -> None:
                 "document_metadata": {
                     "doc_id": "KT-QT-003",
                     "version": "1.2",
+                    "display_code": "PD-TECH-A-02",
+                    "display_version": "Rev 04",
                     "category": "procedure",
                     "source_path": "/source/KT-QT-003_v1.2.pdf",
                     "normalized_path": "/normalized/KT-QT-003_v1.2.md",
@@ -37,6 +39,8 @@ def test_extract_reference_citations_accepts_openai_reference_list() -> None:
         {
             "doc_id": "KT-QT-003",
             "version": "1.2",
+            "display_code": "PD-TECH-A-02",
+            "display_version": "Rev 04",
             "title": "Procedure.md",
             "category": "procedure",
             "chunk_id": "chunk-1",

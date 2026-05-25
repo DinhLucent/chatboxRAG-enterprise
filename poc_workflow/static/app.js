@@ -623,15 +623,311 @@ function bindInspectorButtons(container) {
   });
   container.querySelectorAll(".inspector-tab").forEach((button) => {
     button.addEventListener("click", () => {
-      const tab = button.dataset.tab;
-      container.querySelectorAll(".inspector-tab").forEach((item) => {
-        item.classList.toggle("active", item.dataset.tab === tab);
-      });
-      container.querySelectorAll(".inspector-section").forEach((section) => {
-        section.hidden = section.dataset.section !== tab;
-      });
+      activateInspectorTab(container, button.dataset.tab);
     });
   });
+}
+
+function activateInspectorTab(container, tab) {
+  if (!container || !tab) return;
+  container.querySelectorAll(".inspector-tab").forEach((item) => {
+    item.classList.toggle("active", item.dataset.tab === tab);
+  });
+  container.querySelectorAll(".inspector-section").forEach((section) => {
+    section.hidden = section.dataset.section !== tab;
+  });
+}
+
+function scrollCitationIntoView(container) {
+  const target = container?.querySelector(".markdown-line.highlight");
+  if (!target) return;
+  target.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+function markdownInline(value) {
+  let html = escapeHtml(value);
+  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  html = html.replace(
+    /\[([^\]]+)\]\(((?:https?:\/\/|\/)[^\s)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
+  );
+  return html;
+}
+
+function markdownLineRange(lines) {
+  if (!lines.length) return "";
+  const first = lines[0].line;
+  const last = lines[lines.length - 1].line;
+  return first === last ? String(first) : `${first}-${last}`;
+}
+
+function markdownAnchorAttr(line) {
+  return line.anchor_id ? `data-anchor-id="${escapeHtml(line.anchor_id)}"` : "";
+}
+
+function markdownLineAttrs(line, extraClass = "") {
+  return `class="markdown-line ${extraClass} ${line.highlight ? "highlight" : ""}" data-line="${escapeHtml(line.line)}" ${markdownAnchorAttr(line)}`;
+}
+
+function isMarkdownTableSeparator(line) {
+  return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(String(line || "").trim());
+}
+
+function isMarkdownTableRow(line) {
+  const trimmed = String(line || "").trim();
+  return trimmed.includes("|") && !trimmed.startsWith("```");
+}
+
+function isHtmlTableStart(line) {
+  return /<\s*table(?:\s|>)/i.test(String(line || ""));
+}
+
+function isHtmlTableEnd(line) {
+  return /<\s*\/\s*table\s*>/i.test(String(line || ""));
+}
+
+function splitMarkdownTableRow(line) {
+  return String(line || "")
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function renderMarkdownTableBlock(rows) {
+  const visibleRows = rows.filter((line) => !isMarkdownTableSeparator(line.text));
+  if (!visibleRows.length) return "";
+  const hasHeader = rows.length > 1 && isMarkdownTableSeparator(rows[1].text);
+  const header = hasHeader ? visibleRows[0] : null;
+  const bodyRows = hasHeader ? visibleRows.slice(1) : visibleRows;
+  const highlighted = rows.some((line) => line.highlight);
+  const anchor = rows.find((line) => line.anchor_id)?.anchor_id || "";
+  return `
+    <div class="markdown-line markdown-table-block ${highlighted ? "highlight" : ""}" data-line="${escapeHtml(markdownLineRange(rows))}" ${anchor ? `data-anchor-id="${escapeHtml(anchor)}"` : ""}>
+      <span class="markdown-line-number">${escapeHtml(markdownLineRange(rows))}</span>
+      <div class="markdown-line-content">
+        <table class="markdown-table">
+          ${
+            header
+              ? `<thead><tr>${splitMarkdownTableRow(header.text).map((cell) => `<th>${markdownInline(cell)}</th>`).join("")}</tr></thead>`
+              : ""
+          }
+          <tbody>
+            ${bodyRows
+              .map(
+                (row) => `
+                  <tr class="${row.highlight ? "row-highlight" : ""}">
+                    ${splitMarkdownTableRow(row.text).map((cell) => `<td>${markdownInline(cell)}</td>`).join("")}
+                  </tr>
+                `,
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function sanitizedSpanAttr(value) {
+  const parsed = Number.parseInt(String(value || "1"), 10);
+  if (!Number.isFinite(parsed) || parsed <= 1) return "";
+  return String(Math.min(parsed, 50));
+}
+
+function htmlCellText(node) {
+  const collect = (current) => {
+    if (!current) return "";
+    if (current.nodeType === Node.TEXT_NODE) return current.nodeValue || "";
+    if (current.nodeType !== Node.ELEMENT_NODE) return "";
+    const tagName = current.tagName.toLowerCase();
+    if (tagName === "br") return "\n";
+    const childText = Array.from(current.childNodes).map(collect).join("");
+    if (["p", "div", "li", "h1", "h2", "h3", "h4"].includes(tagName)) {
+      return `${childText}\n`;
+    }
+    return childText;
+  };
+  return collect(node)
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function htmlCellContent(node) {
+  return escapeHtml(htmlCellText(node) || " ").replace(/\n/g, "<br>");
+}
+
+function renderSafeHtmlTable(table) {
+  const rows = Array.from(table.rows || []);
+  if (!rows.length) return "";
+  return `
+    <table class="markdown-table markdown-html-table">
+      <tbody>
+        ${rows
+          .map((row) => {
+            const cells = Array.from(row.cells || []);
+            return `
+              <tr>
+                ${cells
+                  .map((cell) => {
+                    const tag = cell.tagName?.toLowerCase() === "th" ? "th" : "td";
+                    const rowspan = sanitizedSpanAttr(cell.getAttribute("rowspan"));
+                    const colspan = sanitizedSpanAttr(cell.getAttribute("colspan"));
+                    const attrs = `${rowspan ? ` rowspan="${rowspan}"` : ""}${colspan ? ` colspan="${colspan}"` : ""}`;
+                    return `<${tag}${attrs}>${htmlCellContent(cell)}</${tag}>`;
+                  })
+                  .join("")}
+              </tr>
+            `;
+          })
+          .join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderHtmlTableBlock(lines) {
+  const source = lines.map((line) => line.text || "").join("\n");
+  const highlighted = lines.some((line) => line.highlight);
+  const anchor = lines.find((line) => line.anchor_id)?.anchor_id || "";
+  let tableHtml = "";
+  try {
+    const doc = new DOMParser().parseFromString(source, "text/html");
+    const tables = Array.from(doc.querySelectorAll("table"));
+    tableHtml = tables.map(renderSafeHtmlTable).join("");
+  } catch {
+    tableHtml = "";
+  }
+  if (!tableHtml.trim()) {
+    tableHtml = `<p>${escapeHtml(source.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() || " ")}</p>`;
+  }
+  return `
+    <div class="markdown-line markdown-table-block markdown-html-table-block ${highlighted ? "highlight" : ""}" data-line="${escapeHtml(markdownLineRange(lines))}" ${anchor ? `data-anchor-id="${escapeHtml(anchor)}"` : ""}>
+      <span class="markdown-line-number">${escapeHtml(markdownLineRange(lines))}</span>
+      <div class="markdown-line-content">${tableHtml}</div>
+    </div>
+  `;
+}
+
+function renderMarkdownCodeBlock(lines) {
+  const highlighted = lines.some((line) => line.highlight);
+  const anchor = lines.find((line) => line.anchor_id)?.anchor_id || "";
+  const code = lines
+    .filter((line) => !String(line.text || "").trim().startsWith("```"))
+    .map((line) => line.text)
+    .join("\n");
+  return `
+    <div class="markdown-line markdown-code-block ${highlighted ? "highlight" : ""}" data-line="${escapeHtml(markdownLineRange(lines))}" ${anchor ? `data-anchor-id="${escapeHtml(anchor)}"` : ""}>
+      <span class="markdown-line-number">${escapeHtml(markdownLineRange(lines))}</span>
+      <div class="markdown-line-content"><pre><code>${escapeHtml(code || " ")}</code></pre></div>
+    </div>
+  `;
+}
+
+function renderMarkdownLineContent(rawLine) {
+  const trimmed = String(rawLine || "").trim();
+  if (!trimmed) return '<span class="markdown-empty-line">&nbsp;</span>';
+  const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
+  if (heading) {
+    const level = Math.min(heading[1].length + 1, 4);
+    return `<h${level}>${markdownInline(heading[2])}</h${level}>`;
+  }
+  const unordered = trimmed.match(/^[-*]\s+(.+)$/);
+  if (unordered) return `<p class="markdown-list-line"><span aria-hidden="true">•</span>${markdownInline(unordered[1])}</p>`;
+  const ordered = trimmed.match(/^(\d+)\.\s+(.+)$/);
+  if (ordered) return `<p class="markdown-list-line"><span>${escapeHtml(ordered[1])}.</span>${markdownInline(ordered[2])}</p>`;
+  const quote = trimmed.match(/^>\s?(.+)$/);
+  if (quote) return `<blockquote>${markdownInline(quote[1])}</blockquote>`;
+  return `<p>${markdownInline(rawLine)}</p>`;
+}
+
+function renderReadableMarkdownViewer(lines, className = "markdown-preview markdown-line-preview markdown-viewer") {
+  const rows = Array.isArray(lines) ? lines : [];
+  const html = [];
+  let index = 0;
+  while (index < rows.length) {
+    const current = rows[index];
+    const text = String(current.text || "");
+    const trimmed = text.trim();
+    if (isHtmlTableStart(text)) {
+      const tableRows = [current];
+      index += 1;
+      while (index < rows.length && !isHtmlTableEnd(tableRows[tableRows.length - 1].text)) {
+        tableRows.push(rows[index]);
+        index += 1;
+      }
+      html.push(renderHtmlTableBlock(tableRows));
+      continue;
+    }
+    if (trimmed.startsWith("```")) {
+      const codeRows = [current];
+      index += 1;
+      while (index < rows.length) {
+        codeRows.push(rows[index]);
+        if (String(rows[index].text || "").trim().startsWith("```")) {
+          index += 1;
+          break;
+        }
+        index += 1;
+      }
+      html.push(renderMarkdownCodeBlock(codeRows));
+      continue;
+    }
+    if (isMarkdownTableRow(text)) {
+      const tableRows = [];
+      while (index < rows.length && isMarkdownTableRow(rows[index].text)) {
+        tableRows.push(rows[index]);
+        index += 1;
+      }
+      if (tableRows.length >= 2) {
+        html.push(renderMarkdownTableBlock(tableRows));
+        continue;
+      }
+      html.push(
+        `<div ${markdownLineAttrs(current, "markdown-plain-line")}>
+          <span class="markdown-line-number">${escapeHtml(current.line)}</span>
+          <div class="markdown-line-content">${renderMarkdownLineContent(text)}</div>
+        </div>`,
+      );
+      continue;
+    }
+    html.push(
+      `<div ${markdownLineAttrs(current, "markdown-plain-line")}>
+        <span class="markdown-line-number">${escapeHtml(current.line)}</span>
+        <div class="markdown-line-content">${renderMarkdownLineContent(text)}</div>
+      </div>`,
+    );
+    index += 1;
+  }
+  return `<div class="${className}">${html.join("")}</div>`;
+}
+
+function renderMarkdownPreview(markdown, citation, citationPreview = null) {
+  const previewLines = citation && Array.isArray(citationPreview?.lines) ? citationPreview.lines : null;
+  if (previewLines?.length) {
+    return renderReadableMarkdownViewer(previewLines);
+  }
+  const content = String(markdown?.content || "File Markdown bị thiếu hoặc rỗng.");
+  const lines = content.split(/\r?\n/);
+  const highlightStart = Number(citation?.line_start || 0);
+  const highlightEnd = Number(citation?.line_end || highlightStart || 0);
+  const anchorId = citation?.anchor_id || "";
+  const viewerLines = lines.map((line, index) => {
+    const lineNumber = index + 1;
+    const highlighted = Boolean(highlightStart && lineNumber >= highlightStart && lineNumber <= highlightEnd);
+    return {
+      line: lineNumber,
+      text: line,
+      highlight: highlighted,
+      anchor_id: highlighted ? anchorId : "",
+    };
+  });
+  return renderReadableMarkdownViewer(viewerLines);
 }
 
 async function copyText(content, message = "Đã sao chép") {
@@ -665,6 +961,8 @@ function renderDocumentInspector(targetSelector, detail, options = {}) {
   const record = detail.record || {};
   const qaStatus = detail.qa_report?.data?.status || record.extra?.qa_status || "-";
   const markdown = detail.markdown || {};
+  const citation = detail.citation || null;
+  const citationPreview = detail.citation_preview || null;
   const metadataSidecar = detail.metadata_sidecar?.data || {};
   target.classList.remove("empty");
   target.innerHTML = `
@@ -719,7 +1017,12 @@ function renderDocumentInspector(targetSelector, detail, options = {}) {
     </div>
     <div class="inspector-section" data-section="markdown" hidden>
       ${markdown.truncated ? `<div class="review-alert warning">Bản xem trước Markdown đã được rút gọn để giữ hiệu năng trình duyệt.</div>` : ""}
-      <pre class="markdown-preview">${escapeHtml(markdown.content || "File Markdown bị thiếu hoặc rỗng.")}</pre>
+      ${
+        citation
+          ? `<div class="review-alert info">Đã mở trích dẫn ${escapeHtml(citation.anchor_id || "")} (${escapeHtml(citation.locator_status || "exact")}).</div>`
+          : ""
+      }
+      ${renderMarkdownPreview(markdown, citation, citationPreview)}
     </div>
     <div class="inspector-section" data-section="qa" hidden>
       <pre class="json-box compact">${jsonBlock(detail.qa_report?.data || detail.qa_report)}</pre>
@@ -730,6 +1033,10 @@ function renderDocumentInspector(targetSelector, detail, options = {}) {
     </div>
   `;
   bindInspectorButtons(target);
+  if (citation) {
+    activateInspectorTab(target, "markdown");
+    window.setTimeout(() => scrollCitationIntoView(target), 80);
+  }
 }
 
 async function loadDocumentDetail(record, target = "documents") {
@@ -752,6 +1059,33 @@ async function loadDocumentDetail(record, target = "documents") {
     renderManifest();
     renderDocumentInspector("#documentInspector", detail);
   }
+}
+
+function citationDetailPath(citation) {
+  const base = `/api/documents/${encodeURIComponent(citation.doc_id)}/${encodeURIComponent(citation.version)}/citation`;
+  if (citation.anchor_id) {
+    return `${base}/${encodeURIComponent(citation.anchor_id)}`;
+  }
+  const params = new URLSearchParams();
+  if (citation.excerpt || citation.matched_excerpt) {
+    params.set("excerpt", citation.excerpt || citation.matched_excerpt);
+  }
+  return params.toString() ? `${base}?${params}` : base;
+}
+
+async function openCitationInInspector(citation) {
+  if (!citation?.doc_id || !citation?.version) return;
+  switchView("documents");
+  const inspector = qs("#documentInspector");
+  if (inspector) {
+    inspector.classList.add("empty");
+    inspector.textContent = "Đang mở đoạn trích Markdown...";
+  }
+  const detail = await api(citationDetailPath(citation));
+  state.selectedDocumentRecord = detail.record || citation;
+  state.selectedDocumentDetail = detail;
+  renderManifest();
+  renderDocumentInspector("#documentInspector", detail);
 }
 
 function renderManifest() {
@@ -1692,16 +2026,27 @@ function setupActions() {
       qs("#answerFeedback").hidden = !result.query_log_id;
       qs("#citations").classList.remove("empty");
       qs("#citations").innerHTML = result.citations.length
-        ? result.citations.map((citation) => `
-          <div class="item">
+        ? result.citations.map((citation, index) => `
+          <button class="item citation-card" type="button" data-citation-index="${index}">
             <div class="item-title">${escapeHtml(citation.title || citation.doc_id || "Nguồn")}</div>
             <div class="item-meta">
               Mã: ${escapeHtml(citation.doc_id || "-")} | Phiên bản: ${escapeHtml(citation.version || "-")}<br>
-              ${escapeHtml(citation.source_path || citation.normalized_path || citation.chunk_id || "")}
+              ${escapeHtml(citation.anchor_id || citation.chunk_id || "")}
             </div>
-          </div>
+            <div class="item-meta">${escapeHtml(citation.matched_excerpt || citation.excerpt || "")}</div>
+          </button>
         `).join("")
         : `<div class="empty">Không có nguồn trích dẫn trả về.</div>`;
+      document.querySelectorAll(".citation-card").forEach((button) => {
+        button.addEventListener("click", async () => {
+          const citation = result.citations[Number(button.dataset.citationIndex)];
+          try {
+            await openCitationInInspector(citation);
+          } catch (error) {
+            toast(error.message || "Không mở được đoạn trích Markdown");
+          }
+        });
+      });
       await refreshAll();
     } catch (err) {
       qs("#answerBox").classList.remove("empty");

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import re
 import shutil
@@ -30,7 +31,7 @@ from .llm import (
     save_llm_runtime_config,
     transient_llm_config,
 )
-from .manifest import ManifestStore
+from .manifest import ManifestStore, latest_active_records
 from .operations import (
     build_incident_agent_prompt,
     diagnostic_snapshot,
@@ -55,6 +56,7 @@ from .ragflow_http import (
 )
 from .readiness import deployment_readiness
 from .runtime import allowed_providers, local_fallback_enabled, provider_allowed
+from .text_cleaning import clean_excerpt
 from .user_chat import (
     answer_styles_payload,
     cleanup_stale_sessions,
@@ -302,7 +304,160 @@ def _markdown_quality(content: str) -> dict[str, int]:
     }
 
 
-def _document_detail_payload(workspace: Path, doc_id: str, version: str) -> dict[str, Any]:
+def locate_excerpt_in_markdown(content: str, excerpt: str) -> tuple[int, int, str]:
+    if not excerpt or not excerpt.strip():
+        return 1, 1, "approximate"
+    lines = content.splitlines()
+    excerpt_lines = [l.strip() for l in excerpt.splitlines() if l.strip()]
+    if not excerpt_lines:
+        return 1, 1, "approximate"
+    for i in range(len(lines) - len(excerpt_lines) + 1):
+        window = [lines[i + j].strip() for j in range(len(excerpt_lines))]
+        match = True
+        for j, el in enumerate(excerpt_lines):
+            if el not in window[j] and window[j] not in el:
+                match = False
+                break
+        if match:
+            return i + 1, i + len(excerpt_lines), "exact"
+    first_el = excerpt_lines[0]
+    for i, line in enumerate(lines):
+        if first_el in line or line.strip() in first_el:
+            last_el = excerpt_lines[-1]
+            for k in range(i, min(i + 50, len(lines))):
+                if last_el in lines[k] or lines[k].strip() in last_el:
+                    return i + 1, k + 1, "approximate"
+            return i + 1, i + 1, "approximate"
+    return 1, len(lines) or 1, "approximate"
+
+
+def _index_datasets_for_lookup(public: bool = False) -> list[str]:
+    return ["active"] if public else ["active", "archive"]
+
+
+def _chunk_number_from_anchor(anchor_id: str | None) -> int | None:
+    if not anchor_id:
+        return None
+    match = re.search(r"(?:^anchor|[_-]c)(\d+)$", anchor_id)
+    return int(match.group(1)) if match else None
+
+
+def _lookup_index_locator(
+    workspace: Path,
+    doc_id: str,
+    version: str,
+    anchor_id: str | None,
+    *,
+    public: bool = False,
+) -> dict[str, Any] | None:
+    chunk_number = _chunk_number_from_anchor(anchor_id)
+    for dataset in _index_datasets_for_lookup(public):
+        index_path = workspace / "ragflow_index" / f"technical_{dataset}.jsonl"
+        if not index_path.exists():
+            continue
+        ordinal = 0
+        with index_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                payload = json.loads(line)
+                if payload.get("doc_id") != doc_id or str(payload.get("version") or "") != version:
+                    continue
+                ordinal += 1
+                anchor_matches = bool(anchor_id and payload.get("anchor_id") == anchor_id)
+                ordinal_matches = bool(chunk_number and ordinal == chunk_number)
+                if not anchor_matches and not ordinal_matches:
+                    continue
+                line_start = payload.get("line_start")
+                line_end = payload.get("line_end")
+                if line_start is None or line_end is None:
+                    return None
+                return {
+                    "anchor_id": payload.get("anchor_id") or anchor_id,
+                    "chunk_id": payload.get("chunk_id"),
+                    "line_start": int(line_start),
+                    "line_end": int(line_end),
+                    "locator_status": "exact" if anchor_matches else "approximate",
+                    "matched_excerpt": clean_excerpt(payload.get("text") or ""),
+                }
+    return None
+
+
+def _citation_locator(
+    workspace: Path,
+    *,
+    doc_id: str,
+    version: str,
+    content: str,
+    anchor_id: str | None = None,
+    excerpt: str | None = None,
+    public: bool = False,
+) -> dict[str, Any] | None:
+    locator = _lookup_index_locator(workspace, doc_id, version, anchor_id, public=public)
+    if locator:
+        return locator
+    if excerpt:
+        line_start, line_end, _locator_status = locate_excerpt_in_markdown(content, excerpt)
+        return {
+            "anchor_id": anchor_id,
+            "chunk_id": None,
+            "line_start": line_start,
+            "line_end": line_end,
+            "locator_status": "approximate",
+            "matched_excerpt": clean_excerpt(excerpt),
+        }
+    return None
+
+
+def _markdown_preview_lines(
+    content: str,
+    citation: dict[str, Any] | None,
+    *,
+    context_lines: int = 8,
+) -> dict[str, Any] | None:
+    if not content or not citation:
+        return None
+    lines = content.splitlines()
+    if not lines:
+        return None
+    line_start = max(1, int(citation.get("line_start") or 1))
+    line_end = max(line_start, int(citation.get("line_end") or line_start))
+    preview_start = max(1, line_start - context_lines)
+    preview_end = min(len(lines), line_end + context_lines)
+    return {
+        "line_start": preview_start,
+        "line_end": preview_end,
+        "highlight_line_start": line_start,
+        "highlight_line_end": line_end,
+        "anchor_id": citation.get("anchor_id"),
+        "locator_status": citation.get("locator_status"),
+        "matched_excerpt": citation.get("matched_excerpt"),
+        "content": "\n".join(lines[preview_start - 1 : preview_end]),
+        "lines": [
+            {
+                "line": line_number,
+                "text": lines[line_number - 1],
+                "highlight": line_start <= line_number <= line_end,
+                "anchor_id": citation.get("anchor_id") if line_start <= line_number <= line_end else None,
+            }
+            for line_number in range(preview_start, preview_end + 1)
+        ],
+    }
+
+
+def _read_full_markdown(path: Path | None) -> str:
+    if not path or not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _document_detail_payload(
+    workspace: Path,
+    doc_id: str,
+    version: str,
+    anchor_id: str | None = None,
+    excerpt: str | None = None,
+) -> dict[str, Any]:
     records = ManifestStore(workspace).load()
     record = next((item for item in records if item.doc_id == doc_id and item.version == version), None)
     if not record:
@@ -392,6 +547,20 @@ def _document_detail_payload(workspace: Path, doc_id: str, version: str) -> dict
             }
         )
 
+    citation_info = None
+    citation_preview = None
+    if markdown.get("exists") and (anchor_id or excerpt):
+        citation_content = _read_full_markdown(normalized_path)
+        citation_info = _citation_locator(
+            workspace,
+            doc_id=doc_id,
+            version=version,
+            content=citation_content,
+            anchor_id=anchor_id,
+            excerpt=excerpt,
+        )
+        citation_preview = _markdown_preview_lines(citation_content, citation_info)
+
     return {
         "record": record.to_dict(),
         "metadata_sidecar": metadata_sidecar,
@@ -413,6 +582,59 @@ def _document_detail_payload(workspace: Path, doc_id: str, version: str) -> dict
             for item in sorted(related, key=lambda item: (item.status, item.doc_id, item.version))
         ],
         "warnings": warnings,
+        "citation": citation_info,
+        "citation_preview": citation_preview,
+    }
+
+
+def _public_document_citation_payload(
+    workspace: Path,
+    doc_id: str,
+    version: str,
+    *,
+    anchor_id: str | None = None,
+    excerpt: str | None = None,
+) -> dict[str, Any]:
+    records = ManifestStore(workspace).load()
+    active_latest = {
+        (record.doc_id, record.version)
+        for record in latest_active_records(records)
+    }
+    if (doc_id, version) not in active_latest:
+        raise HTTPException(status_code=404, detail="Document not found")
+    record = next((item for item in records if item.doc_id == doc_id and item.version == version), None)
+    if not record:
+        raise HTTPException(status_code=404, detail="Document not found")
+    normalized_path = _record_path(workspace, record.normalized_path)
+    content = _read_full_markdown(normalized_path)
+    if not content:
+        raise HTTPException(status_code=404, detail="Markdown not found")
+    citation = _citation_locator(
+        workspace,
+        doc_id=doc_id,
+        version=version,
+        content=content,
+        anchor_id=anchor_id,
+        excerpt=excerpt,
+        public=True,
+    )
+    if not citation:
+        raise HTTPException(status_code=404, detail="Citation not found")
+    safe_citation = {
+        "anchor_id": citation.get("anchor_id"),
+        "line_start": citation.get("line_start"),
+        "line_end": citation.get("line_end"),
+        "locator_status": citation.get("locator_status"),
+        "matched_excerpt": citation.get("matched_excerpt"),
+    }
+    return {
+        "record": {
+            "title": record.title,
+            "doc_id": record.doc_id,
+            "version": record.version,
+        },
+        "citation": safe_citation,
+        "preview": _markdown_preview_lines(content, citation),
     }
 
 
@@ -647,8 +869,29 @@ def create_app(root: Path | None = None) -> FastAPI:
         return [record.to_dict() for record in ManifestStore(workspace).load()]
 
     @app.get("/api/documents/{doc_id}/{version}")
-    def document_detail(doc_id: str, version: str) -> dict[str, Any]:
-        return _document_detail_payload(workspace, doc_id, version)
+    def document_detail(
+        doc_id: str,
+        version: str,
+        anchor_id: str | None = None,
+        excerpt: str | None = None,
+    ) -> dict[str, Any]:
+        return _document_detail_payload(workspace, doc_id, version, anchor_id=anchor_id, excerpt=excerpt)
+
+    @app.get("/api/documents/{doc_id}/{version}/citation")
+    def document_citation_by_excerpt(doc_id: str, version: str, excerpt: str | None = None) -> dict[str, Any]:
+        return _document_detail_payload(workspace, doc_id, version, excerpt=excerpt)
+
+    @app.get("/api/documents/{doc_id}/{version}/citation/{anchor_id}")
+    def document_citation(doc_id: str, version: str, anchor_id: str) -> dict[str, Any]:
+        return _document_detail_payload(workspace, doc_id, version, anchor_id=anchor_id)
+
+    @app.get("/api/user/documents/{doc_id}/{version}/citation")
+    def public_document_citation_by_excerpt(doc_id: str, version: str, excerpt: str | None = None) -> dict[str, Any]:
+        return _public_document_citation_payload(workspace, doc_id, version, excerpt=excerpt)
+
+    @app.get("/api/user/documents/{doc_id}/{version}/citation/{anchor_id}")
+    def public_document_citation(doc_id: str, version: str, anchor_id: str) -> dict[str, Any]:
+        return _public_document_citation_payload(workspace, doc_id, version, anchor_id=anchor_id)
 
     @app.get("/api/manifest/summary")
     def manifest_summary_api() -> list[dict[str, str | None]]:

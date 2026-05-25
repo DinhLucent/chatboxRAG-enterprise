@@ -1,485 +1,64 @@
 [
   {
-    "id": "p001-incident-flow-overview",
-    "query": "Quy trinh xu ly su co ky thuat gom nhung buoc nao?",
+    "id": "scope-count",
+    "query": "Có bao nhiêu tài liệu quy trình kỹ thuật?",
     "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
+    "expected_doc_ids": ["KT-QT-142", "KT-QT-144", "KT-QT-146", "KT-QT-148", "KT-QT-150", "KT-QT-152", "KT-QT-356", "KT-QT-360", "KT-QT-376", "KT-QT-401", "KT-QT-426", "KT-QT-431"],
+    "expected_category": "procedure",
+    "answer_style": "steps",
+    "expected_answer_terms": ["12 file active", "6 nhóm quy trình", "Nguồn"]
+  },
+  {
+    "id": "installation",
+    "query": "Quy trình lắp đặt gồm những bước nào?",
+    "should_answer": true,
+    "expected_doc_ids": ["KT-QT-426"],
+    "expected_category": "procedure",
+    "answer_style": "steps"
+  },
+  {
+    "id": "maintenance",
+    "query": "Quy trình bảo dưỡng gồm những bước nào?",
+    "should_answer": true,
+    "expected_doc_ids": ["KT-QT-401"],
+    "expected_category": "procedure",
+    "answer_style": "steps"
+  },
+  {
+    "id": "repair",
+    "query": "Quy trình sửa chữa gồm những bước nào?",
+    "should_answer": true,
+    "expected_doc_ids": ["KT-QT-431"],
+    "expected_category": "procedure",
+    "answer_style": "steps"
+  },
+  {
+    "id": "accessory-order",
+    "query": "Quy trình đặt hàng phụ kiện như thế nào?",
+    "should_answer": true,
+    "expected_doc_ids": ["KT-QT-376"],
+    "expected_category": "procedure",
+    "answer_style": "steps"
+  },
+  {
+    "id": "calibration",
+    "query": "Tóm tắt quy trình thực hiện hiệu chuẩn dụng cụ.",
+    "should_answer": true,
+    "expected_doc_ids": ["KT-QT-360"],
     "expected_category": "procedure"
   },
   {
-    "id": "p002-kt-qt-003-purpose",
-    "query": "KT-QT-003 muc dich cua tai lieu nay la gi?",
+    "id": "engineer-training-certificate",
+    "query": "Hướng dẫn theo dõi chứng chỉ đào tạo kỹ sư nói về gì?",
     "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
+    "expected_doc_ids": ["KT-QT-356"],
     "expected_category": "procedure"
   },
   {
-    "id": "p003-technical-staff-guidance",
-    "query": "Tai lieu nao huong dan nhan vien phong Ky thuat tiep nhan su co?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p004-receive-incident",
-    "query": "Buoc tiep nhan thong tin su co duoc neu trong quy trinh nao?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p005-monitoring-source",
-    "query": "Su co co the den tu nguoi dung hoac he thong giam sat khong?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p006-ticket-recording",
-    "query": "Khi xu ly su co co can ghi nhan ma ticket khong?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p007-ticket-fields",
-    "query": "Can ghi nhan ma ticket thoi gian nguoi bao loi va muc do anh huong o buoc nao?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p008-priority-classification",
-    "query": "Phan loai muc do uu tien theo quy dinh cua phong Ky thuat nam trong tai lieu nao?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p009-escalation",
-    "query": "Neu su co vuot tham quyen thi quy trinh yeu cau lam gi?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p010-update-result",
-    "query": "Sau khi xu ly su co co can cap nhat ket qua khong?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p011-close-ticket",
-    "query": "Khi nao dong ticket sau xu ly su co ky thuat?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p012-user-confirmation",
-    "query": "Dong ticket co can nguoi yeu cau xac nhan khong?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p013-step-one",
-    "query": "Buoc 1 cua KT-QT-003 la gi?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p014-step-two",
-    "query": "Buoc 2 trong KT-QT-003 can ghi nhan thong tin nao?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p015-step-three",
-    "query": "Buoc 3 cua quy trinh xu ly su co ky thuat noi ve viec gi?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p016-step-four",
-    "query": "Buoc 4 trong quy trinh xu ly su co co noi den chuyen cap khong?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p017-step-five",
-    "query": "Buoc 5 cua KT-QT-003 yeu cau cap nhat va dong ticket nhu the nao?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p018-source-version",
-    "query": "Nguon tai lieu KT-QT-003 dang la phien ban nao?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p019-incident-intake",
-    "query": "Phong Ky thuat tiep nhan va phan loai su co theo tai lieu nao?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p020-process-title",
-    "query": "Tim quy trinh xu ly su co ky thuat",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p021-incident-classify-handle",
-    "query": "Tai lieu huong dan tiep nhan phan loai va xu ly su co ky thuat la gi?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p022-impact-level",
-    "query": "Muc do anh huong cua su co duoc ghi nhan trong buoc nao?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p023-reporter",
-    "query": "Nguoi bao loi co duoc ghi nhan khi lap ticket khong?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p024-time-record",
-    "query": "Thoi gian bao loi co nam trong thong tin can ghi nhan khong?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p025-technical-owner",
-    "query": "Quy dinh cua phong Ky thuat dung de phan loai muc do uu tien trong quy trinh nao?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p026-authority-limit",
-    "query": "Vuot tham quyen thi xu ly hay chuyen cap theo quy trinh nao?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p027-confirm-before-close",
-    "query": "Can xac nhan cua nguoi yeu cau truoc khi dong ticket dung khong?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p028-kt-doc-id",
-    "query": "KT-QT-003 lien quan den quy trinh nao?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p029-active-procedure",
-    "query": "Tai lieu active ve xu ly su co ky thuat la tai lieu nao?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p030-user-or-monitoring",
-    "query": "Nguon thong tin su co co the tu nguoi dung hoac he thong giam sat theo KT-QT-003?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p031-ticket-and-priority",
-    "query": "Quy trinh nao noi ve ghi ticket va phan loai uu tien?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p032-result-and-close",
-    "query": "Quy trinh nao noi ve cap nhat ket qua xu ly va dong ticket?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p033-summary-steps",
-    "query": "Tom tat cac buoc thuc hien trong quy trinh xu ly su co",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p034-procedure-code-and-version",
-    "query": "Cho biet ma tai lieu va version cua quy trinh xu ly su co ky thuat",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p035-technical-incident-what-to-do",
-    "query": "Nhan vien Ky thuat can lam gi khi tiep nhan mot su co?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p036-incident-after-handle",
-    "query": "Sau khi thuc hien xu ly su co thi buoc tiep theo la gi?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p037-monitoring-alert-flow",
-    "query": "He thong giam sat bao su co thi ap dung quy trinh nao?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p038-requester-confirmation",
-    "query": "Nguoi yeu cau xac nhan xong moi dong ticket theo tai lieu nao?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p039-ticket-required-data",
-    "query": "Ticket su co can co ma ticket thoi gian va nguoi bao loi theo quy trinh nao?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p040-priority-rule",
-    "query": "Muc do uu tien duoc phan loai theo quy dinh cua bo phan nao?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p041-technical-failure-flow",
-    "query": "Flow xu ly loi ky thuat tu tiep nhan den dong ticket",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p042-escalate-if-needed",
-    "query": "Co chuyen cap neu vuot tham quyen trong quy trinh xu ly su co khong?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p043-confirm-result",
-    "query": "Ket qua xu ly su co duoc cap nhat truoc hay sau khi dong ticket?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p044-active-incident-source",
-    "query": "Nguon hien hanh cho cau hoi ve xu ly su co ky thuat la gi?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p045-find-by-title",
-    "query": "Quy trinh xu ly su co ky thuat",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p046-find-by-purpose",
-    "query": "Huong dan nhan vien phong Ky thuat tiep nhan phan loai xu ly su co",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p047-find-by-close-ticket",
-    "query": "Cap nhat ket qua xu ly dong ticket nguoi yeu cau xac nhan",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p048-find-by-priority-impact",
-    "query": "Muc do anh huong va muc do uu tien cua su co",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p049-find-by-escalation",
-    "query": "Thuc hien xu ly hoac chuyen cap neu vuot tham quyen",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "p050-find-by-source",
-    "query": "Nguon KT-QT-003 v1.0 noi ve van de gi?",
-    "should_answer": true,
-    "expected_doc_ids": ["KT-QT-003"],
-    "expected_category": "procedure"
-  },
-  {
-    "id": "n001-vendor-encoder",
-    "query": "encoder alarm e07 parameter p191 reset method",
+    "id": "unknown-vendor",
+    "query": "Biến tần E-07 encoder parameter P191 cách sửa như thế nào?",
     "should_answer": false,
     "expected_doc_ids": [],
     "expected_category": "vendor_document"
-  },
-  {
-    "id": "n002-invoice-vat",
-    "query": "invoice vat reconciliation monthly closing checklist",
-    "should_answer": false,
-    "expected_doc_ids": [],
-    "expected_category": "finance"
-  },
-  {
-    "id": "n003-payroll-bonus",
-    "query": "salary bonus payroll annual allowance formula",
-    "should_answer": false,
-    "expected_doc_ids": [],
-    "expected_category": "hr"
-  },
-  {
-    "id": "n004-warehouse-stock",
-    "query": "warehouse stock count barcode pallet location",
-    "should_answer": false,
-    "expected_doc_ids": [],
-    "expected_category": "operation"
-  },
-  {
-    "id": "n005-customer-contract",
-    "query": "customer contract renewal discount approval matrix",
-    "should_answer": false,
-    "expected_doc_ids": [],
-    "expected_category": "sales"
-  },
-  {
-    "id": "n006-printer-toner",
-    "query": "printer toner purchase cartridge replacement schedule",
-    "should_answer": false,
-    "expected_doc_ids": [],
-    "expected_category": "admin"
-  },
-  {
-    "id": "n007-office-lease",
-    "query": "office lease renewal rental deposit clause",
-    "should_answer": false,
-    "expected_doc_ids": [],
-    "expected_category": "admin"
-  },
-  {
-    "id": "n008-insurance-claim",
-    "query": "insurance claim medical reimbursement hospital receipt",
-    "should_answer": false,
-    "expected_doc_ids": [],
-    "expected_category": "hr"
-  },
-  {
-    "id": "n009-travel-visa",
-    "query": "travel visa booking passport invitation letter",
-    "should_answer": false,
-    "expected_doc_ids": [],
-    "expected_category": "admin"
-  },
-  {
-    "id": "n010-fire-drill",
-    "query": "fire drill evacuation assembly zone map",
-    "should_answer": false,
-    "expected_doc_ids": [],
-    "expected_category": "safety"
-  },
-  {
-    "id": "n011-crm-lead",
-    "query": "crm lead scoring campaign pipeline stage",
-    "should_answer": false,
-    "expected_doc_ids": [],
-    "expected_category": "sales"
-  },
-  {
-    "id": "n012-vendor-rating",
-    "query": "purchase order supplier rating payment term",
-    "should_answer": false,
-    "expected_doc_ids": [],
-    "expected_category": "purchase"
-  },
-  {
-    "id": "n013-bank-swift",
-    "query": "bank transfer swift iban beneficiary verification",
-    "should_answer": false,
-    "expected_doc_ids": [],
-    "expected_category": "finance"
-  },
-  {
-    "id": "n014-energy-meter",
-    "query": "factory energy meter calibration certificate",
-    "should_answer": false,
-    "expected_doc_ids": [],
-    "expected_category": "facility"
-  },
-  {
-    "id": "n015-fuel-card",
-    "query": "vehicle fuel card mileage reimbursement limit",
-    "should_answer": false,
-    "expected_doc_ids": [],
-    "expected_category": "admin"
-  },
-  {
-    "id": "n016-nda-template",
-    "query": "legal nda template confidentiality jurisdiction clause",
-    "should_answer": false,
-    "expected_doc_ids": [],
-    "expected_category": "legal"
-  },
-  {
-    "id": "n017-marketing-budget",
-    "query": "marketing campaign budget creative approval calendar",
-    "should_answer": false,
-    "expected_doc_ids": [],
-    "expected_category": "marketing"
-  },
-  {
-    "id": "n018-interview-rubric",
-    "query": "recruitment interview rubric candidate assessment scorecard",
-    "should_answer": false,
-    "expected_doc_ids": [],
-    "expected_category": "hr"
-  },
-  {
-    "id": "n019-dns-record",
-    "query": "domain dns mx spf dkim dmarc record setup",
-    "should_answer": false,
-    "expected_doc_ids": [],
-    "expected_category": "it"
   }
 ]

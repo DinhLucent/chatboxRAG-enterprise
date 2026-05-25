@@ -144,7 +144,11 @@ def latest_active_records(records: list[ManifestRecord]) -> list[ManifestRecord]
 
 
 def record_family_key(record: ManifestRecord) -> str:
-    family = record.extra.get("canonical_doc_id") or record.extra.get("document_family_id")
+    family = (
+        record.extra.get("canonical_business_code")
+        or record.extra.get("canonical_doc_id")
+        or record.extra.get("document_family_id")
+    )
     if family:
         return f"{record.department}/{family}"
     business_code = record_business_code(record)

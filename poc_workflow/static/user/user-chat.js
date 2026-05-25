@@ -7,6 +7,7 @@ const state = {
   lastResponse: null,
   drawerHidden: isCompactLayout(),
   heartbeatTimer: null,
+  selectedCitation: null,
 };
 
 const qs = (selector) => document.querySelector(selector);
@@ -487,6 +488,7 @@ function renderLoadingMessage() {
 
 function renderSources(citations) {
   const target = qs("#sourcesPanel");
+  state.selectedCitation = null;
   if (!citations.length) {
     target.innerHTML = `
       <div class="empty-state">
@@ -498,18 +500,337 @@ function renderSources(citations) {
   target.innerHTML = citations
     .map(
       (citation, index) => `
-        <article class="source-card">
+        <article class="source-card citation-source-card" data-citation-index="${index}">
           <div class="source-title">${index + 1}. ${escapeHtml(citation.title || citation.doc_id || "Nguồn")}</div>
           <div class="source-meta">
-            ${escapeHtml(citation.display_code || citation.doc_id || "-")} | v${escapeHtml(citation.version || "-")}
+            ${escapeHtml(citation.display_code || citation.doc_id || "-")} | ${escapeHtml(citation.display_version || `v${citation.version || "-"}`)}
             ${citation.display_code && citation.doc_id ? ` | ${escapeHtml(citation.doc_id)}` : ""}
           </div>
           <div class="source-excerpt">${escapeHtml(citation.excerpt || "Không có đoạn trích công khai.")}</div>
+          <button class="source-open-btn" type="button" ${citation.anchor_id || citation.excerpt ? "" : "disabled"}>
+            Mở Markdown
+          </button>
         </article>
       `,
     )
     .join("");
   wireSpotlight(".source-card");
+  document.querySelectorAll(".citation-source-card").forEach((card) => {
+    card.addEventListener("click", async () => {
+      const citation = citations[Number(card.dataset.citationIndex)];
+      if (!citation?.anchor_id && !citation?.excerpt) return;
+      await openPublicCitation(citation);
+    });
+  });
+}
+
+function publicCitationPath(citation) {
+  const base = `/api/user/documents/${encodeURIComponent(citation.doc_id)}/${encodeURIComponent(citation.version)}/citation`;
+  if (citation.anchor_id) {
+    return `${base}/${encodeURIComponent(citation.anchor_id)}`;
+  }
+  const params = new URLSearchParams();
+  if (citation.excerpt) {
+    params.set("excerpt", citation.excerpt);
+  }
+  return params.toString() ? `${base}?${params}` : base;
+}
+
+async function openPublicCitation(citation) {
+  const target = qs("#sourcesPanel");
+  state.selectedCitation = citation;
+  qs("#citationPreviewPanel")?.remove();
+  target.insertAdjacentHTML("beforeend", `<div id="citationPreviewPanel" class="citation-preview-card">Đang mở Markdown...</div>`);
+  try {
+    const payload = await api(publicCitationPath(citation));
+    renderCitationPreview(payload);
+  } catch (error) {
+    const panel = qs("#citationPreviewPanel");
+    if (panel) {
+      panel.textContent = error.message || "Không mở được Markdown.";
+    }
+  }
+}
+
+function citationMarkdownInline(value) {
+  return formatInlineMarkdown(escapeHtml(value));
+}
+
+function citationLineRange(lines) {
+  if (!lines.length) return "";
+  const first = lines[0].line;
+  const last = lines[lines.length - 1].line;
+  return first === last ? String(first) : `${first}-${last}`;
+}
+
+function isCitationTableSeparator(line) {
+  return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(String(line || "").trim());
+}
+
+function isCitationTableRow(line) {
+  const trimmed = String(line || "").trim();
+  return trimmed.includes("|") && !trimmed.startsWith("```");
+}
+
+function isCitationHtmlTableStart(line) {
+  return /<\s*table(?:\s|>)/i.test(String(line || ""));
+}
+
+function isCitationHtmlTableEnd(line) {
+  return /<\s*\/\s*table\s*>/i.test(String(line || ""));
+}
+
+function splitCitationTableRow(line) {
+  return String(line || "")
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function renderCitationTableBlock(rows) {
+  const visibleRows = rows.filter((line) => !isCitationTableSeparator(line.text));
+  if (!visibleRows.length) return "";
+  const hasHeader = rows.length > 1 && isCitationTableSeparator(rows[1].text);
+  const header = hasHeader ? visibleRows[0] : null;
+  const bodyRows = hasHeader ? visibleRows.slice(1) : visibleRows;
+  const highlighted = rows.some((line) => line.highlight);
+  const anchor = rows.find((line) => line.anchor_id)?.anchor_id || "";
+  return `
+    <div
+      class="citation-markdown-line citation-table-block ${highlighted ? "highlight" : ""}"
+      data-line="${escapeHtml(citationLineRange(rows))}"
+      ${anchor ? `data-anchor-id="${escapeHtml(anchor)}"` : ""}
+    >
+      <span>${escapeHtml(citationLineRange(rows))}</span>
+      <div class="citation-markdown-content">
+        <table class="citation-markdown-table">
+          ${header ? `<thead><tr>${splitCitationTableRow(header.text).map((cell) => `<th>${citationMarkdownInline(cell)}</th>`).join("")}</tr></thead>` : ""}
+          <tbody>
+            ${bodyRows
+              .map(
+                (row) => `
+                  <tr class="${row.highlight ? "row-highlight" : ""}">
+                    ${splitCitationTableRow(row.text).map((cell) => `<td>${citationMarkdownInline(cell)}</td>`).join("")}
+                  </tr>
+                `,
+              )
+              .join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function citationSpanAttr(value) {
+  const parsed = Number.parseInt(String(value || "1"), 10);
+  if (!Number.isFinite(parsed) || parsed <= 1) return "";
+  return String(Math.min(parsed, 50));
+}
+
+function citationHtmlCellText(node) {
+  const collect = (current) => {
+    if (!current) return "";
+    if (current.nodeType === Node.TEXT_NODE) return current.nodeValue || "";
+    if (current.nodeType !== Node.ELEMENT_NODE) return "";
+    const tagName = current.tagName.toLowerCase();
+    if (tagName === "br") return "\n";
+    const childText = Array.from(current.childNodes).map(collect).join("");
+    if (["p", "div", "li", "h1", "h2", "h3", "h4"].includes(tagName)) {
+      return `${childText}\n`;
+    }
+    return childText;
+  };
+  return collect(node)
+    .replace(/\u00a0/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function citationHtmlCellContent(node) {
+  return escapeHtml(citationHtmlCellText(node) || " ").replace(/\n/g, "<br>");
+}
+
+function renderSafeCitationHtmlTable(table) {
+  const rows = Array.from(table.rows || []);
+  if (!rows.length) return "";
+  return `
+    <table class="citation-markdown-table citation-html-table">
+      <tbody>
+        ${rows
+          .map((row) => {
+            const cells = Array.from(row.cells || []);
+            return `
+              <tr>
+                ${cells
+                  .map((cell) => {
+                    const tag = cell.tagName?.toLowerCase() === "th" ? "th" : "td";
+                    const rowspan = citationSpanAttr(cell.getAttribute("rowspan"));
+                    const colspan = citationSpanAttr(cell.getAttribute("colspan"));
+                    const attrs = `${rowspan ? ` rowspan="${rowspan}"` : ""}${colspan ? ` colspan="${colspan}"` : ""}`;
+                    return `<${tag}${attrs}>${citationHtmlCellContent(cell)}</${tag}>`;
+                  })
+                  .join("")}
+              </tr>
+            `;
+          })
+          .join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderCitationHtmlTableBlock(lines) {
+  const source = lines.map((line) => line.text || "").join("\n");
+  const highlighted = lines.some((line) => line.highlight);
+  const anchor = lines.find((line) => line.anchor_id)?.anchor_id || "";
+  let tableHtml = "";
+  try {
+    const doc = new DOMParser().parseFromString(source, "text/html");
+    const tables = Array.from(doc.querySelectorAll("table"));
+    tableHtml = tables.map(renderSafeCitationHtmlTable).join("");
+  } catch {
+    tableHtml = "";
+  }
+  if (!tableHtml.trim()) {
+    tableHtml = `<p>${escapeHtml(source.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() || " ")}</p>`;
+  }
+  return `
+    <div
+      class="citation-markdown-line citation-table-block citation-html-table-block ${highlighted ? "highlight" : ""}"
+      data-line="${escapeHtml(citationLineRange(lines))}"
+      ${anchor ? `data-anchor-id="${escapeHtml(anchor)}"` : ""}
+    >
+      <span>${escapeHtml(citationLineRange(lines))}</span>
+      <div class="citation-markdown-content">${tableHtml}</div>
+    </div>
+  `;
+}
+
+function renderCitationCodeBlock(lines) {
+  const highlighted = lines.some((line) => line.highlight);
+  const anchor = lines.find((line) => line.anchor_id)?.anchor_id || "";
+  const code = lines
+    .filter((line) => !String(line.text || "").trim().startsWith("```"))
+    .map((line) => line.text)
+    .join("\n");
+  return `
+    <div
+      class="citation-markdown-line citation-code-block ${highlighted ? "highlight" : ""}"
+      data-line="${escapeHtml(citationLineRange(lines))}"
+      ${anchor ? `data-anchor-id="${escapeHtml(anchor)}"` : ""}
+    >
+      <span>${escapeHtml(citationLineRange(lines))}</span>
+      <div class="citation-markdown-content"><pre><code>${escapeHtml(code || " ")}</code></pre></div>
+    </div>
+  `;
+}
+
+function renderCitationMarkdownLineContent(rawLine) {
+  const trimmed = String(rawLine || "").trim();
+  if (!trimmed) return '<span class="markdown-empty-line">&nbsp;</span>';
+  const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
+  if (heading) {
+    const level = Math.min(heading[1].length + 1, 4);
+    return `<h${level}>${citationMarkdownInline(heading[2])}</h${level}>`;
+  }
+  const unordered = trimmed.match(/^[-*]\s+(.+)$/);
+  if (unordered) return `<p class="citation-list-line"><span aria-hidden="true">•</span>${citationMarkdownInline(unordered[1])}</p>`;
+  const ordered = trimmed.match(/^(\d+)\.\s+(.+)$/);
+  if (ordered) return `<p class="citation-list-line"><span>${escapeHtml(ordered[1])}.</span>${citationMarkdownInline(ordered[2])}</p>`;
+  const quote = trimmed.match(/^>\s?(.+)$/);
+  if (quote) return `<blockquote>${citationMarkdownInline(quote[1])}</blockquote>`;
+  return `<p>${citationMarkdownInline(rawLine)}</p>`;
+}
+
+function renderCitationMarkdownViewer(lines) {
+  const rows = Array.isArray(lines) ? lines : [];
+  const html = [];
+  let index = 0;
+  while (index < rows.length) {
+    const current = rows[index];
+    const text = String(current.text || "");
+    const trimmed = text.trim();
+    if (isCitationHtmlTableStart(text)) {
+      const tableRows = [current];
+      index += 1;
+      while (index < rows.length && !isCitationHtmlTableEnd(tableRows[tableRows.length - 1].text)) {
+        tableRows.push(rows[index]);
+        index += 1;
+      }
+      html.push(renderCitationHtmlTableBlock(tableRows));
+      continue;
+    }
+    if (trimmed.startsWith("```")) {
+      const codeRows = [current];
+      index += 1;
+      while (index < rows.length) {
+        codeRows.push(rows[index]);
+        if (String(rows[index].text || "").trim().startsWith("```")) {
+          index += 1;
+          break;
+        }
+        index += 1;
+      }
+      html.push(renderCitationCodeBlock(codeRows));
+      continue;
+    }
+    if (isCitationTableRow(text)) {
+      const tableRows = [];
+      while (index < rows.length && isCitationTableRow(rows[index].text)) {
+        tableRows.push(rows[index]);
+        index += 1;
+      }
+      if (tableRows.length >= 2) {
+        html.push(renderCitationTableBlock(tableRows));
+        continue;
+      }
+      html.push(
+        `<div class="citation-markdown-line citation-plain-line ${current.highlight ? "highlight" : ""}" data-line="${escapeHtml(current.line)}" ${current.anchor_id ? `data-anchor-id="${escapeHtml(current.anchor_id)}"` : ""}>
+          <span>${escapeHtml(current.line)}</span>
+          <div class="citation-markdown-content">${renderCitationMarkdownLineContent(text)}</div>
+        </div>`,
+      );
+      continue;
+    }
+    html.push(
+      `<div class="citation-markdown-line citation-plain-line ${current.highlight ? "highlight" : ""}" data-line="${escapeHtml(current.line)}" ${current.anchor_id ? `data-anchor-id="${escapeHtml(current.anchor_id)}"` : ""}>
+        <span>${escapeHtml(current.line)}</span>
+        <div class="citation-markdown-content">${renderCitationMarkdownLineContent(text)}</div>
+      </div>`,
+    );
+    index += 1;
+  }
+  return `<div class="citation-markdown-preview citation-markdown-viewer">${html.join("")}</div>`;
+}
+
+function renderCitationPreview(payload) {
+  const existing = qs("#citationPreviewPanel");
+  const preview = payload?.preview || {};
+  const record = payload?.record || {};
+  const lines = Array.isArray(preview.lines) ? preview.lines : [];
+  const html = `
+    <div class="citation-preview-header">
+      <div>
+        <div class="source-title">${escapeHtml(record.title || record.doc_id || "Markdown")}</div>
+        <div class="source-meta">
+          ${escapeHtml(record.doc_id || "-")} | v${escapeHtml(record.version || "-")} |
+          ${escapeHtml(preview.locator_status || "exact")}
+        </div>
+      </div>
+    </div>
+    ${renderCitationMarkdownViewer(lines)}
+  `;
+  if (existing) {
+    existing.innerHTML = html;
+  }
+  qs("#citationPreviewPanel .citation-markdown-line.highlight")?.scrollIntoView({
+    block: "center",
+    behavior: "smooth",
+  });
 }
 
 function renderTrace(steps) {

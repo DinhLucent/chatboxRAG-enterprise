@@ -155,6 +155,30 @@ def test_web_health_manifest_and_chat(tmp_path: Path) -> None:
     body = chat.json()
     assert body["provider"] == "local"
     assert body["citations"]
+    citation = body["citations"][0]
+    assert citation["chunk_id"]
+    assert citation["anchor_id"]
+    assert citation["line_start"] >= 1
+    assert citation["line_end"] >= citation["line_start"]
+
+    citation_detail = client.get(
+        f"/api/documents/{citation['doc_id']}/{citation['version']}/citation/{citation['anchor_id']}"
+    )
+    assert citation_detail.status_code == 200
+    citation_body = citation_detail.json()
+    assert citation_body["citation"]["anchor_id"] == citation["anchor_id"]
+    assert citation_body["citation_preview"]["highlight_line_start"] == citation["line_start"]
+    assert any(line["highlight"] for line in citation_body["citation_preview"]["lines"])
+
+    legacy_detail = client.get(
+        f"/api/documents/{citation['doc_id']}/{citation['version']}/citation",
+        params={"excerpt": "Can kiem tra checklist"},
+    )
+    assert legacy_detail.status_code == 200
+    legacy_body = legacy_detail.json()
+    assert legacy_body["citation"]["locator_status"] == "approximate"
+    assert legacy_body["citation"]["chunk_id"] is None
+    assert any(line["highlight"] for line in legacy_body["citation_preview"]["lines"])
 
     feedback = client.post(
         "/api/feedback",
@@ -215,7 +239,15 @@ def test_user_chat_app_public_api_safe_citations_policy_and_feedback(tmp_path: P
     assert "source_path" not in citation_text
     assert "normalized_path" not in citation_text
     assert str(tmp_path) not in citation_text
-    assert set(body["citations"][0]) == {"title", "doc_id", "version", "excerpt"}
+    assert set(body["citations"][0]) == {
+        "title",
+        "doc_id",
+        "version",
+        "display_code",
+        "display_version",
+        "excerpt",
+        "anchor_id",
+    }
     assert "score" not in citation_text
     assert "chunk" not in citation_text
     assert "provider" not in json.dumps(body.get("trace", {}), ensure_ascii=False)
@@ -232,6 +264,31 @@ def test_user_chat_app_public_api_safe_citations_policy_and_feedback(tmp_path: P
     assert "Tóm tắt:" in body["answer"]
     assert "Các bước / Nội dung chính:" in body["answer"]
     assert "Nguồn:" in body["answer"]
+
+    public_citation = body["citations"][0]
+    public_detail = client.get(
+        f"/api/user/documents/{public_citation['doc_id']}/{public_citation['version']}/citation/{public_citation['anchor_id']}"
+    )
+    assert public_detail.status_code == 200
+    public_body = public_detail.json()
+    public_text = json.dumps(public_body, ensure_ascii=False)
+    assert str(tmp_path) not in public_text
+    assert "source_path" not in public_text
+    assert "normalized_path" not in public_text
+    assert "chunk_id" not in public_text
+    assert "category" not in public_body["record"]
+    assert public_body["record"]["doc_id"] == public_citation["doc_id"]
+    assert any(line["highlight"] for line in public_body["preview"]["lines"])
+
+    public_legacy_detail = client.get(
+        f"/api/user/documents/{public_citation['doc_id']}/{public_citation['version']}/citation",
+        params={"excerpt": public_citation["excerpt"]},
+    )
+    assert public_legacy_detail.status_code == 200
+    public_legacy_body = public_legacy_detail.json()
+    assert public_legacy_body["citation"]["locator_status"] == "approximate"
+    assert "chunk_id" not in json.dumps(public_legacy_body, ensure_ascii=False)
+    assert any(line["highlight"] for line in public_legacy_body["preview"]["lines"])
 
     queries = client.get("/api/queries")
     assert queries.status_code == 200

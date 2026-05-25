@@ -309,7 +309,7 @@ def sync_active_to_ragflow(
     client = RAGFlowHTTPClient(base_url, api_key)
     db = QualityDatabase(root)
     store = ManifestStore(root)
-    active_records = latest_active_records(store.load())
+    active_records = ragflow_uploadable_records(latest_active_records(store.load()))
     uploaded: list[dict] = []
 
     if delete_all:
@@ -400,12 +400,35 @@ def upload_record(client: RAGFlowHTTPClient, dataset_id: str, record: ManifestRe
     normalized = Path(record.normalized_path)
     if not normalized.exists():
         raise RAGFlowHTTPError(f"Normalized file does not exist: {normalized}")
-    display_name = f"{record.doc_id}_v{record.version}_{record.category}.md"
+    display_name = str(record.extra.get("artifact_stem") or "").strip()
+    if display_name:
+        display_name = f"{display_name}.md"
+    else:
+        display_name = f"{record.doc_id}_v{record.version}_{record.category}.md"
     return client.upload_document(dataset_id, normalized, display_name=display_name)
 
 
+def ragflow_uploadable_records(records: list[ManifestRecord]) -> list[ManifestRecord]:
+    uploadable: list[ManifestRecord] = []
+    for record in records:
+        extra = record.extra or {}
+        if extra.get("used_for_retrieval") is False:
+            continue
+        if extra.get("ingest_policy") == "primary_source_only":
+            if extra.get("quality_status") != "passed":
+                continue
+            if not extra.get("citation_map_path"):
+                continue
+            decision = extra.get("primary_source_decision")
+            if not isinstance(decision, dict) or decision.get("selected") not in {"xlsx", "pdf"}:
+                continue
+        uploadable.append(record)
+    return uploadable
+
+
 def record_to_ragflow_metadata(record: ManifestRecord) -> dict[str, str]:
-    return {
+    extra = record.extra or {}
+    metadata = {
         "doc_id": record.doc_id,
         "title": record.title,
         "department": record.department,
@@ -425,6 +448,35 @@ def record_to_ragflow_metadata(record: ManifestRecord) -> dict[str, str]:
         "access_group": record.access_group,
         "supersedes": record.supersedes or "",
     }
+    for key in [
+        "display_code",
+        "display_version",
+        "canonical_business_code",
+        "source_revision",
+        "internal_version",
+        "ingest_policy",
+        "quality_status",
+        "quality_score",
+        "primary_source_type",
+        "primary_source_path",
+        "citation_map_path",
+        "section_index_path",
+        "chunk_plan_path",
+        "artifact_stem",
+        "raw_converter",
+        "raw_conversion_policy",
+        "raw_markdown_path",
+    ]:
+        if extra.get(key) is not None:
+            metadata[key] = str(extra[key])
+    decision = extra.get("primary_source_decision")
+    if isinstance(decision, dict):
+        metadata["primary_source_selected"] = str(decision.get("selected") or "")
+        metadata["primary_source_reason"] = str(decision.get("reason") or "")
+    mineru_profile = extra.get("mineru_profile")
+    if isinstance(mineru_profile, dict):
+        metadata["mineru_profile"] = json.dumps(mineru_profile, ensure_ascii=False)
+    return metadata
 
 
 def answer_with_ragflow(question: str, config: RAGFlowConfig) -> dict[str, object]:
@@ -480,6 +532,8 @@ def extract_reference_citations(reference: object) -> list[dict[str, object]]:
             {
                 "doc_id": metadata.get("doc_id") or chunk.get("document_id"),
                 "version": metadata.get("version"),
+                "display_code": metadata.get("display_code"),
+                "display_version": metadata.get("display_version") or metadata.get("source_revision"),
                 "title": chunk.get("document_name"),
                 "category": metadata.get("category"),
                 "chunk_id": chunk.get("id") or chunk.get("chunk_id"),

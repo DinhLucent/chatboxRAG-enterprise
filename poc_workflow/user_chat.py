@@ -75,6 +75,7 @@ WELCOME_CARDS = [
     },
 ]
 
+
 FOLLOW_UP_PATTERNS = [
     r"\b(buoc|bước)\s*\d+\b",
     r"\b(no|nó|nay|này|do|đó|tren|trên|duoi|dưới)\b",
@@ -471,31 +472,36 @@ def public_policy_summary(policy: dict[str, Any]) -> dict[str, Any]:
 
 
 def sanitize_public_citations(root: Path, citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    active_latest = {
-        (record.doc_id, record.version)
-        for record in latest_active_records(ManifestStore(root).load())
-    }
+    active_records = latest_active_records(ManifestStore(root).load())
+    active_latest = {(record.doc_id, record.version): record for record in active_records}
     safe: list[dict[str, Any]] = []
     for citation in citations:
         if not isinstance(citation, dict):
             continue
         doc_id = str(citation.get("doc_id") or "")
         version = str(citation.get("version") or "")
-        if not doc_id or not version or (doc_id, version) not in active_latest:
+        record = active_latest.get((doc_id, version))
+        if not doc_id or not version or record is None:
             continue
+        display_code = str(citation.get("display_code") or record.extra.get("display_code") or "")
+        display_version = str(
+            citation.get("display_version")
+            or citation.get("source_revision")
+            or record.extra.get("display_version")
+            or record.extra.get("source_revision")
+            or ""
+        )
         safe.append(
             {
                 "title": public_excerpt(clean_retrieval_text(citation.get("title") or doc_id or "Nguồn"), 160),
                 "doc_id": doc_id,
                 "version": version,
+                "display_code": display_code,
+                "display_version": display_version,
                 "excerpt": public_excerpt(clean_excerpt(citation.get("excerpt") or citation.get("text") or "")),
+                "anchor_id": str(citation.get("anchor_id") or ""),
             }
         )
-        if safe:
-            if citation.get("display_code"):
-                safe[-1]["display_code"] = str(citation["display_code"])
-            if citation.get("source_role"):
-                safe[-1]["source_role"] = str(citation["source_role"])
     return safe
 
 
@@ -510,7 +516,7 @@ def format_user_answer(answer: str, citations: list[dict[str, Any]], answer_styl
     if "Tóm tắt:" in text and "Nguồn:" in text:
         return text
     source_text = ", ".join(
-        f"{citation.get('display_code') or citation.get('doc_id')} v{citation.get('version')}"
+        f"{citation.get('display_code') or citation.get('doc_id')} {citation.get('display_version') or 'v' + str(citation.get('version'))}"
         for citation in citations
         if citation.get("doc_id") and citation.get("version")
     )

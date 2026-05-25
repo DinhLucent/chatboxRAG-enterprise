@@ -1,7 +1,7 @@
 # Active Scope Latest
 
-- Generated: `2026-05-24T23:46:47+00:00`
-- Dry run: `True`
+- Generated: `2026-05-24T23:50:06+00:00`
+- Dry run: `False`
 - Scope: `engineering_procedures_v1`
 - Active root: `D:\MyProject\demo-chatbot-engineerworkflow\root_source\12. QUY TRÌNH KỸ THUẬT`
 - Target files: `12`

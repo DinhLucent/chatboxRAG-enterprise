@@ -8,8 +8,10 @@ from poc_workflow.database import QualityDatabase
 from poc_workflow.manifest import ManifestStore
 from poc_workflow.models import ManifestRecord
 from poc_workflow.converter import OcrRequiredError
+from poc_workflow.data_maintenance import scope_active_set
 from poc_workflow.pipeline import approve_record, init_workspace, process_sources, rebuild_indexes
-from poc_workflow.rag_index import LocalRagIndex
+from poc_workflow.rag_index import LocalRagIndex, chunk_markdown_with_metadata, stable_anchor_id
+from poc_workflow.utils import content_hash
 
 
 def write_source(
@@ -41,6 +43,18 @@ def write_source(
         json.dumps(metadata, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def test_markdown_chunks_include_line_offsets_and_stable_anchors() -> None:
+    chunks = chunk_markdown_with_metadata(
+        "# Tieu de\n\nBuoc 1: Tiep nhan yeu cau.\n\nBuoc 2: Lap bien ban va luu ho so.",
+        max_chars=40,
+    )
+
+    assert chunks
+    assert all(chunk["line_start"] >= 1 for chunk in chunks)
+    assert all(chunk["line_end"] >= chunk["line_start"] for chunk in chunks)
+    assert stable_anchor_id("KT-QT-010", "1.0", 2) == "KT-QT-010-v1-0-c2"
 
 
 def test_lifecycle_archives_old_active_and_searches_only_new_version(tmp_path: Path) -> None:
@@ -512,3 +526,124 @@ def test_process_sources_can_target_specific_source_paths(tmp_path: Path) -> Non
     assert [record.doc_id for record in processed] == ["KT-QT-011"]
     assert ManifestStore(tmp_path).get("KT-QT-010", "1.0") is None
     assert ManifestStore(tmp_path).get("KT-QT-011", "1.0") is not None
+
+
+def test_scope_active_set_dry_run_does_not_mutate_manifest(tmp_path: Path) -> None:
+    active_root, pdf_source, workbook_source = write_scope_fixture(tmp_path)
+    write_scope_manifest(tmp_path, pdf_source, workbook_source)
+
+    report = scope_active_set(tmp_path, active_root, dry_run=True)
+    records = {record.doc_id: record for record in ManifestStore(tmp_path).load()}
+
+    assert report["target_file_count"] == 2
+    assert report["matched_record_count"] == 2
+    assert report["expected_active_count"] == 2
+    assert report["expected_pending_review_count"] == 1
+    assert records["KT-QT-PDF"].status == "pending_review"
+    assert records["KT-QT-XLSX"].status == "active"
+    assert records["KT-QT-OUT"].status == "active"
+
+
+def test_scope_active_set_apply_activates_only_target_hashes_and_prefers_pdf(tmp_path: Path) -> None:
+    active_root, pdf_source, workbook_source = write_scope_fixture(tmp_path)
+    write_scope_manifest(tmp_path, pdf_source, workbook_source)
+
+    report = scope_active_set(tmp_path, active_root, dry_run=False, approved_by="Lead")
+    records = {record.doc_id: record for record in ManifestStore(tmp_path).load()}
+
+    assert report["after_status_counts"] == {"active": 2, "pending_review": 1}
+    assert records["KT-QT-PDF"].status == "active"
+    assert records["KT-QT-PDF"].approved_by == "Lead"
+    assert records["KT-QT-PDF"].extra["display_code"] == "PD-TECH-A-01"
+    assert records["KT-QT-PDF"].extra["source_role"] == "primary_pdf"
+    assert records["KT-QT-XLSX"].status == "active"
+    assert records["KT-QT-XLSX"].extra["source_role"] == "supporting_workbook"
+    assert records["KT-QT-OUT"].status == "pending_review"
+    assert records["KT-QT-OUT"].status_reason
+
+    active_index = (tmp_path / "ragflow_index" / "technical_active.jsonl").read_text(encoding="utf-8")
+    assert "KT-QT-PDF" in active_index
+    assert "KT-QT-XLSX" in active_index
+    assert "KT-QT-OUT" not in active_index
+
+    hits = LocalRagIndex(tmp_path).search("quy trinh lap dat gom nhung buoc nao", limit=2)
+    assert hits
+    assert hits[0].doc_id == "KT-QT-PDF"
+    assert hits[0].display_code == "PD-TECH-A-01"
+
+    hits = LocalRagIndex(tmp_path).search("Quy trình lắp đặt gồm những bước nào?", limit=2)
+    assert hits
+    assert hits[0].doc_id == "KT-QT-PDF"
+    assert hits[0].source_role == "primary_pdf"
+
+
+def write_scope_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    active_root = tmp_path / "root_source" / "12. QUY TRINH KY THUAT"
+    active_root.mkdir(parents=True)
+    target_pdf = active_root / "PD-TECH-A-01. Rev 04. Quy trinh lap dat.pdf"
+    target_workbook = active_root / "PD-TECH-A-01. Rev 04. Quy trinh lap dat.xlsx"
+    target_pdf.write_bytes(b"pdf-installation-procedure")
+    target_workbook.write_bytes(b"xlsx-installation-workbook")
+
+    source_root = tmp_path / "source" / "technical" / "procedure"
+    source_root.mkdir(parents=True)
+    pdf_source = source_root / "KT-QT-PDF_v1.0.pdf"
+    workbook_source = source_root / "KT-QT-XLSX_v1.0.xlsx"
+    pdf_source.write_bytes(target_pdf.read_bytes())
+    workbook_source.write_bytes(target_workbook.read_bytes())
+    return active_root, pdf_source, workbook_source
+
+
+def write_scope_manifest(tmp_path: Path, pdf_source: Path, workbook_source: Path) -> None:
+    normalized_root = tmp_path / "normalized" / "technical" / "procedure"
+    normalized_root.mkdir(parents=True)
+    pdf_md = normalized_root / "KT-QT-PDF_v1.0.md"
+    workbook_md = normalized_root / "KT-QT-XLSX_v1.0.md"
+    outside_md = normalized_root / "KT-QT-OUT_v1.0.md"
+    pdf_md.write_text("# PD TECH A 01 Rev 04 Quy trinh lap dat\n\nQuy trinh lap dat gom tiep nhan, lap dat va nghiem thu.", encoding="utf-8")
+    workbook_md.write_text("# PD TECH A 01 Rev 04 Bang theo doi lap dat\n\nWorkbook ho tro bang tinh va checklist lap dat.", encoding="utf-8")
+    outside_md.write_text("# Quy trinh ngoai pham vi\n\nTai lieu nay khong nam trong scope.", encoding="utf-8")
+    outside_source = tmp_path / "source" / "technical" / "procedure" / "KT-QT-OUT_v1.0.md"
+    outside_source.write_text("outside", encoding="utf-8")
+
+    common = {
+        "department": "technical",
+        "category": "procedure",
+        "source_type": "internal_procedure",
+        "language": "vi",
+        "version": "1.0",
+        "effective_from": "2025-01-01",
+        "owner": "Phong Ky thuat",
+        "access_group": "technical",
+    }
+    ManifestStore(tmp_path).save(
+        [
+            ManifestRecord(
+                doc_id="KT-QT-PDF",
+                title="PD TECH A 01 Rev 04 Quy trinh lap dat",
+                status="pending_review",
+                source_path=str(pdf_source),
+                normalized_path=str(pdf_md),
+                content_hash=content_hash(pdf_source),
+                **common,
+            ),
+            ManifestRecord(
+                doc_id="KT-QT-XLSX",
+                title="PD TECH A 01 Rev 04 Quy trinh lap dat",
+                status="active",
+                source_path=str(workbook_source),
+                normalized_path=str(workbook_md),
+                content_hash=content_hash(workbook_source),
+                **common,
+            ),
+            ManifestRecord(
+                doc_id="KT-QT-OUT",
+                title="Quy trinh ngoai pham vi",
+                status="active",
+                source_path=str(outside_source),
+                normalized_path=str(outside_md),
+                content_hash=content_hash(outside_source),
+                **common,
+            ),
+        ]
+    )

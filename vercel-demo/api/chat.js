@@ -59,10 +59,11 @@ module.exports = async function handler(req, res) {
           ? data.citations.map((citation) => ({
               doc_id: citation.doc_id,
               version: citation.version,
-              title: citation.title,
-              category: citation.category,
               display_code: citation.display_code,
+              display_version: citation.display_version,
+              title: citation.title,
               excerpt: citation.excerpt || "",
+              anchor_id: citation.anchor_id || "",
             }))
           : [],
         trace: data.trace,

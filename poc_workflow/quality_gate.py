@@ -21,7 +21,7 @@ from .document_qa import mojibake_score
 from .evaluation import evaluate_case, load_cases, resolve_cases_path, summarize_results
 from .llm import OpenAICompatibleClient, OpenAICompatibleConfig
 from .manifest import ManifestStore, latest_active_records, record_family_key, record_latest_key
-from .rag_index import SearchHit
+from .rag_index import LocalRagIndex, SearchHit
 from .pipeline import approve_record, init_workspace, process_sources
 from .readiness import deployment_readiness
 from .utils import utc_now, write_json
@@ -352,13 +352,61 @@ def cleanup_quality_sandbox(root: Path, sandbox: Path) -> None:
 
 def prepare_evaluation_sandbox(root: Path, target: Path) -> Path:
     target.mkdir(parents=True, exist_ok=True)
-    init_workspace(target, with_sample=True)
+    init_workspace(target)
     eval_source = root / "eval"
     if eval_source.exists():
         shutil.copytree(eval_source, target / "eval", dirs_exist_ok=True)
+    if snapshot_evaluation_data(root, target):
+        return target
+    init_workspace(target, with_sample=True)
     process_sources(target)
     approve_record(target, "KT-QT-003", "1.0", "quality-gate")
     return target
+
+
+def snapshot_evaluation_data(root: Path, target: Path) -> bool:
+    manifest_source = root / "manifest" / "records.json"
+    if not manifest_source.exists():
+        return False
+    records = ManifestStore(root).load()
+    active_records = latest_active_records(records)
+    if not active_records:
+        return False
+
+    for record in active_records:
+        copy_workspace_file(root, target, record.source_path)
+        copy_workspace_file(root, target, record.normalized_path)
+
+    taxonomy_source = root / "manifest" / "taxonomy.json"
+    if taxonomy_source.exists():
+        shutil.copy2(taxonomy_source, target / "manifest" / "taxonomy.json")
+    rewrite_manifest_snapshot(root, target, manifest_source, target / "manifest" / "records.json")
+
+    snapshot_records = ManifestStore(target).load()
+    snapshot_active = latest_active_records(snapshot_records)
+    if not snapshot_active:
+        return False
+    LocalRagIndex(target).rebuild(snapshot_active, [])
+    return True
+
+
+def copy_workspace_file(root: Path, target: Path, value: str) -> None:
+    if not value:
+        return
+    source = Path(str(value))
+    if source.is_absolute():
+        try:
+            relative = source.resolve().relative_to(root.resolve())
+        except ValueError:
+            return
+    else:
+        relative = source
+        source = root / relative
+    if not source.exists() or not source.is_file():
+        return
+    destination = target / relative
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
 
 
 def rewrite_manifest_snapshot(root: Path, target: Path, source_file: Path, destination: Path) -> None:
@@ -546,6 +594,11 @@ def frontend_static_gate(root: Path) -> dict[str, Any]:
         "copyPrompt": "frontend must keep Clipboard API prompt copy path",
         "/api/agent-prompts/generate": "frontend must generate agent prompts through the server",
         "/api/upload-queue/status": "frontend must update demo queue status through the server",
+        "openCitationInInspector": "dashboard chat citations must open the Markdown inspector",
+        "citation_preview": "dashboard citation navigation must render the server-provided Markdown preview",
+        "renderReadableMarkdownViewer": "dashboard citation preview must render readable Markdown instead of raw line text",
+        "renderHtmlTableBlock": "dashboard Markdown viewer must render MinerU HTML tables as safe tables",
+        "data-anchor-id": "dashboard Markdown preview must expose safe line anchors for scrolling",
     }
     for fragment, detail in required_app_fragments.items():
         if fragment not in app_js:
@@ -555,6 +608,10 @@ def frontend_static_gate(root: Path) -> dict[str, Any]:
         "function renderMermaidWorkflow": "user chat must convert workflow Mermaid into a readable visual sequence",
         'lang === "mermaid"': "user chat must detect Mermaid code fences",
         "formatInlineMarkdown": "user chat must preserve code fences before inline markdown formatting",
+        "openPublicCitation": "public chat citations must open a safe Markdown preview",
+        "renderCitationMarkdownViewer": "public citation preview must render readable Markdown instead of raw line text",
+        "renderCitationHtmlTableBlock": "public Markdown viewer must render MinerU HTML tables as safe tables",
+        "/api/user/documents/": "public citation preview must use the public active-document endpoint",
     }
     for fragment, detail in required_user_chat_fragments.items():
         if fragment not in user_chat_js:
@@ -568,12 +625,28 @@ def frontend_static_gate(root: Path) -> dict[str, Any]:
         if re.search(pattern, app_js):
             failed_cases.append("Upload frontend can manually set Active status")
 
-    required_css_fragments = (".upload-grid", ".documents-layout", "@media (max-width: 1180px)", "overflow-x: hidden")
+    required_css_fragments = (
+        ".upload-grid",
+        ".documents-layout",
+        "@media (max-width: 1180px)",
+        "overflow-x: hidden",
+        ".markdown-line.highlight",
+        ".markdown-table",
+        ".markdown-html-table",
+    )
     for fragment in required_css_fragments:
         if fragment not in styles:
             failed_cases.append(f"Missing responsive/layout CSS fragment: {fragment}")
 
-    required_user_css_fragments = (".markdown-code", ".workflow-diagram", ".workflow-node", ".workflow-source")
+    required_user_css_fragments = (
+        ".markdown-code",
+        ".workflow-diagram",
+        ".workflow-node",
+        ".workflow-source",
+        ".citation-markdown-line.highlight",
+        ".citation-markdown-table",
+        ".citation-html-table",
+    )
     for fragment in required_user_css_fragments:
         if fragment not in user_chat_styles:
             failed_cases.append(f"Missing user chat answer CSS fragment: {fragment}")

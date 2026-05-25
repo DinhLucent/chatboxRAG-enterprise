@@ -86,12 +86,43 @@ foreach ($record in $activeRecords) {
 Assert-Smoke -Condition ($null -ne $documentDetail) -Message "no active record has readable document detail: $($documentFailures -join '; ')"
 
 $chat = Invoke-KbApi -Path "/api/chat" -Method Post -Body @{
-    query = "Quy trinh kiem soat tai lieu ho so quy dinh gi?"
+    query = "Quy trinh lap dat gom nhung buoc nao?"
     provider = $Provider
 }
 Assert-Smoke -Condition (@($chat.citations).Count -gt 0) -Message "known chat question returned no citations"
-Assert-Smoke -Condition (@($chat.citations | Where-Object { $_.doc_id -eq "KT-QT-215" }).Count -gt 0) -Message "known chat question did not cite KT-QT-215"
+Assert-Smoke -Condition (@($chat.citations | Where-Object { $_.doc_id -eq "KT-QT-426" -or $_.display_code -eq "PD-TECH-A-01" }).Count -gt 0) -Message "known chat question did not cite scoped installation procedure"
 Assert-Smoke -Condition (-not [string]::IsNullOrWhiteSpace([string]$chat.answer)) -Message "chat answer is empty"
+
+$firstCitation = @($chat.citations)[0]
+Assert-Smoke -Condition (-not [string]::IsNullOrWhiteSpace([string]$firstCitation.anchor_id)) -Message "known chat citation did not include anchor_id"
+Assert-Smoke -Condition ([int]$firstCitation.line_start -ge 1 -and [int]$firstCitation.line_end -ge [int]$firstCitation.line_start) -Message "known chat citation did not include valid line bounds"
+
+$citationDocId = [uri]::EscapeDataString([string]$firstCitation.doc_id)
+$citationVersion = [uri]::EscapeDataString([string]$firstCitation.version)
+$citationAnchor = [uri]::EscapeDataString([string]$firstCitation.anchor_id)
+$citationDetail = Invoke-KbApi -Path "/api/documents/$citationDocId/$citationVersion/citation/$citationAnchor"
+Assert-Smoke -Condition ($citationDetail.citation.anchor_id -eq $firstCitation.anchor_id) -Message "citation endpoint did not resolve requested anchor"
+Assert-Smoke -Condition (@($citationDetail.citation_preview.lines | Where-Object { $_.highlight -eq $true }).Count -gt 0) -Message "citation endpoint did not return highlighted Markdown preview"
+
+$publicChat = Invoke-KbApi -Path "/api/user/chat" -Method Post -Public -Body @{
+    query = "Quy trinh lap dat gom nhung buoc nao?"
+    answer_style = "steps"
+    session_id = "smoke-citation-viewer"
+    use_llm = $false
+}
+Assert-Smoke -Condition (@($publicChat.citations).Count -gt 0) -Message "public chat returned no citations"
+$publicCitation = @($publicChat.citations)[0]
+Assert-Smoke -Condition (-not [string]::IsNullOrWhiteSpace([string]$publicCitation.anchor_id)) -Message "public citation did not include safe anchor_id"
+$publicCitationJson = $publicChat.citations | ConvertTo-Json -Depth 8 -Compress
+Assert-Smoke -Condition ($publicCitationJson -notmatch "source_path|normalized_path|score|chunk") -Message "public citation leaked internal locator fields"
+
+$publicDocId = [uri]::EscapeDataString([string]$publicCitation.doc_id)
+$publicVersion = [uri]::EscapeDataString([string]$publicCitation.version)
+$publicAnchor = [uri]::EscapeDataString([string]$publicCitation.anchor_id)
+$publicCitationDetail = Invoke-KbApi -Path "/api/user/documents/$publicDocId/$publicVersion/citation/$publicAnchor" -Public
+$publicCitationDetailJson = $publicCitationDetail | ConvertTo-Json -Depth 10 -Compress
+Assert-Smoke -Condition ($publicCitationDetailJson -notmatch "source_path|normalized_path|chunk_id|score") -Message "public citation endpoint leaked internal fields"
+Assert-Smoke -Condition (@($publicCitationDetail.preview.lines | Where-Object { $_.highlight -eq $true }).Count -gt 0) -Message "public citation endpoint did not return highlighted Markdown preview"
 
 $evaluation = $null
 if (-not $SkipEvaluation) {
@@ -119,6 +150,8 @@ if (-not $SkipEvaluation) {
     }
     chat_provider = $chat.provider
     citation_count = @($chat.citations).Count
+    citation_anchor = $firstCitation.anchor_id
+    public_citation_anchor = $publicCitation.anchor_id
     evaluation_pass = if ($SkipEvaluation) { $null } else { $evaluation.pass }
     readiness_ready = $readiness.ready
     llm_state = $llmStatus.state

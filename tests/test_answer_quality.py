@@ -5,10 +5,10 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from poc_workflow.chatbot import ask
+from poc_workflow.chatbot import ask, focus_hits_for_query, infer_category
 from poc_workflow.llm import LLMError, OpenAICompatibleConfig
 from poc_workflow.pipeline import approve_record, process_sources
-from poc_workflow.rag_index import LocalRagIndex
+from poc_workflow.rag_index import LocalRagIndex, SearchHit
 from poc_workflow.text_cleaning import contains_raw_markup, clean_retrieval_text
 from poc_workflow.user_chat import format_user_answer
 from poc_workflow.webapp import create_app
@@ -97,6 +97,41 @@ def write_rank_source(
 def assert_no_raw_markup(value: str) -> None:
     lowered = value.lower()
     assert not any(marker in lowered for marker in RAW_MARKERS), value
+
+
+def make_hit(doc_id: str, display_code: str, score: int) -> SearchHit:
+    return SearchHit(
+        doc_id=doc_id,
+        version="1.0",
+        title=display_code,
+        category="procedure",
+        chunk_id=f"{doc_id}_c1",
+        text="noi dung",
+        score=score,
+        source_path="source.md",
+        normalized_path="normalized.md",
+        display_code=display_code,
+    )
+
+
+def test_form_questions_inside_active_procedure_scope_search_procedures() -> None:
+    assert infer_category("Biểu mẫu đính kèm của hướng dẫn theo dõi chứng chỉ đào tạo kỹ sư là gì?") == "procedure"
+    assert infer_category("Biểu mẫu nào dùng cho danh sách yêu cầu dự trù phụ kiện?") == "procedure"
+    assert infer_category("Biểu mẫu nào dùng để theo dõi danh sách CCDC cần hiệu chuẩn?") == "procedure"
+
+
+def test_chat_focuses_single_document_code_unless_query_asks_across_documents() -> None:
+    hits = [
+        make_hit("KT-QT-142", "PD-TECH-A-01", 90),
+        make_hit("KT-QT-426", "PD-TECH-A-01", 80),
+        make_hit("KT-QT-360", "PD-TECH-A-057", 60),
+    ]
+
+    focused = focus_hits_for_query(hits, "Quy trình lắp đặt áp dụng khi nào?")
+    assert [hit.display_code for hit in focused] == ["PD-TECH-A-01", "PD-TECH-A-01"]
+
+    cross_document = focus_hits_for_query(hits, "BBDVKT được dùng trong những quy trình nào?")
+    assert [hit.display_code for hit in cross_document] == ["PD-TECH-A-01", "PD-TECH-A-01", "PD-TECH-A-057"]
 
 
 def test_clean_retrieval_text_removes_table_markup_but_keeps_business_content() -> None:
@@ -219,7 +254,11 @@ def test_user_chat_fallback_is_clean_and_audited_when_llm_fails(tmp_path: Path, 
     assert "provider timeout" not in public_text
     assert_no_raw_markup(body["answer"])
     assert body["citations"]
-    assert all(set(citation) == {"title", "doc_id", "version", "excerpt"} for citation in body["citations"])
+    assert all(
+        set(citation)
+        == {"title", "doc_id", "version", "display_code", "display_version", "excerpt", "anchor_id"}
+        for citation in body["citations"]
+    )
     for citation in body["citations"]:
         assert_no_raw_markup(citation["excerpt"])
     assert any("trích đoạn tài liệu đã làm sạch" in step["detail"].lower() for step in body["trace_steps"])

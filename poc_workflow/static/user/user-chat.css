@@ -755,9 +755,11 @@ a:focus-visible {
 .select-wrapper {
   position: relative;
   display: inline-block;
+  flex-shrink: 0;
 }
 
 .answer-style-select {
+  min-width: 120px;
   min-height: 28px;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
@@ -1032,6 +1034,208 @@ a:focus-visible {
   font-size: 12.5px;
   line-height: 1.55;
   overflow-wrap: anywhere;
+}
+
+.citation-source-card {
+  cursor: pointer;
+}
+
+.source-open-btn {
+  margin-top: 12px;
+  min-height: 30px;
+  border: 1px solid var(--line-strong);
+  background: #ffffff;
+  color: var(--red);
+  border-radius: 6px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.source-open-btn:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.citation-preview-card {
+  border: 1px solid var(--line-strong);
+  background: var(--surface-solid);
+  border-radius: 8px;
+  padding: 14px;
+  box-shadow: var(--shadow-sm);
+}
+
+.citation-preview-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.citation-markdown-preview {
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfdff;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.citation-markdown-line {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 10px;
+  min-height: 26px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.citation-markdown-line:last-child {
+  border-bottom: 0;
+}
+
+.citation-markdown-line span {
+  color: var(--muted);
+  text-align: right;
+  user-select: none;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.citation-markdown-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.citation-table-block .citation-markdown-content {
+  overflow-x: auto;
+}
+
+.citation-markdown-content p {
+  margin: 0;
+}
+
+.citation-markdown-content h2,
+.citation-markdown-content h3,
+.citation-markdown-content h4 {
+  margin: 0;
+  color: #0f172a;
+  font-weight: 850;
+  line-height: 1.25;
+}
+
+.citation-markdown-content h2 {
+  font-size: 16px;
+}
+
+.citation-markdown-content h3 {
+  font-size: 14px;
+}
+
+.citation-markdown-content h4 {
+  font-size: 12.5px;
+}
+
+.citation-markdown-content code {
+  border: 1px solid var(--line);
+  background: #f8fafc;
+  border-radius: 4px;
+  padding: 1px 4px;
+  font-family: var(--mono);
+  font-size: 0.92em;
+}
+
+.citation-list-line {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 6px;
+}
+
+.citation-list-line span {
+  color: var(--muted);
+  font-family: var(--mono);
+  text-align: right;
+}
+
+.citation-markdown-content blockquote {
+  margin: 0;
+  padding: 6px 10px;
+  border-left: 3px solid var(--line-strong);
+  background: #f8fafc;
+  color: #334155;
+}
+
+.citation-code-block pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #0f172a;
+  color: #e2e8f0;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  white-space: pre;
+}
+
+.citation-code-block code {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+.citation-markdown-table {
+  width: 100%;
+  min-width: 460px;
+  border-collapse: collapse;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 11.5px;
+}
+
+.citation-markdown-table th,
+.citation-markdown-table td {
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--line);
+  border-right: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+
+.citation-markdown-table th {
+  background: #f1f5f9;
+  font-weight: 850;
+}
+
+.citation-markdown-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.citation-markdown-table th:last-child,
+.citation-markdown-table td:last-child {
+  border-right: 0;
+}
+
+.citation-markdown-table .row-highlight td {
+  background: #fff7ed;
+}
+
+.citation-html-table td,
+.citation-html-table th {
+  min-width: 64px;
+  max-width: 240px;
+  overflow-wrap: anywhere;
+}
+
+.citation-markdown-line.highlight {
+  background: #fff7ed;
+  box-shadow: inset 3px 0 0 var(--red);
 }
 
 .empty-state {

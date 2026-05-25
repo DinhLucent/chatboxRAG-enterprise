@@ -755,9 +755,11 @@ a:focus-visible {
 .select-wrapper {
   position: relative;
   display: inline-block;
+  flex-shrink: 0;
 }
 
 .answer-style-select {
+  min-width: 120px;
   min-height: 28px;
   border: 1px solid var(--line-strong);
   border-radius: 8px;

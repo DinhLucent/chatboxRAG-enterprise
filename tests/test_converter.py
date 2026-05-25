@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from poc_workflow.converter import MinerUConverter
+import pytest
+
+from poc_workflow.converter import ConversionError, MinerUConverter
 
 
 def test_converter_extracts_xlsx_to_markdown(tmp_path: Path) -> None:
@@ -63,6 +65,40 @@ def test_converter_falls_back_to_pdf_text_when_mineru_fails(tmp_path: Path) -> N
     assert "MinerU conversion was attempted first" in text
     assert "Quy trinh kiem tra nhiet do kho" in text
     assert "Ghi nhan nhiet do" in text
+
+
+def test_convert_with_mineru_routes_xlsx_through_mineru(tmp_path: Path) -> None:
+    from openpyxl import Workbook
+
+    class StrictMinerUConverter(MinerUConverter):
+        def _convert_with_mineru(self, source_path: Path, output_md: Path, *args, **kwargs) -> Path:
+            output_md.write_text(f"# MinerU raw\n\nsource={source_path.name}\n", encoding="utf-8")
+            return output_md
+
+    source = tmp_path / "checklist.xlsx"
+    workbook = Workbook()
+    workbook.active.append(["Step", "Owner"])
+    workbook.save(source)
+    output = tmp_path / "checklist.md"
+
+    StrictMinerUConverter(command="missing-mineru").convert_with_mineru(source, output)
+
+    assert "source=checklist.xlsx" in output.read_text(encoding="utf-8")
+
+
+def test_convert_with_mineru_does_not_pdf_fallback_when_mineru_is_missing(tmp_path: Path) -> None:
+    from reportlab.pdfgen import canvas
+
+    source = tmp_path / "procedure.pdf"
+    pdf = canvas.Canvas(str(source))
+    pdf.drawString(72, 720, "Quy trinh kiem tra nhiet do kho")
+    pdf.save()
+
+    output = tmp_path / "procedure.md"
+    with pytest.raises(ConversionError):
+        MinerUConverter(command="missing-mineru").convert_with_mineru(source, output)
+
+    assert not output.exists()
 
 
 def test_converter_reads_mineru_options_from_env(monkeypatch) -> None:

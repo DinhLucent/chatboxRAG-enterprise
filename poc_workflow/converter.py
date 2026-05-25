@@ -89,6 +89,17 @@ class MinerUConverter:
 
         return self._convert_with_mineru(source_path, output_md, language, artifact_root, status_callback)
 
+    def convert_with_mineru(
+        self,
+        source_path: Path,
+        output_md: Path,
+        language: str = "vi",
+        artifact_root: Path | None = None,
+        status_callback: Callable[[str, str], None] | None = None,
+    ) -> Path:
+        output_md.parent.mkdir(parents=True, exist_ok=True)
+        return self._convert_with_mineru(source_path, output_md, language, artifact_root, status_callback)
+
     def _convert_with_mineru(
         self,
         source_path: Path,
@@ -144,6 +155,15 @@ class MinerUConverter:
             timeout=self.timeout_seconds,
         )
         if result.returncode != 0:
+            markdown_files = sorted(mineru_output.rglob("*.md"), key=lambda path: path.stat().st_mtime, reverse=True)
+            if markdown_files:
+                shutil.copy2(markdown_files[0], output_md)
+                _emit(
+                    status_callback,
+                    "build_outputs",
+                    f"Markdown built from {markdown_files[0]} after MinerU returned a non-zero status",
+                )
+                return output_md
             raise ConversionError(result.stderr.strip() or result.stdout.strip() or "MinerU conversion failed")
 
         _emit(status_callback, "download", "MinerU task completed; collecting output files")
