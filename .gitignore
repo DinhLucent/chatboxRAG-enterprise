@@ -23,14 +23,19 @@ data/
 source/
 sources/
 backups/
+converted_raw/
+indexes/
+rag_ready/
 ragflow_index/
 staging/
 normalized/
 archive/
 failed/
+review/
 refs/
 plan/
 design/
+project-architecture.json
 
 # Inbox keeps only operator-facing templates.
 inbox/**
@@ -44,8 +49,13 @@ manifest/*
 !manifest/taxonomy.json
 
 # Local deployment/tool state
+.codegraph/
+.cursor/
 .vercel/
 vercel-demo/.vercel/
+
+# Local scratch/debug scripts and notes
+scratch/
 
 # Large or generated document/media artifacts
 *.png
@@ -68,4 +78,3 @@ vercel-demo/.vercel/
 
 # Large original downloads
 root_source/
-
