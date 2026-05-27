@@ -138,7 +138,14 @@ python -m poc_workflow quality-gate
 
 The gate follows `intake -> gated -> verify -> accepted/escalated`, writes evidence to
 `data/quality_gate/latest.json` and `docs/quality-gate-latest.md`, checks frontend
-encoding/layout regressions, and does not call an LLM judge, run heavy OCR, or sync RAGFlow by default.
+encoding/layout regressions, runs the offline QA Agent V1 contract eval by default, and does not
+call an LLM judge, run heavy OCR, or sync RAGFlow by default. For a local UI release checkpoint,
+add the optional browser render smoke:
+
+```powershell
+python -m poc_workflow quality-gate --run-render-smoke
+python -m poc_workflow quality-gate --require-render-smoke
+```
 
 Audit suspicious taxonomy/doc_id metadata before approving or syncing documents:
 
@@ -278,6 +285,10 @@ The self-hosted dashboard exposes:
 - Ingestion run history.
 - System health for RAGFlow, MinerU, LLM config, manifest, and quality logs.
 - Regression evaluation report for retrieval, citation, no-answer, and latency KPIs.
+
+The public user chat does not render source Markdown as the verification surface. Citation cards point to
+`/api/user/documents/{doc_id}/{version}/source-file`, which serves the active document's original source file
+and prefers the supporting PDF when one is registered for that record.
 
 Important production behavior:
 

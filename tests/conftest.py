@@ -34,8 +34,19 @@ def stable_runtime_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "RAGFLOW_TECHNICAL_ACTIVE_DATASET_ID",
         "RAGFLOW_CHAT_ID",
         "RAGFLOW_SEARCH_ID",
+        "RAGFLOW_DATASET_ALLOWLIST",
+        "RAGFLOW_ACTIVE_DATASET_IDS",
+        "RAGFLOW_DATASET_IDS",
+        "RAGFLOW_RERANK_ID",
+        "KB_QA_AGENT_WORKFLOW_ENABLED",
+        "KB_QA_AGENT_STREAMING_ENABLED",
+        "KB_QA_AGENT_LATENCY_BUDGET_MS",
         "KB_REQUIRE_AUTH",
         "KB_AUTH_TOKEN",
+        "POC_LLM_BASE_URL",
+        "POC_LLM_API_KEY",
+        "POC_LLM_MODEL",
+        "OPENAI_API_KEY",
     ]:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("KB_ENABLE_LOCAL_FALLBACK", "true")

@@ -11,9 +11,10 @@ import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -56,6 +57,7 @@ from .pipeline import (
     reject_record,
     retire_record,
 )
+from .qa_agent_workflow import qa_agent_streaming_enabled, qa_agent_workflow_enabled
 from .ragflow_http import (
     RAGFlowConfig,
     RAGFlowHTTPClient,
@@ -373,6 +375,49 @@ def _source_preview_kind(suffix: str) -> str:
     if suffix in {".md", ".markdown", ".txt", ".csv", ".json", ".html", ".htm", ".xml"}:
         return "text"
     return "binary"
+
+
+def _existing_file_path(workspace: Path, value: str | None) -> Path | None:
+    path = _record_path(workspace, value)
+    if path and path.exists() and path.is_file():
+        return path
+    return None
+
+
+def _preferred_public_source_path(workspace: Path, record: Any) -> Path | None:
+    extra = getattr(record, "extra", {}) or {}
+    supporting_sources = extra.get("supporting_sources") or []
+    for source in supporting_sources:
+        if not isinstance(source, dict):
+            continue
+        path = _existing_file_path(workspace, str(source.get("path") or ""))
+        if path and (str(source.get("type") or "").lower() == "pdf" or path.suffix.lower() == ".pdf"):
+            return path
+
+    primary_path = _existing_file_path(workspace, str(extra.get("primary_source_path") or ""))
+    if primary_path and (str(extra.get("primary_source_type") or "").lower() == "pdf" or primary_path.suffix.lower() == ".pdf"):
+        return primary_path
+
+    return _existing_file_path(workspace, record.source_path)
+
+
+def _public_source_file_payload(workspace: Path, record: Any) -> dict[str, Any]:
+    source_path = _preferred_public_source_path(workspace, record)
+    if not source_path:
+        return {"exists": False, "download_url": None}
+    suffix = source_path.suffix.lower()
+    kind = _source_preview_kind(suffix)
+    doc_id = quote(str(record.doc_id), safe="")
+    version = quote(str(record.version), safe="")
+    return {
+        "exists": True,
+        "kind": kind,
+        "file_name": source_path.name,
+        "suffix": suffix,
+        "size_bytes": source_path.stat().st_size,
+        "download_url": f"/api/user/documents/{doc_id}/{version}/source-file",
+        "preferred_pdf": kind == "pdf",
+    }
 
 
 def _xlsx_preview(path: Path, *, max_rows: int = 40, max_cols: int = 12) -> dict[str, Any]:
@@ -970,6 +1015,7 @@ def _public_document_citation_payload(
             "version": record.version,
         },
         "citation": safe_citation,
+        "source_file": _public_source_file_payload(workspace, record),
         "preview": _markdown_preview_lines(content, citation),
     }
 
@@ -1103,6 +1149,11 @@ def create_app(root: Path | None = None) -> FastAPI:
             "welcome_cards": welcome_cards_payload(),
             "answer_styles": answer_styles_payload(),
             "policy": public_policy_summary(policy),
+            "qa_agent": {
+                "enabled": qa_agent_workflow_enabled(),
+                "streaming": qa_agent_streaming_enabled(),
+                "trace_visibility": "detailed_safe_rationale",
+            },
             "ui": {
                 "default_drawer_tab": "sources",
                 "drawer_can_hide": True,
@@ -1132,6 +1183,56 @@ def create_app(root: Path | None = None) -> FastAPI:
             device_id=payload.device_id,
             use_llm=payload.use_llm,
         )
+
+    @app.post("/api/user/chat/stream")
+    def user_chat_stream_api(payload: UserChatRequest) -> StreamingResponse:
+        if maintenance_enabled():
+            message = os.getenv("KB_MAINTENANCE_MESSAGE", "He thong dang duoc bao tri. Vui long quay lai sau.")
+            raise HTTPException(status_code=503, detail=message)
+        if not payload.query.strip():
+            raise HTTPException(status_code=400, detail="query is required")
+        templates = load_curated_templates(workspace)
+        if not template_exists(templates, payload.template_id):
+            raise HTTPException(status_code=400, detail=f"Unknown template_id: {payload.template_id}")
+        answer_style = normalize_answer_style(payload.answer_style)
+
+        def event_stream():
+            from queue import Queue
+            from threading import Thread
+
+            queue: Queue[dict[str, Any] | None] = Queue()
+
+            def emit(event: dict[str, Any]) -> None:
+                queue.put(event)
+
+            def worker() -> None:
+                try:
+                    result = user_chat_response(
+                        workspace,
+                        payload.query,
+                        template_id=payload.template_id,
+                        answer_style=answer_style,
+                        session_id=payload.session_id,
+                        device_id=payload.device_id,
+                        use_llm=payload.use_llm,
+                        stream_callback=emit,
+                    )
+                    queue.put({"event": "final", "result": result})
+                except Exception as exc:  # pragma: no cover - surfaced to client as SSE
+                    queue.put({"event": "error", "detail": str(exc)})
+                finally:
+                    queue.put(None)
+
+            Thread(target=worker, daemon=True).start()
+            while True:
+                item = queue.get()
+                if item is None:
+                    break
+                event_name = str(item.get("event") or "message")
+                yield f"event: {event_name}\n"
+                yield "data: " + json.dumps(item, ensure_ascii=False) + "\n\n"
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     @app.post("/api/user/session/heartbeat")
     def user_session_heartbeat_api(payload: UserSessionHeartbeatRequest) -> dict[str, Any]:
@@ -1237,6 +1338,23 @@ def create_app(root: Path | None = None) -> FastAPI:
     @app.get("/api/user/documents/{doc_id}/{version}/citation")
     def public_document_citation_by_excerpt(doc_id: str, version: str, excerpt: str | None = None) -> dict[str, Any]:
         return _public_document_citation_payload(workspace, doc_id, version, excerpt=excerpt)
+
+    @app.get("/api/user/documents/{doc_id}/{version}/source-file")
+    def public_document_source_file(doc_id: str, version: str) -> FileResponse:
+        record = next(
+            (
+                item
+                for item in latest_active_records(ManifestStore(workspace).load())
+                if item.doc_id == doc_id and item.version == version
+            ),
+            None,
+        )
+        if not record:
+            raise HTTPException(status_code=404, detail="Document not found")
+        source_path = _preferred_public_source_path(workspace, record)
+        if not source_path:
+            raise HTTPException(status_code=404, detail="Source file not found")
+        return FileResponse(source_path, filename=source_path.name)
 
     @app.get("/api/user/documents/{doc_id}/{version}/citation/{anchor_id}")
     def public_document_citation(doc_id: str, version: str, anchor_id: str) -> dict[str, Any]:

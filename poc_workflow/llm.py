@@ -451,6 +451,30 @@ class OpenAICompatibleClient:
             raise LLMError("LLM returned an empty answer")
         return str(content).strip()
 
+    def complete_messages(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float = 0,
+        timeout: float = 60,
+        max_tokens: int | None = None,
+    ) -> str:
+        payload: dict[str, Any] = {
+            "model": self.config.model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
+        data = self._post_chat(payload, timeout=timeout)
+        try:
+            content = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise LLMError(f"Unexpected LLM response: {data}") from exc
+        if not content:
+            raise LLMError("LLM returned an empty answer")
+        return str(content).strip()
+
     def _post_chat(self, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = request.Request(

@@ -122,7 +122,10 @@ $publicAnchor = [uri]::EscapeDataString([string]$publicCitation.anchor_id)
 $publicCitationDetail = Invoke-KbApi -Path "/api/user/documents/$publicDocId/$publicVersion/citation/$publicAnchor" -Public
 $publicCitationDetailJson = $publicCitationDetail | ConvertTo-Json -Depth 10 -Compress
 Assert-Smoke -Condition ($publicCitationDetailJson -notmatch "source_path|normalized_path|chunk_id|score") -Message "public citation endpoint leaked internal fields"
-Assert-Smoke -Condition (@($publicCitationDetail.preview.lines | Where-Object { $_.highlight -eq $true }).Count -gt 0) -Message "public citation endpoint did not return highlighted Markdown preview"
+Assert-Smoke -Condition ($publicCitationDetail.source_file.exists -eq $true) -Message "public citation endpoint did not return source file metadata"
+Assert-Smoke -Condition ([string]$publicCitationDetail.source_file.download_url -match "/api/user/documents/.+/source-file") -Message "public citation endpoint did not return public source download URL"
+$publicSourceResponse = Invoke-WebRequest -Uri "$BaseUrl/api/user/documents/$publicDocId/$publicVersion/source-file" -Method Get -UseBasicParsing
+Assert-Smoke -Condition ($publicSourceResponse.StatusCode -eq 200) -Message "public source-file endpoint did not return the original source file"
 
 $evaluation = $null
 if (-not $SkipEvaluation) {

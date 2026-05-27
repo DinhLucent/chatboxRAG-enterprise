@@ -24,7 +24,9 @@ from .llm import OpenAICompatibleClient, OpenAICompatibleConfig
 from .manifest import ManifestStore, latest_active_records, record_family_key, record_latest_key
 from .rag_index import LocalRagIndex, SearchHit
 from .pipeline import approve_record, init_workspace, process_sources
+from .qa_agent_eval import run_qa_agent_eval
 from .readiness import deployment_readiness
+from .user_chat_render_smoke import run_user_chat_render_smoke
 from .utils import utc_now, write_json
 
 
@@ -184,6 +186,10 @@ def run_quality_gate(
     keep_sandbox: bool = False,
     run_pytest: bool = True,
     run_regression: bool = True,
+    run_qa_agent_eval_check: bool = True,
+    run_render_smoke: bool = False,
+    require_render_smoke: bool = False,
+    render_smoke_browser_path: str | None = None,
     latency_target_ms: int = 12_000,
 ) -> dict[str, Any]:
     root = root.resolve()
@@ -211,6 +217,23 @@ def run_quality_gate(
             _timed_check(
                 "unit_integration",
                 lambda: unit_integration_gate(root, run_pytest=run_pytest, basetemp=sandbox_path / "pytest"),
+            )
+        )
+        checks.append(
+            _timed_check(
+                "qa_agent_eval",
+                lambda: qa_agent_eval_gate(root, enabled=run_qa_agent_eval_check),
+            )
+        )
+        checks.append(
+            _timed_check(
+                "user_chat_render_smoke",
+                lambda: user_chat_render_smoke_gate(
+                    root,
+                    enabled=run_render_smoke or require_render_smoke,
+                    required=require_render_smoke,
+                    browser_path=render_smoke_browser_path,
+                ),
             )
         )
         checks.append(
@@ -310,6 +333,9 @@ def run_quality_gate(
             "llm_judge": False,
             "heavy_ocr": False,
             "ragflow_sync": False,
+            "qa_agent_contract_eval": run_qa_agent_eval_check,
+            "user_chat_render_smoke": run_render_smoke or require_render_smoke,
+            "user_chat_render_smoke_required": require_render_smoke,
         },
     }
     write_quality_reports(root, report)
@@ -694,10 +720,10 @@ def frontend_static_gate(root: Path) -> dict[str, Any]:
         "function renderMermaidWorkflow": "user chat must convert workflow Mermaid into a readable visual sequence",
         'lang === "mermaid"': "user chat must detect Mermaid code fences",
         "formatInlineMarkdown": "user chat must preserve code fences before inline markdown formatting",
-        "openPublicCitation": "public chat citations must open a safe Markdown preview",
-        "renderCitationMarkdownViewer": "public citation preview must render readable Markdown instead of raw line text",
-        "renderCitationHtmlTableBlock": "public Markdown viewer must render MinerU HTML tables as safe tables",
-        "/api/user/documents/": "public citation preview must use the public active-document endpoint",
+        "openPublicCitation": "public chat citations must open a safe source download panel",
+        "publicSourceFilePath": "public chat citations must resolve public source-file download URLs",
+        "source-download-btn": "public citation panel must expose a source download button",
+        "/source-file": "public citation download must use the public active-document source endpoint",
     }
     for fragment, detail in required_user_chat_fragments.items():
         if fragment not in user_chat_js:
@@ -874,6 +900,107 @@ def unit_integration_gate(root: Path, *, run_pytest: bool, basetemp: Path | None
         " ".join(command),
         failed_cases=[] if status == "pass" else tail_lines(result["stdout"] + "\n" + result["stderr"]),
         metrics={"returncode": result["returncode"]},
+    )
+
+
+def qa_agent_eval_gate(root: Path, *, enabled: bool) -> dict[str, Any]:
+    if not enabled:
+        return check_result(
+            "qa_agent_eval",
+            "skip",
+            "info",
+            "QA Agent contract evaluation was skipped by request.",
+            "python -m poc_workflow qa-agent-eval --mode contract",
+        )
+    report = run_qa_agent_eval(root, mode="contract", write_report=True)
+    failed_cases = [
+        f"{result.get('id')}: failed checks "
+        + ", ".join(name for name, ok in (result.get("checks") or {}).items() if not ok)
+        for result in report.get("results", [])
+        if not result.get("pass")
+    ]
+    status = "pass" if report.get("pass") else "fail"
+    metrics = {
+        "mode": report.get("mode"),
+        "started_at": report.get("started_at"),
+        "finished_at": report.get("finished_at"),
+        "metrics": report.get("metrics"),
+        "results": report.get("results"),
+    }
+    return check_result(
+        "qa_agent_eval",
+        status,
+        "blocker",
+        (
+            "QA Agent contract scenarios passed."
+            if status == "pass"
+            else "QA Agent contract scenarios failed."
+        ),
+        "python -m poc_workflow qa-agent-eval --mode contract",
+        failed_cases=failed_cases,
+        metrics=metrics,
+    )
+
+
+def user_chat_render_smoke_gate(
+    root: Path,
+    *,
+    enabled: bool,
+    required: bool,
+    browser_path: str | None = None,
+) -> dict[str, Any]:
+    if not enabled:
+        return check_result(
+            "user_chat_render_smoke",
+            "skip",
+            "info",
+            "User chat browser render smoke is opt-in and was skipped.",
+            "python -m poc_workflow user-chat-render-smoke",
+        )
+    report = run_user_chat_render_smoke(root, browser_path=browser_path)
+    checks = report.get("checks") if isinstance(report.get("checks"), dict) else {}
+    failed_checks = [name for name, ok in checks.items() if not ok]
+    metrics = {
+        "browser": report.get("browser"),
+        "screenshot": report.get("screenshot"),
+        "skipped": report.get("skipped"),
+        "reason": report.get("reason"),
+        "returncode": report.get("returncode"),
+        "checks": checks,
+        "stderr_tail": report.get("stderr_tail"),
+    }
+    if report.get("pass"):
+        return check_result(
+            "user_chat_render_smoke",
+            "pass",
+            "blocker" if required else "info",
+            "User chat structured answer, trace, source, and evidence render smoke passed.",
+            "python -m poc_workflow user-chat-render-smoke",
+            metrics=metrics,
+        )
+    if report.get("skipped"):
+        return check_result(
+            "user_chat_render_smoke",
+            "fail" if required else "skip",
+            "blocker" if required else "info",
+            "User chat render smoke was skipped because no supported browser was available.",
+            "python -m poc_workflow user-chat-render-smoke",
+            failed_cases=[str(report.get("reason") or "browser unavailable")] if required else [],
+            notes=[] if required else [str(report.get("reason") or "browser unavailable")],
+            metrics=metrics,
+        )
+    return check_result(
+        "user_chat_render_smoke",
+        "fail" if required else "warn",
+        "blocker" if required else "warning",
+        (
+            "Required user chat browser render smoke failed."
+            if required
+            else "User chat browser render smoke failed, but it is not release-blocking without --require-render-smoke."
+        ),
+        "python -m poc_workflow user-chat-render-smoke",
+        failed_cases=failed_checks,
+        metrics=metrics,
     )
 
 
@@ -1291,13 +1418,13 @@ def data_audit_gate(root: Path, *, production: bool) -> dict[str, Any]:
                     blockers.append(f"{record.key} contains replacement characters")
                 if mojibake_score(text):
                     blockers.append(f"{record.key} contains possible mojibake")
-            qa_path = record.extra.get("qa_report_path")
+            qa_path = qa_report_path_for_record(record)
             if qa_path:
-                qa_file = Path(str(qa_path))
+                qa_file = resolve_workspace_path(root, qa_path)
                 if qa_file.exists():
                     try:
                         qa_report = json.loads(qa_file.read_text(encoding="utf-8"))
-                        if qa_report.get("status") == "fail":
+                        if qa_report_failed(qa_report):
                             blockers.append(f"{record.key} has failed QA report")
                     except Exception as exc:
                         blockers.append(f"{record.key} QA report is unreadable: {exc}")
@@ -1370,6 +1497,32 @@ def data_audit_gate(root: Path, *, production: bool) -> dict[str, Any]:
         notes=warnings,
         metrics=metrics,
     )
+
+
+def qa_report_path_for_record(record: Any) -> str | None:
+    extra = record.extra or {}
+    value = extra.get("qa_report_path") or extra.get("quality_report_path")
+    return str(value) if value else None
+
+
+def resolve_workspace_path(root: Path, value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else root / path
+
+
+def qa_report_failed(report: dict[str, Any]) -> bool:
+    failed_statuses = {"fail", "failed", "failed_review"}
+    status_values = [
+        report.get("status"),
+        report.get("quality_status"),
+    ]
+    qa_source_output = report.get("qa_source_output")
+    if isinstance(qa_source_output, dict):
+        status_values.append(qa_source_output.get("status"))
+    initial_audit = report.get("initial_audit")
+    if isinstance(initial_audit, dict):
+        status_values.append(initial_audit.get("quality_status"))
+    return any(str(value or "").strip().lower() in failed_statuses for value in status_values)
 
 
 def production_readiness_gate(root: Path, *, mode: str, check_network: bool) -> dict[str, Any]:

@@ -11,6 +11,11 @@ param(
     [switch]$KeepSandbox,
     [switch]$SkipPytest,
     [switch]$SkipEvaluation,
+    [switch]$SkipQaAgentEval,
+    [switch]$RunRenderSmoke,
+    [switch]$RequireRenderSmoke,
+
+    [string]$BrowserPath,
 
     [int]$LatencyTargetMs = 12000
 )
@@ -38,6 +43,18 @@ if ($SkipPytest) {
 }
 if ($SkipEvaluation) {
     $argsList += "--skip-evaluation"
+}
+if ($SkipQaAgentEval) {
+    $argsList += "--skip-qa-agent-eval"
+}
+if ($RunRenderSmoke) {
+    $argsList += "--run-render-smoke"
+}
+if ($RequireRenderSmoke) {
+    $argsList += "--require-render-smoke"
+}
+if (-not [string]::IsNullOrWhiteSpace($BrowserPath)) {
+    $argsList += @("--browser-path", $BrowserPath)
 }
 
 python @argsList

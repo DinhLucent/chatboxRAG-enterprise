@@ -28,11 +28,13 @@ from .pipeline import (
     retire_record,
 )
 from .quality_gate import run_quality_gate
+from .qa_agent_eval import run_qa_agent_eval
 from .qa_test_eval import run_qa_test
 from .pilot_pdtech_a02 import run_pdtech_a02_agent_sandbox, run_pdtech_a02_pilot
 from .ragflow_http import bootstrap_ragflow_resources, sync_active_to_ragflow
 from .readiness import deployment_readiness
 from .upload_processing import process_upload_queue
+from .user_chat_render_smoke import run_user_chat_render_smoke
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -157,6 +159,13 @@ def build_parser() -> argparse.ArgumentParser:
     qa_test.add_argument("--use-llm", action="store_true")
     qa_test.add_argument("--no-report", action="store_true")
 
+    qa_agent_eval = sub.add_parser("qa-agent-eval", help="Run QA Agent V1 workflow contract/live regression cases.")
+    qa_agent_eval.add_argument("--mode", choices=["contract", "live"], default="contract")
+    qa_agent_eval.add_argument("--no-report", action="store_true")
+
+    render_smoke = sub.add_parser("user-chat-render-smoke", help="Render the user chat QA payload in headless Chrome/Edge and capture a screenshot.")
+    render_smoke.add_argument("--browser-path", help="Optional Chrome/Edge executable path.")
+
     readiness = sub.add_parser("readiness", help="Check production deployment readiness.")
     readiness.add_argument("--check-network", action="store_true", help="Call RAGFlow health endpoint.")
 
@@ -168,6 +177,10 @@ def build_parser() -> argparse.ArgumentParser:
     quality_gate.add_argument("--keep-sandbox", action="store_true", help="Keep .quality-sandbox run directory after pass.")
     quality_gate.add_argument("--skip-pytest", action="store_true", help="Skip the unit/integration pytest gate.")
     quality_gate.add_argument("--skip-evaluation", action="store_true", help="Skip the regression retrieval gate.")
+    quality_gate.add_argument("--skip-qa-agent-eval", action="store_true", help="Skip the offline QA Agent V1 contract eval gate.")
+    quality_gate.add_argument("--run-render-smoke", action="store_true", help="Run the optional browser render smoke for the user chat UI.")
+    quality_gate.add_argument("--require-render-smoke", action="store_true", help="Make the browser render smoke a blocker if it fails or skips.")
+    quality_gate.add_argument("--browser-path", help="Optional Chrome/Edge executable path for render smoke.")
     quality_gate.add_argument("--latency-target-ms", type=int, default=12_000)
 
     sub.add_parser("gaps", help="List knowledge gaps.")
@@ -354,6 +367,14 @@ def main(argv: list[str] | None = None) -> int:
                 use_llm=args.use_llm,
                 write_report=not args.no_report,
             )
+        elif args.command == "qa-agent-eval":
+            result = run_qa_agent_eval(
+                root,
+                mode=args.mode,
+                write_report=not args.no_report,
+            )
+        elif args.command == "user-chat-render-smoke":
+            result = run_user_chat_render_smoke(root, browser_path=args.browser_path)
         elif args.command == "readiness":
             result = deployment_readiness(root, check_network=args.check_network)
         elif args.command == "quality-gate":
@@ -366,6 +387,10 @@ def main(argv: list[str] | None = None) -> int:
                 keep_sandbox=args.keep_sandbox,
                 run_pytest=not args.skip_pytest,
                 run_regression=not args.skip_evaluation,
+                run_qa_agent_eval_check=not args.skip_qa_agent_eval,
+                run_render_smoke=args.run_render_smoke,
+                require_render_smoke=args.require_render_smoke,
+                render_smoke_browser_path=args.browser_path,
                 latency_target_ms=args.latency_target_ms,
             )
             write_json_output(result)

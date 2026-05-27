@@ -199,6 +199,35 @@ class RAGFlowHTTPClient:
             payload["kb_ids"] = kb_ids
         return self._sse_json_request("POST", f"/api/v1/searches/{search_id}/completions", payload)
 
+    def retrieve_chunks(
+        self,
+        dataset_ids: list[str],
+        question: str,
+        *,
+        top_k: int = 40,
+        page_size: int = 40,
+        metadata_condition: dict | None = None,
+        similarity_threshold: float = 0.0,
+        vector_similarity_weight: float = 0.3,
+        rerank_id: str | None = None,
+    ) -> dict:
+        payload: dict[str, object] = {
+            "dataset_ids": dataset_ids,
+            "question": question,
+            "page": 1,
+            "page_size": page_size,
+            "top_k": top_k,
+            "similarity_threshold": similarity_threshold,
+            "vector_similarity_weight": vector_similarity_weight,
+            "highlight": False,
+            "reference_metadata": {"include": True},
+        }
+        if metadata_condition:
+            payload["metadata_condition"] = metadata_condition
+        if rerank_id:
+            payload["rerank_id"] = rerank_id
+        return self._json_request("POST", "/api/v1/chunks/retrieval", payload)
+
     def health(self) -> dict:
         return self._json_request("GET", "/api/v1/system/healthz", None)
 

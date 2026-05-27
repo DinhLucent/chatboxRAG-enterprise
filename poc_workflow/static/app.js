@@ -31,15 +31,15 @@ const UPLOAD_WORKFLOW_STEPS = [
   { id: "waiting", label: "Chờ file", hint: "File nằm trong inbox và chưa được agent nhận xử lý." },
   { id: "prepare", label: "Nhận file", hint: "Tạo workplace xử lý tuần tự cho một file." },
   { id: "classify", label: "Phân loại", hint: "Nhận diện nhóm tài liệu và hướng xử lý." },
-  { id: "mineru_convert", label: "MinerU", hint: "Convert/extract bằng MinerU, gồm OCR khi cần." },
-  { id: "extract_artifacts", label: "Artifact map", hint: "Trích content_list, middle/model JSON và images từ MinerU ZIP." },
+  { id: "mineru_convert", label: "HyperScribeModel", hint: "Convert/extract bằng HyperScribeModel, gồm OCR khi cần." },
+  { id: "extract_artifacts", label: "Artifact map", hint: "Trích content_list, middle/model JSON và images từ HyperScribeModel package." },
   { id: "compare_sources", label: "So sánh nguồn", hint: "So sánh PDF/XLSX và chọn bản sạch hơn." },
   { id: "preclean", label: "Pre-clean", hint: "Loại nhiễu rõ ràng, giữ tối đa nội dung nguồn." },
   { id: "domain_agent", label: "Domain agent", hint: "Chuẩn hóa nội dung theo domain quy trình." },
   { id: "handoff_check", label: "Handoff", hint: "Kiểm tra bàn giao giữa các sub-agent." },
   { id: "qa", label: "QA", hint: "Đối chiếu ý nghĩa, cấu trúc, citation và lỗi synthetic." },
   { id: "repair_loop", label: "Repair", hint: "Trả về đúng agent để sửa nếu QA fail." },
-  { id: "rag_ready", label: "RAG-ready", hint: "Đóng schema, metadata và chunk/citation map." },
+  { id: "rag_ready", label: "Knowledge-ready", hint: "Đóng schema, metadata và chunk/citation map." },
   { id: "review", label: "Human review", hint: "Admin duyệt trước khi đồng bộ tri thức." },
   { id: "done", label: "Review queue", hint: "Xử lý xong và chờ human approval; chưa đồng bộ knowledge base." },
   { id: "ocr_required", label: "Cần OCR", hint: "Cần OCR hoặc kiểm tra thủ công trước khi tiếp tục." },
@@ -58,20 +58,20 @@ const AGENT_WORKFLOW_BLUEPRINT = [
   },
   {
     id: "convert",
-    title: "MinerU Convert",
+    title: "HyperScribeModel Convert",
     stage: "mineru_convert",
-    skill: "mineru-source-converter",
+    skill: "hyperscribe-normalizer",
     input: "PDF/XLSX primary candidates",
     output: "raw .md + ZIP sidecars",
-    gate: "MinerU only, no parser fallback",
+    gate: "HyperScribeModel only, no parser fallback",
   },
   {
     id: "artifact",
     title: "Artifact Map",
     stage: "extract_artifacts",
-    skill: "mineru-source-converter",
-    input: "mineru_result.zip",
-    output: "mineru_artifact_index.json",
+    skill: "hyperscribe-normalizer",
+    input: "conversion_result.zip",
+    output: "document_artifact_index.json",
     gate: "content_list/middle/images kept",
   },
   {
@@ -88,18 +88,18 @@ const AGENT_WORKFLOW_BLUEPRINT = [
     title: "Repair Loop",
     stage: "repair_loop",
     skill: "rag-markdown-repairer",
-    input: "QA handoff + MinerU refs",
+    input: "QA handoff + HyperScribeModel refs",
     output: "clean Markdown + fixed anchors",
     gate: "max loop then human review",
   },
   {
     id: "package",
-    title: "RAG-ready",
+    title: "Knowledge-ready",
     stage: "rag_ready",
-    skill: "ragflow-schema-indexer",
+    skill: "knowledge-schema-indexer",
     input: "approved QA output",
     output: "metadata, chunks, citation_map",
-    gate: "no RAGFlow sync yet",
+    gate: "no KnowledgeCore sync yet",
   },
   {
     id: "evolve",
@@ -119,7 +119,7 @@ const PROMPT_PACKET_BLUEPRINT = [
   },
   {
     title: "Policy Packet",
-    items: ["immutable raw source", "MinerU-only conversion", "no duplicate PDF/XLSX ingest"],
+    items: ["immutable raw source", "HyperScribeModel-only conversion", "no duplicate PDF/XLSX ingest"],
   },
   {
     title: "Workflow Packet",
@@ -127,11 +127,11 @@ const PROMPT_PACKET_BLUEPRINT = [
   },
   {
     title: "Skill Contract Packet",
-    items: ["skill_read_receipts", "subagent prompt contract", "handoff checker", "RAG readiness contract"],
+    items: ["skill_read_receipts", "subagent prompt contract", "handoff checker", "Knowledge readiness contract"],
   },
   {
     title: "Evidence Packet",
-    items: ["mineru_artifact_index", "content_list_v2", "middle.json", "images", "citation anchors"],
+    items: ["document_artifact_index", "content_list_v2", "middle.json", "images", "citation anchors"],
   },
   {
     title: "Handoff Packet",
@@ -230,7 +230,7 @@ function syncAdminAccess() {
 
 function toast(message) {
   const el = qs("#toast");
-  el.textContent = message;
+  el.textContent = displayAlias(message);
   el.classList.add("show");
   setTimeout(() => el.classList.remove("show"), 3200);
 }
@@ -257,6 +257,36 @@ function escapeHtml(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+const TECH_DISPLAY_ALIASES = [
+  [/\bMinerU\b/g, "HyperScribeModel"],
+  [/\bmineru-source-converter\b/gi, "hyperscribe-normalizer"],
+  [/\bmineru_artifact_index\b/gi, "document_artifact_index"],
+  [/\bmineru_result\.zip\b/gi, "conversion_result.zip"],
+  [/\bmineru_raw\b/gi, "converted_raw"],
+  [/\bmineru\b/gi, "hyperscribe"],
+  [/\bRAGFlow\b/g, "KnowledgeCore"],
+  [/\bragflow-schema-indexer\b/gi, "knowledge-schema-indexer"],
+  [/\bragflow_index\b/gi, "knowledge_index"],
+  [/\bragflow_ingestion\b/gi, "knowledge_sync"],
+  [/\bragflow\b/gi, "knowledgecore"],
+  [/\bRAG-ready\b/g, "Knowledge-ready"],
+  [/\bRAG\b/g, "Knowledge Retrieval"],
+  [/\bFreeLLMAPI\b/g, "LLM Gateway"],
+  [/\bFastAPI\b/g, "Application API"],
+  [/\bpoc_workflow\b/g, "workflow runtime"],
+];
+
+function displayAlias(value) {
+  return TECH_DISPLAY_ALIASES.reduce(
+    (text, [pattern, replacement]) => text.replace(pattern, replacement),
+    String(value ?? ""),
+  );
+}
+
+function displayText(value) {
+  return escapeHtml(displayAlias(value));
 }
 
 async function refreshAll() {
@@ -370,9 +400,9 @@ function serviceText(value) {
     "He thong san sang": "Hệ thống sẵn sàng",
     "Chatbot dang ket noi voi kho tai lieu noi bo.": "Chatbot đang kết nối với kho tài liệu nội bộ.",
     "Chat service unavailable": "Dịch vụ trò chuyện chưa sẵn sàng",
-    "RAGFlow env is not configured": "Chưa cấu hình RAGFlow",
+    "RAGFlow env is not configured": "Chưa cấu hình KnowledgeCore",
   };
-  return known[text] || text;
+  return displayAlias(known[text] || text);
 }
 
 function renderServiceBanner(status = state.health?.service_status) {
@@ -465,7 +495,7 @@ function renderPromptTemplates() {
     ? templates
         .map(
           (mode) => `
-            <option value="${escapeHtml(mode.id)}">${escapeHtml(mode.label || mode.id)}</option>
+            <option value="${escapeHtml(mode.id)}">${displayText(mode.label || mode.id)}</option>
           `
         )
         .join("")
@@ -484,7 +514,7 @@ function renderPromptModeHelp() {
   const help = qs("#promptModeHelp");
   if (!select || !help) return;
   const mode = (state.promptTemplates?.modes || []).find((item) => item.id === select.value);
-  help.textContent = mode?.description || "Chọn chế độ prompt để điều phối AI agent xử lý dữ liệu đúng quy trình (workflow).";
+  help.textContent = displayAlias(mode?.description || "Chọn chế độ prompt để điều phối AI agent xử lý dữ liệu đúng quy trình (workflow).");
   renderPromptArchitecture();
 }
 
@@ -539,18 +569,18 @@ function renderProcessingStage(item) {
   const visualStep = workflowVisualStep(item);
   const label = item.processing_step_label || processingStepLabel(step);
   const visualLabel = processingStepLabel(visualStep);
-  const rawLabel = label && label !== visualLabel ? `<span class="stage-raw">${escapeHtml(label)}</span>` : "";
-  const detail = item.processing_detail ? `<div class="item-meta">${escapeHtml(item.processing_detail)}</div>` : "";
+  const rawLabel = label && label !== visualLabel ? `<span class="stage-raw">${displayText(label)}</span>` : "";
+  const detail = item.processing_detail ? `<div class="item-meta">${displayText(item.processing_detail)}</div>` : "";
   const qa = item.qa_status
-    ? `<div class="item-meta">QA: ${escapeHtml(item.qa_status)}${
-        item.qa_issues?.length ? ` | ${escapeHtml(item.qa_issues.join(", "))}` : ""
+    ? `<div class="item-meta">QA: ${displayText(item.qa_status)}${
+        item.qa_issues?.length ? ` | ${displayText(item.qa_issues.join(", "))}` : ""
       }</div>`
     : "";
-  const checkpoint = item.checkpoint ? `<div class="item-meta">Checkpoint: ${escapeHtml(item.checkpoint)}</div>` : "";
-  const handoff = item.handoff_path ? `<div class="item-meta">Handoff: ${escapeHtml(item.handoff_path)}</div>` : "";
-  const nextSkill = item.next_skill ? `<div class="item-meta">Next skill: ${escapeHtml(item.next_skill)}</div>` : "";
+  const checkpoint = item.checkpoint ? `<div class="item-meta">Checkpoint: ${displayText(item.checkpoint)}</div>` : "";
+  const handoff = item.handoff_path ? `<div class="item-meta">Handoff: ${displayText(item.handoff_path)}</div>` : "";
+  const nextSkill = item.next_skill ? `<div class="item-meta">Next skill: ${displayText(item.next_skill)}</div>` : "";
   const qualityGateKeys = item.quality_gates && typeof item.quality_gates === "object" ? Object.keys(item.quality_gates) : [];
-  const gates = qualityGateKeys.length ? `<div class="item-meta">Quality gates: ${escapeHtml(qualityGateKeys.join(", "))}</div>` : "";
+  const gates = qualityGateKeys.length ? `<div class="item-meta">Quality gates: ${displayText(qualityGateKeys.join(", "))}</div>` : "";
   const artifacts = Array.isArray(item.artifacts) && item.artifacts.length
     ? `<div class="item-meta">Artifacts: ${escapeHtml(String(item.artifacts.length))}</div>`
     : "";
@@ -561,12 +591,12 @@ function renderProcessingStage(item) {
     ? `<div class="item-meta">Review: ${escapeHtml(item.review_status)}${item.simulated_approval ? " | simulated" : ""}</div>`
     : "";
   const ragflow = item.ragflow_ingestion
-    ? `<div class="item-meta">RAGFlow: ${escapeHtml(typeof item.ragflow_ingestion === "string" ? item.ragflow_ingestion : JSON.stringify(item.ragflow_ingestion))}</div>`
+    ? `<div class="item-meta">KnowledgeCore: ${displayText(typeof item.ragflow_ingestion === "string" ? item.ragflow_ingestion : JSON.stringify(item.ragflow_ingestion))}</div>`
     : "";
   return `
     <div class="stage-cell">
       <div class="stage-current">
-        <span class="status stage-${escapeHtml(visualStep)}">${escapeHtml(visualLabel)}</span>
+        <span class="status stage-${escapeHtml(workflowStepClass(visualStep))}">${escapeHtml(visualLabel)}</span>
         ${rawLabel}
       </div>
       ${renderWorkflowTimeline(item)}
@@ -617,11 +647,11 @@ function renderAgentWorkflowMap(items) {
               <span class="workflow-map-order">${index + 1}</span>
               <strong>${escapeHtml(node.title)}</strong>
             </div>
-            <div class="workflow-map-skill">${escapeHtml(node.skill)}</div>
+            <div class="workflow-map-skill">${displayText(node.skill)}</div>
             <dl class="workflow-map-meta">
-              <div><dt>Input</dt><dd>${escapeHtml(node.input)}</dd></div>
-              <div><dt>Output</dt><dd>${escapeHtml(node.output)}</dd></div>
-              <div><dt>Gate</dt><dd>${escapeHtml(node.gate)}</dd></div>
+              <div><dt>Input</dt><dd>${displayText(node.input)}</dd></div>
+              <div><dt>Output</dt><dd>${displayText(node.output)}</dd></div>
+              <div><dt>Gate</dt><dd>${displayText(node.gate)}</dd></div>
             </dl>
           </article>
         `;
@@ -650,17 +680,17 @@ function renderPromptArchitecture() {
     <div class="prompt-architecture-header">
       <div>
         <h3>Kiến trúc prompt bàn giao cho AI Agent</h3>
-        <p>${escapeHtml(mode?.label || "Task prompt")} · ${escapeHtml(mode?.request_type || "workflow")}</p>
+        <p>${displayText(mode?.label || "Task prompt")} · ${displayText(mode?.request_type || "workflow")}</p>
       </div>
       <span class="workflow-map-badge">${escapeHtml(state.promptTemplates?.prompt_version || "agent-task-v3")}</span>
     </div>
     <div class="prompt-packet-grid">
       ${packets.map((packet) => `
         <section class="prompt-packet">
-          <strong>${escapeHtml(packet.title)}</strong>
-          ${packet.purpose ? `<p>${escapeHtml(packet.purpose)}</p>` : ""}
+          <strong>${displayText(packet.title)}</strong>
+          ${packet.purpose ? `<p>${displayText(packet.purpose)}</p>` : ""}
           <ul>
-            ${packet.items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+            ${packet.items.map((item) => `<li>${displayText(item)}</li>`).join("")}
           </ul>
         </section>
       `).join("")}
@@ -721,6 +751,14 @@ function workflowVisualStep(item) {
   return normalizeWorkflowStep(rawStep);
 }
 
+function workflowStepClass(step) {
+  const aliases = {
+    mineru_convert: "hyperscribe",
+    rag_ready: "knowledge_ready",
+  };
+  return aliases[step] || step;
+}
+
 function workflowHistorySteps(item) {
   const steps = new Set();
   (item.processing_history || []).forEach((event) => {
@@ -743,13 +781,13 @@ function workflowStepIndex(step) {
 
 function renderQueueAction(item) {
   if (item.display_status === "approved") {
-    return `<span class="item-meta">Sẵn sàng ingest RAGFlow</span>`;
+    return `<span class="item-meta">Sẵn sàng đồng bộ KnowledgeCore</span>`;
   }
   if (item.display_status === "pending_review") {
     return `<span class="item-meta">Waiting for human review</span>`;
   }
   if (item.display_status === "failed_review") {
-    return `<span class="item-meta">${escapeHtml(item.processing_detail || "Cần AI agent sửa lại")}</span>`;
+    return `<span class="item-meta">${displayText(item.processing_detail || "Cần AI agent sửa lại")}</span>`;
   }
   if (item.status === "queue") {
     return `<button class="button secondary compact queue-row-action" data-source="${escapeHtml(item.source)}" data-path="${escapeHtml(item.relative_path)}" data-action="generate" type="button">Tạo prompt</button>`;
@@ -761,7 +799,7 @@ function renderQueueAction(item) {
     return `<button class="button secondary compact queue-row-action" data-source="${escapeHtml(item.source)}" data-path="${escapeHtml(item.relative_path)}" data-action="copy" type="button">Sao chép prompt</button>`;
   }
   if (["failed", "ocr_required"].includes(item.status)) {
-    return `<span class="item-meta">${escapeHtml(item.error || "Xem lỗi")}</span>`;
+    return `<span class="item-meta">${displayText(item.error || "Xem lỗi")}</span>`;
   }
   return `<span class="item-meta">-</span>`;
 }
@@ -841,14 +879,14 @@ function processingStepLabel(step) {
     download: "Tải kết quả",
     extract_artifacts: "Trích artifact",
     build_outputs: "Dựng đầu ra",
-    mineru_convert: "MinerU convert",
+    mineru_convert: "HyperScribeModel convert",
     compare_sources: "So sánh nguồn",
     preclean: "Pre-clean",
     domain_agent: "Domain agent",
     handoff_check: "Handoff check",
     qa: "Kiểm tra QA",
     repair_loop: "Repair loop",
-    rag_ready: "RAG-ready",
+    rag_ready: "Knowledge-ready",
     review: "Human review",
     done: "Hoàn tất",
     ocr_required: "Cần OCR",
@@ -871,7 +909,7 @@ function typeLabel(type) {
 function providerLabel(provider) {
   const labels = {
     auto: "Tự động",
-    ragflow: "Chỉ RAGFlow",
+    ragflow: "Chỉ KnowledgeCore",
     local: "Dự phòng cục bộ",
   };
   return labels[provider] || provider || "-";
@@ -992,11 +1030,11 @@ function gapReasonLabel(reason) {
     user_feedback_correct: "Đánh giá Đúng (Cần xác nhận lại)",
     user_feedback_wrong_source: "Phản hồi: Sai nguồn thông tin",
     user_feedback_no_answer: "Phản hồi: Chatbot không trả lời được",
-    ragflow_answer_missing_citation: "Thiếu trích dẫn (RAGFlow)",
-    ragflow_error: "Lỗi kết nối RAGFlow",
-    ragflow_not_configured: "RAGFlow chưa được cấu hình",
-    ragflow_not_configured_local_fallback_disabled: "RAGFlow lỗi/chưa cấu hình (Local Fallback tắt)",
-    ragflow_error_local_fallback_disabled: "Lỗi RAGFlow (Local Fallback tắt)",
+    ragflow_answer_missing_citation: "Thiếu trích dẫn (KnowledgeCore)",
+    ragflow_error: "Lỗi kết nối KnowledgeCore",
+    ragflow_not_configured: "KnowledgeCore chưa được cấu hình",
+    ragflow_not_configured_local_fallback_disabled: "KnowledgeCore lỗi/chưa cấu hình (Local Fallback tắt)",
+    ragflow_error_local_fallback_disabled: "Lỗi KnowledgeCore (Local Fallback tắt)",
   };
   if (!reason) return "Khoảng trống chưa xác định";
   if (reason.startsWith("user_feedback_")) {
@@ -2221,7 +2259,7 @@ function llmStatusDetail(status = {}) {
   if (status.state === "ready") return `${status.model || "-"} | ${status.latency_ms ?? "-"}ms`;
   if (status.state === "proxy_online") return `${status.model_count ?? 0} model khả dụng`;
   if (status.state === "configured") return "Chưa kiểm tra live";
-  return status.last_error || "Không kiểm tra được LLM";
+  return displayAlias(status.last_error || "Không kiểm tra được LLM");
 }
 
 function llmErrorStatus(message) {
@@ -2240,9 +2278,9 @@ function llmErrorStatus(message) {
 function readinessCheckLabel(name) {
   const labels = {
     operator_auth: "Xác thực điều phối",
-    ragflow_config: "Cấu hình RAGFlow",
-    ragflow_network: "Kết nối RAGFlow",
-    mineru_available: "MinerU",
+    ragflow_config: "Cấu hình KnowledgeCore",
+    ragflow_network: "Kết nối KnowledgeCore",
+    mineru_available: "HyperScribeModel",
     active_documents: "Tài liệu hiệu lực",
     latest_evaluation: "Đánh giá hồi quy",
     local_fallback_disabled: "Dự phòng cục bộ",
@@ -2302,7 +2340,7 @@ function renderLlmStatusPanel() {
       ${status.last_error ? `
         <div class="review-alert warning runtime-status-error">
           <strong>Thông báo</strong>
-          <span>${escapeHtml(status.last_error)}</span>
+          <span>${displayText(status.last_error)}</span>
         </div>
       ` : ""}
     </div>
@@ -2372,7 +2410,7 @@ function renderLlmConfigPanel() {
             </div>
             <span class="status ${escapeHtml(llmStatusClass(status))}">${escapeHtml(status.latency_ms ?? "-")}ms</span>
           </div>
-          ${status.last_error ? `<div class="review-alert warning"><strong>Lỗi</strong><span>${escapeHtml(status.last_error)}</span></div>` : ""}
+          ${status.last_error ? `<div class="review-alert warning"><strong>Lỗi</strong><span>${displayText(status.last_error)}</span></div>` : ""}
           ${(status.model_sample || []).length ? `<div class="item-meta">Model mẫu: ${escapeHtml(status.model_sample.slice(0, 6).join(", "))}</div>` : ""}
         ` : `<div class="empty compact-empty">Chưa kiểm tra cấu hình mới.</div>`}
       </div>
@@ -2458,15 +2496,15 @@ function renderOperationStatusCards() {
   const llmReady = llmStatus.state === "ready" || llmStatus.state === "proxy_online";
   const cards = [
     {
-      label: "RAGFlow",
+      label: "KnowledgeCore",
       value: ragflowReady ? "Sẵn sàng" : "Chưa sẵn sàng",
       detail: serviceText(health.ragflow?.message || (health.ragflow?.configured ? "Đã cấu hình" : "Chưa cấu hình")),
       status: ragflowReady ? "active" : "ocr_required",
     },
     {
-      label: "MinerU",
+      label: "HyperScribeModel",
       value: mineruReady ? "Sẵn sàng" : "Thiếu",
-      detail: health.mineru?.command || "mineru",
+      detail: mineruReady ? "Document runtime detected" : "Document runtime missing",
       status: mineruReady ? "active" : "failed",
     },
     {
@@ -2496,9 +2534,9 @@ function renderOperationStatusCards() {
   ];
   target.innerHTML = cards.map((card) => `
     <div class="status-card ${escapeHtml(card.status)}">
-      <div class="metric-label">${escapeHtml(card.label)}</div>
-      <div class="metric-value">${escapeHtml(card.value)}</div>
-      <div class="item-meta">${escapeHtml(card.detail)}</div>
+      <div class="metric-label">${displayText(card.label)}</div>
+      <div class="metric-value">${displayText(card.value)}</div>
+      <div class="item-meta">${displayText(card.detail)}</div>
     </div>
   `).join("");
 }
@@ -2634,16 +2672,16 @@ async function generateAgentGoalPrompt(paths = null) {
 function renderAgentPrompt(prompt, trace = null) {
   const box = qs("#agentPromptBox");
   if (box) {
-    box.value = prompt || "";
+    box.value = displayAlias(prompt || "");
   }
   const traceTarget = qs("#promptTrace");
   if (traceTarget) {
     if (trace?.prompt_id) {
-      traceTarget.textContent = `prompt_id: ${trace.prompt_id} | prompt_version: ${trace.prompt_version || "-"} | prompt_mode: ${
+      traceTarget.textContent = displayAlias(`prompt_id: ${trace.prompt_id} | prompt_version: ${trace.prompt_version || "-"} | prompt_mode: ${
         trace.prompt_mode || "-"
       } | so file: ${
         trace.files?.length ?? "-"
-      }`;
+      }`);
     } else {
       traceTarget.textContent = "Chưa tạo prompt.";
     }
@@ -2651,7 +2689,7 @@ function renderAgentPrompt(prompt, trace = null) {
 }
 
 async function copyPrompt(prompt = null) {
-  const content = prompt || qs("#agentPromptBox")?.value || "";
+  const content = displayAlias(prompt || qs("#agentPromptBox")?.value || "");
   if (!content.trim()) {
     toast("Không có prompt để sao chép");
     return;
@@ -2862,14 +2900,14 @@ function setupActions() {
     await api("/api/rebuild-index", { method: "POST", body: "{}" });
     toast("Đã dựng lại index dự phòng cục bộ");
   });
-  qs("#syncRagflowBtn").addEventListener("click", async () => {
+  qs("#syncKnowledgeBtn").addEventListener("click", async () => {
     await api("/api/sync-ragflow", { method: "POST", body: "{}" });
-    toast("Đã yêu cầu đồng bộ RAGFlow");
+    toast("Đã yêu cầu đồng bộ KnowledgeCore");
     await refreshAll();
   });
-  qs("#bootstrapRagflowBtn").addEventListener("click", async () => {
+  qs("#bootstrapKnowledgeBtn").addEventListener("click", async () => {
     const result = await api("/api/bootstrap-ragflow", { method: "POST", body: "{}" });
-    toast(`Dataset RAGFlow ${result.dataset_created ? "đã tạo" : "đã tồn tại"}`);
+    toast(`Dataset KnowledgeCore ${result.dataset_created ? "đã tạo" : "đã tồn tại"}`);
     await refreshAll();
   });
   qs("#evaluateBtn").addEventListener("click", async () => {
@@ -2920,12 +2958,12 @@ function renderCitationsList(citations) {
   citationsContainer.innerHTML = citations.length
     ? citations.map((citation, index) => `
       <button class="item citation-card" type="button" data-citation-index="${index}">
-        <div class="item-title">${escapeHtml(citation.title || citation.doc_id || "Nguồn")}</div>
+        <div class="item-title">${displayText(citation.title || citation.doc_id || "Nguồn")}</div>
         <div class="item-meta">
-          Mã: ${escapeHtml(citation.doc_id || "-")} | Phiên bản: ${escapeHtml(citation.version || "-")}<br>
-          ${escapeHtml(citation.anchor_id || citation.chunk_id || "")}
+          Mã: ${displayText(citation.doc_id || "-")} | Phiên bản: ${displayText(citation.version || "-")}<br>
+          ${displayText(citation.anchor_id || citation.chunk_id || "")}
         </div>
-        <div class="item-meta">${escapeHtml(citation.matched_excerpt || citation.excerpt || "")}</div>
+        <div class="item-meta">${displayText(citation.matched_excerpt || citation.excerpt || "")}</div>
       </button>
     `).join("")
     : `<div class="empty">Không có nguồn trích dẫn trả về.</div>`;
@@ -3004,7 +3042,7 @@ function renderCitationsList(citations) {
       assistantMsg.dataset.logId = result.query_log_id;
       assistantMsg.innerHTML = `
         <div class="chat-bubble">
-          ${renderMarkdownText(result.answer)}
+          ${renderMarkdownText(displayAlias(result.answer))}
         </div>
         <div class="chat-message-meta">
           <span class="chat-citations-badge" data-message-index="${msgIndex}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;margin-right:4px;vertical-align:middle;"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>${result.citations.length} nguồn trích dẫn</span>
@@ -3029,13 +3067,13 @@ function renderCitationsList(citations) {
     } catch (err) {
       assistantMsg.innerHTML = `
         <div class="chat-bubble" style="border-color: var(--danger); color: var(--danger); background: var(--danger-soft);">
-          <p class="chat-p">${escapeHtml(err.message || "Hệ thống đang tạm thời không sẵn sàng.")}</p>
+          <p class="chat-p">${displayText(err.message || "Hệ thống đang tạm thời không sẵn sàng.")}</p>
         </div>
       `;
       renderServiceBanner({
         state: "unavailable",
         title: "Hệ thống chưa thể trả lời",
-        message: err.message || "Vui lòng thử lại sau hoặc liên hệ kỹ thuật.",
+        message: displayAlias(err.message || "Vui lòng thử lại sau hoặc liên hệ kỹ thuật."),
         can_chat: false,
       });
       toast(err.message);
@@ -3182,13 +3220,13 @@ let currentArchZoom = 100;
 
 const MERMAID_DIAGRAMS = {
   runtime: `flowchart LR
-    U["Người dùng nội bộ"] -->|Hỏi đáp quy trình| WEB["Dashboard UI<br/>(FastAPI + static HTML)"]
-    WEB -->|Gọi API| APP["poc_workflow API<br/>(FastAPI Webapp)"]
+    U["Người dùng nội bộ"] -->|Hỏi đáp quy trình| WEB["Dashboard UI<br/>(Application API + static UI)"]
+    WEB -->|Gọi API| APP["Workflow API<br/>(Application Webapp)"]
     APP -->|Truy xuất hiệu lực| RET["Tầng truy xuất (Retrieval)"]
-    RET -->|Dự phòng cục bộ| LOCAL["Index JSONL cục bộ<br/>(ragflow_index/)"]
-    RET -->|RAG chính| RAG["RAGFlow technical_active<br/>(refs/ragflow)"]
+    RET -->|Dự phòng cục bộ| LOCAL["Index JSONL cục bộ<br/>(knowledge_index/)"]
+    RET -->|Truy xuất chính| RAG["KnowledgeCore technical_active<br/>(managed refs)"]
     APP -->|Gửi Context + Câu hỏi| LLM["OpenAI-compatible LLM"]
-    LLM -->|Cổng điều hướng| FREE["FreeLLMAPI proxy<br/>(refs/freellmapi)"]
+    LLM -->|Cổng điều hướng| FREE["LLM Gateway<br/>(managed proxy)"]
     FREE -->|Miễn phí / Demo| P1["Pollinations / LLM7"]
     FREE -->|API Keys cá nhân| P2["Google / Groq / OpenRouter"]
     APP -->|Lưu nhật ký và gap| QDB["SQLite quality.db<br/>(data/poc_quality.db)"]
@@ -3209,7 +3247,7 @@ const MERMAID_DIAGRAMS = {
   ingestion: `flowchart TD
     A["Tài liệu tải lên / Drop vào inbox/"] -->|Quét thư mục| B["AI Agent chuẩn hóa (Ingest)"]
     B -->|Tạo metadata thô| C["Lưu source/ & metadata.json"]
-    C -->|Số hóa tài liệu| D["MinerU OCR (PDF/ảnh) hoặc Native Parser"]
+    C -->|Số hóa tài liệu| D["HyperScribeModel OCR (PDF/ảnh) hoặc Native Parser"]
     D -->|Lưu trữ văn bản| E["Thư mục normalized/ (Markdown/JSON)"]
     E -->|Kiểm định 3 lớp| F["Validation Quality Gate (taxonomy, version, schema)"]
     F -->|Đưa vào hàng chờ| G["Trạng thái pending_review"]
@@ -3217,7 +3255,7 @@ const MERMAID_DIAGRAMS = {
     H -->|Phê duyệt| I["Trạng thái active (Hiệu lực)"]
     H -->|Từ chối| J["Trạng thái failed_review"]
     I -->|Cập nhật cache| K["Index JSONL cục bộ"]
-    I -->|Đồng bộ dataset RAG| L["RAGFlow dataset sync"]
+    I -->|Đồng bộ dataset| L["KnowledgeCore dataset sync"]
     I -->|Lưu trữ lịch sử| M["Lưu trữ phiên bản cũ (archived/retired)"]
     J --> B
 
@@ -3233,8 +3271,8 @@ const MERMAID_DIAGRAMS = {
     autonumber
     participant User as Người dùng nội bộ
     participant UI as Dashboard UI
-    participant Webapp as FastAPI Backend
-    participant Retrieval as Tầng Truy Xuất (RAG)
+    participant Webapp as Application Backend
+    participant Retrieval as Tầng Truy Xuất
     participant LLM as AI Brain (LLM)
     participant DB as SQLite Quality DB
 
@@ -3257,7 +3295,7 @@ const MERMAID_DIAGRAMS = {
         B -->|Secure HTTPS Tunnel| C["Localtunnel / Cloudflare Tunnel"]
     end
     subgraph LOCAL["Lớp Nội Bộ (Local Server Machine)"]
-        C -->|X-KB-Token Auth| D["FastAPI Backend (Port :8088)"]
+        C -->|X-KB-Token Auth| D["Application Backend (Port :8088)"]
         D -->|Đọc file| E["Thư mục normalized/ & manifest/"]
         D -->|Lưu logs| F["SQLite data/poc_quality.db"]
     end
@@ -3373,8 +3411,8 @@ function updateArchitectureStatus(health) {
     inboxBadge.textContent = "Hoạt động";
   }
 
-  // 2. MinerU
-  const mineruBadge = qs("#bento-mineru .bento-status-badge");
+  // 2. HyperScribeModel
+  const mineruBadge = qs("#bento-hyperscribe .bento-status-badge");
   if (mineruBadge) {
     const isOnline = Boolean(health.mineru?.available);
     mineruBadge.className = `bento-status-badge ${isOnline ? "badge-online" : "badge-warning"}`;
@@ -3398,14 +3436,14 @@ function updateArchitectureStatus(health) {
     }
   }
 
-  // 4. RAG Engine
-  const ragBadge = qs("#bento-rag .bento-status-badge");
+  // 4. Knowledge engine
+  const ragBadge = qs("#bento-knowledge .bento-status-badge");
   if (ragBadge) {
     const isOnline = Boolean(health.ragflow?.available);
     const localFallback = Boolean(health.providers?.local_fallback_enabled);
     if (isOnline) {
       ragBadge.className = "bento-status-badge badge-online";
-      ragBadge.textContent = "Đồng bộ RAGFlow";
+      ragBadge.textContent = "Đồng bộ KnowledgeCore";
     } else if (localFallback) {
       ragBadge.className = "bento-status-badge badge-warning";
       ragBadge.textContent = "Dự phòng cục bộ";

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+import poc_workflow.quality_gate as quality_gate_module
 from poc_workflow.cli import main
 from poc_workflow.pipeline import rebuild_indexes
 from poc_workflow.quality_gate import (
@@ -17,8 +18,10 @@ from poc_workflow.quality_gate import (
     frontend_static_gate,
     load_quality_gate_cases,
     production_readiness_gate,
+    qa_agent_eval_gate,
     run_quality_gate,
     scan_text_quality,
+    user_chat_render_smoke_gate,
     write_quality_reports,
 )
 
@@ -198,6 +201,50 @@ def test_agent_skills_gate_checks_data_workflow_skill_pack(tmp_path: Path) -> No
     assert "source-output-quality-auditor" in result["metrics"]["default_order"]
 
 
+def test_qa_agent_eval_gate_is_blocking_contract_eval(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run_qa_agent_eval(root: Path, *, mode: str, write_report: bool) -> dict:
+        return {
+            "mode": mode,
+            "started_at": "2026-01-01T00:00:00+00:00",
+            "finished_at": "2026-01-01T00:00:01+00:00",
+            "pass": False,
+            "metrics": {"total_cases": 1, "passed_cases": 0, "failed_cases": 1},
+            "results": [{"id": "bad-case", "pass": False, "checks": {"citation_count_ok": False}}],
+        }
+
+    skipped = qa_agent_eval_gate(tmp_path, enabled=False)
+    assert skipped["status"] == "skip"
+
+    monkeypatch.setattr(quality_gate_module, "run_qa_agent_eval", fake_run_qa_agent_eval)
+    result = qa_agent_eval_gate(tmp_path, enabled=True)
+
+    assert result["status"] == "fail"
+    assert result["severity"] == "blocker"
+    assert result["failed_cases"] == ["bad-case: failed checks citation_count_ok"]
+
+
+def test_user_chat_render_smoke_gate_is_optional_unless_required(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skipped = user_chat_render_smoke_gate(tmp_path, enabled=False, required=False)
+    assert skipped["status"] == "skip"
+
+    def fake_render_smoke(root: Path, *, browser_path: str | None = None) -> dict:
+        return {"pass": False, "skipped": True, "reason": "No browser", "checks": {}}
+
+    monkeypatch.setattr(quality_gate_module, "run_user_chat_render_smoke", fake_render_smoke)
+    optional = user_chat_render_smoke_gate(tmp_path, enabled=True, required=False)
+    required = user_chat_render_smoke_gate(tmp_path, enabled=True, required=True)
+
+    assert optional["status"] == "skip"
+    assert optional["severity"] == "info"
+    assert optional["notes"] == ["No browser"]
+    assert required["status"] == "fail"
+    assert required["severity"] == "blocker"
+    assert required["failed_cases"] == ["No browser"]
+
+
 def test_smoke_web_script_asserts_runtime_workflow_contract() -> None:
     script = (Path(__file__).parents[1] / "scripts" / "smoke-web.ps1").read_text(encoding="utf-8")
 
@@ -207,7 +254,7 @@ def test_smoke_web_script_asserts_runtime_workflow_contract() -> None:
     assert "known chat question returned no citations" in script
     assert "known chat question did not cite scoped installation procedure" in script
     assert "known chat citation did not include anchor_id" in script
-    assert "public citation endpoint did not return highlighted Markdown preview" in script
+    assert "public source-file endpoint did not return the original source file" in script
     assert "evaluation did not pass" in script
     assert "Smoke check failed" in script
 
@@ -230,6 +277,103 @@ def test_text_quality_scan_allows_valid_vietnamese_uppercase_accents(tmp_path: P
 
     assert result["scanned"] == 1
     assert result["violations"] == []
+
+
+def test_data_audit_accepts_upload_quality_report_path(tmp_path: Path) -> None:
+    normalized = tmp_path / "normalized" / "technical" / "procedure" / "KT-QT-910_v1.0.md"
+    normalized.parent.mkdir(parents=True, exist_ok=True)
+    normalized.write_text("# Quy trinh bao duong\n\nNoi dung tai lieu du dai de qua buoc audit Markdown.", encoding="utf-8")
+    report = tmp_path / "indexes" / "KT-QT-910_quality_report.json"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(
+        json.dumps(
+            {
+                "schema_version": "upload_agent_run_v1",
+                "quality_status": "passed",
+                "qa_source_output": {"status": "pass"},
+                "issues": [],
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "manifest" / "records.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "doc_id": "KT-QT-910",
+                    "title": "Quy trinh bao duong",
+                    "department": "technical",
+                    "category": "procedure",
+                    "source_type": "internal_procedure",
+                    "language": "vi",
+                    "version": "1.0",
+                    "status": "active",
+                    "effective_from": "2026-01-01",
+                    "owner": "Phong Ky thuat",
+                    "access_group": "technical",
+                    "source_path": str(tmp_path / "source" / "KT-QT-910.xlsx"),
+                    "normalized_path": str(normalized),
+                    "content_hash": "hash",
+                    "quality_report_path": str(report),
+                }
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = data_audit_gate(tmp_path, production=False)
+
+    assert result["status"] == "pass"
+    assert result["notes"] == []
+    assert result["failed_cases"] == []
+
+
+def test_data_audit_blocks_failed_upload_quality_report_path(tmp_path: Path) -> None:
+    normalized = tmp_path / "normalized" / "technical" / "procedure" / "KT-QT-911_v1.0.md"
+    normalized.parent.mkdir(parents=True, exist_ok=True)
+    normalized.write_text("# Quy trinh sua chua\n\nNoi dung tai lieu du dai de qua buoc audit Markdown.", encoding="utf-8")
+    report = tmp_path / "indexes" / "KT-QT-911_quality_report.json"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(json.dumps({"quality_status": "failed"}, indent=2), encoding="utf-8")
+    manifest = tmp_path / "manifest" / "records.json"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(
+        json.dumps(
+            [
+                {
+                    "doc_id": "KT-QT-911",
+                    "title": "Quy trinh sua chua",
+                    "department": "technical",
+                    "category": "procedure",
+                    "source_type": "internal_procedure",
+                    "language": "vi",
+                    "version": "1.0",
+                    "status": "active",
+                    "effective_from": "2026-01-01",
+                    "owner": "Phong Ky thuat",
+                    "access_group": "technical",
+                    "source_path": str(tmp_path / "source" / "KT-QT-911.xlsx"),
+                    "normalized_path": str(normalized),
+                    "content_hash": "hash",
+                    "quality_report_path": str(report),
+                }
+            ],
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    result = data_audit_gate(tmp_path, production=False)
+
+    assert result["status"] == "fail"
+    assert result["severity"] == "blocker"
+    assert result["failed_cases"] == ["KT-QT-911::1.0 has failed QA report"]
 
 
 def test_data_audit_warns_on_suspicious_taxonomy(tmp_path: Path) -> None:

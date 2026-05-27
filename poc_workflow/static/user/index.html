@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>DL-RAG | Trợ lý phòng Kỹ thuật</title>
+    <title>DL Knowledge | Trợ lý phòng Kỹ thuật</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Crect x='2' y='2' width='20' height='20' rx='6' fill='%23e11d48'/%3E%3Cpath d='M7 9C7 7.89543 7.89543 7 9 7H15C16.1046 7 17 7.89543 17 9V13C17 14.1046 16.1046 15 15 15H11.5L8.5 17.5V15H9C7.89543 15 7 14.1046 7 13V9Z' fill='white'/%3E%3Ccircle cx='10' cy='11' r='1.2' fill='%23dc2626'/%3E%3Ccircle cx='14' cy='11' r='1.2' fill='%23dc2626'/%3E%3C/svg%3E" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -11,12 +11,12 @@
       href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="/static/user/user-chat.css?v=20260525-mineru-md" />
+    <link rel="stylesheet" href="/static/user/user-chat.css?v=20260527-qa-agent" />
   </head>
   <body>
     <div class="user-shell">
       <aside class="rail" aria-label="Điều hướng">
-        <div class="rail-brand" aria-label="DL-RAG Trợ lý phòng Kỹ thuật">
+        <div class="rail-brand" aria-label="DL Knowledge Trợ lý phòng Kỹ thuật">
           <div class="rail-mark-container">
             <svg class="logo-svg" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <rect x="2" y="2" width="20" height="20" rx="6" fill="url(#logo-grad)"/>
@@ -31,7 +31,7 @@
               </defs>
             </svg>
           </div>
-          <span class="brand-text">DL-RAG</span>
+          <span class="brand-text">DL Knowledge</span>
         </div>
         
         <div class="rail-nav">
@@ -83,7 +83,7 @@
         <section id="messages" class="messages" aria-live="polite">
           <div id="welcomeState" class="welcome-state">
             <div class="welcome-hero">
-              <div class="welcome-badge">Hệ thống RAG phòng Kỹ thuật</div>
+              <div class="welcome-badge">Hệ thống tri thức phòng Kỹ thuật</div>
               <p class="welcome-eyebrow">Tôi có thể giúp gì cho bạn hôm nay?</p>
               <p class="welcome-sub">Tìm kiếm nhanh chóng, trích dẫn chính xác từ kho tài liệu và quy trình phòng Kỹ thuật.</p>
             </div>
@@ -131,7 +131,7 @@
         </div>
         <div class="drawer-tabs" role="tablist">
           <button class="drawer-tab active" data-tab="sources" type="button">Tài liệu nguồn</button>
-          <button class="drawer-tab" data-tab="trace" type="button">Quá trình RAG</button>
+          <button class="drawer-tab" data-tab="trace" type="button">Quá trình truy xuất</button>
         </div>
         <section id="sourcesPanel" class="drawer-panel active"></section>
         <section id="tracePanel" class="drawer-panel"></section>
@@ -139,6 +139,6 @@
     </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/static/user/user-chat.js?v=20260525-mineru-md"></script>
+    <script src="/static/user/user-chat.js?v=20260527-qa-agent"></script>
   </body>
 </html>

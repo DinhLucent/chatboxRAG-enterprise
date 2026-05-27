@@ -113,6 +113,7 @@ class QualityDatabase:
                 )
                 """
             )
+            self._ensure_column(conn, "user_chat_sessions", "context_json", "TEXT")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS user_chat_turns (
@@ -138,6 +139,32 @@ class QualityDatabase:
                 """
                 CREATE INDEX IF NOT EXISTS idx_user_chat_sessions_expires_at
                 ON user_chat_sessions (expires_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS answer_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    answer_run_id TEXT NOT NULL UNIQUE,
+                    query_log_id INTEGER,
+                    session_id TEXT,
+                    user_question TEXT NOT NULL,
+                    intent TEXT,
+                    stage TEXT NOT NULL,
+                    retrieval_round INTEGER NOT NULL,
+                    revision_round INTEGER NOT NULL,
+                    answer_quality_status TEXT NOT NULL,
+                    evidence_status TEXT NOT NULL,
+                    final_confidence REAL NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_answer_runs_session_created
+                ON answer_runs (session_id, created_at)
                 """
             )
 
@@ -267,6 +294,29 @@ class QualityDatabase:
             ).fetchone()
             return dict(updated)
 
+    def user_chat_context(self, session_id: str) -> dict[str, Any]:
+        self.init()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT context_json FROM user_chat_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        if not row or not row["context_json"]:
+            return {}
+        try:
+            parsed = json.loads(str(row["context_json"]))
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
+    def update_user_chat_context(self, session_id: str, context: dict[str, Any]) -> None:
+        self.init()
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE user_chat_sessions SET context_json = ? WHERE session_id = ?",
+                (json.dumps(context, ensure_ascii=False), session_id),
+            )
+
     def log_user_chat_turn(
         self,
         session_id: str,
@@ -295,6 +345,44 @@ class QualityDatabase:
                     json.dumps(citation_doc_ids, ensure_ascii=False),
                     query_log_id,
                     template_id,
+                    utc_now(),
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def log_answer_run(
+        self,
+        answer_run: dict[str, Any],
+        *,
+        query_log_id: int | None = None,
+        session_id: str | None = None,
+        user_question: str | None = None,
+    ) -> int:
+        self.init()
+        answer_run_id = str(answer_run.get("answer_run_id") or uuid.uuid4())
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT OR REPLACE INTO answer_runs (
+                    answer_run_id, query_log_id, session_id, user_question, intent, stage,
+                    retrieval_round, revision_round, answer_quality_status, evidence_status,
+                    final_confidence, payload, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    answer_run_id,
+                    query_log_id,
+                    session_id,
+                    user_question or str(answer_run.get("user_question") or ""),
+                    str(answer_run.get("intent") or ""),
+                    str(answer_run.get("stage") or "failed"),
+                    int(answer_run.get("retrieval_round") or 0),
+                    int(answer_run.get("revision_round") or 0),
+                    str(answer_run.get("answer_quality_status") or "failed"),
+                    str(answer_run.get("evidence_status") or "unknown"),
+                    float(answer_run.get("final_confidence") or 0.0),
+                    json.dumps(answer_run, ensure_ascii=False),
                     utc_now(),
                 ),
             )

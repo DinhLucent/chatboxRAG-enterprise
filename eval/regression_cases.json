@@ -3,16 +3,16 @@
     "id": "engineering-scope-count-direct",
     "query": "Có bao nhiêu tài liệu quy trình kỹ thuật?",
     "should_answer": true,
-    "expected_doc_ids": ["KT-QT-142", "KT-QT-144", "KT-QT-146", "KT-QT-148", "KT-QT-150", "KT-QT-152", "KT-QT-356", "KT-QT-360", "KT-QT-376", "KT-QT-401", "KT-QT-426", "KT-QT-431"],
+    "expected_doc_ids": ["KT-QT-001", "KT-QT-002", "KT-QT-003", "KT-QT-057", "KT-QT-075", "KT-QT-125"],
     "expected_category": "procedure",
     "answer_style": "steps",
-    "expected_answer_terms": ["12 file active", "6 nhóm quy trình", "Nguồn"]
+    "expected_answer_terms": ["6 file active", "6 nhóm quy trình", "Nguồn"]
   },
   {
     "id": "installation-procedure-steps",
     "query": "Quy trình lắp đặt như thế nào?",
     "should_answer": true,
-    "expected_doc_ids": ["KT-QT-426"],
+    "expected_doc_ids": ["KT-QT-001"],
     "expected_category": "procedure",
     "answer_style": "steps",
     "expected_answer_terms": ["Tóm tắt", "Nguồn"]
@@ -21,7 +21,7 @@
     "id": "maintenance-procedure-steps",
     "query": "Quy trình bảo dưỡng gồm những bước nào?",
     "should_answer": true,
-    "expected_doc_ids": ["KT-QT-401"],
+    "expected_doc_ids": ["KT-QT-002"],
     "expected_category": "procedure",
     "answer_style": "steps",
     "expected_answer_terms": ["Tóm tắt", "Nguồn"]
@@ -30,7 +30,7 @@
     "id": "repair-procedure-workflow",
     "query": "Vẽ workflow quy trình sửa chữa.",
     "should_answer": true,
-    "expected_doc_ids": ["KT-QT-431"],
+    "expected_doc_ids": ["KT-QT-003"],
     "expected_category": "procedure",
     "answer_style": "workflow",
     "user_chat": true,

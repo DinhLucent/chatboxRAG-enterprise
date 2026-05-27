@@ -387,6 +387,35 @@ def test_query_log_feedback_and_knowledge_gap(tmp_path: Path) -> None:
     assert len(gaps) >= 2
 
 
+def test_catalog_answer_uses_latest_active_technical_procedure_records(tmp_path: Path) -> None:
+    init_workspace(tmp_path)
+    write_source(
+        tmp_path,
+        "KT-QT-001_v1.0.md",
+        "1.0",
+        "# Quy trinh lap dat\n\nQuy trinh lap dat may moc thiet bi.",
+        {"doc_id": "KT-QT-001", "title": "Quy trinh lap dat", "display_code": "PD-TECH-A-01"},
+    )
+    write_source(
+        tmp_path,
+        "KT-QT-002_v1.0.md",
+        "1.0",
+        "# Quy trinh bao duong\n\nQuy trinh bao duong may moc thiet bi.",
+        {"doc_id": "KT-QT-002", "title": "Quy trinh bao duong", "display_code": "PD-TECH-A-02"},
+    )
+    process_sources(tmp_path)
+    approve_record(tmp_path, "KT-QT-001", "1.0", "Lead")
+    approve_record(tmp_path, "KT-QT-002", "1.0", "Lead")
+
+    answer = ask(tmp_path, "Co bao nhieu tai lieu quy trinh ky thuat?", provider="local", use_llm=False)
+
+    assert answer["fallback_reason"] == "catalog_answer"
+    assert {citation["doc_id"] for citation in answer["citations"]} == {"KT-QT-001", "KT-QT-002"}
+    assert "2 file active" in str(answer["answer"])
+    assert "PD-TECH-A-01" in str(answer["answer"])
+    assert "PD-TECH-A-02" in str(answer["answer"])
+
+
 def test_local_chat_rejects_low_confidence_token_overlap(tmp_path: Path) -> None:
     init_workspace(tmp_path)
     write_source(

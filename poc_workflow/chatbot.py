@@ -546,6 +546,9 @@ def build_catalog_answer(root: Path, query: str, answer_style: str = "brief") ->
         return build_active_scope_catalog_answer(scoped_records, answer_style)
     record = active_catalog_record(root)
     if not record:
+        active_records = active_technical_procedure_records(root)
+        if active_records:
+            return build_active_scope_catalog_answer(active_records, answer_style)
         return None
     path = Path(record.normalized_path)
     if not path.exists():
@@ -594,6 +597,22 @@ def active_scope_records(root: Path, scope_id: str = ENGINEERING_SCOPE_ID) -> li
             str(record.extra.get("display_code") or record.title),
             role_order.get(str(record.extra.get("source_role") or ""), 9),
             record.doc_id,
+        ),
+    )
+
+
+def active_technical_procedure_records(root: Path) -> list[ManifestRecord]:
+    records = [
+        record
+        for record in latest_active_records(ManifestStore(root).load())
+        if record.department == "technical" and record.category == "procedure"
+    ]
+    return sorted(
+        records,
+        key=lambda record: (
+            str(record.extra.get("display_code") or record.title),
+            record.doc_id,
+            record.version,
         ),
     )
 

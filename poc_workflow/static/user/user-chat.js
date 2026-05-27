@@ -46,11 +46,41 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
+const TECH_DISPLAY_ALIASES = [
+  [/\bMinerU\b/g, "HyperScribeModel"],
+  [/\bmineru-source-converter\b/gi, "hyperscribe-normalizer"],
+  [/\bmineru_artifact_index\b/gi, "document_artifact_index"],
+  [/\bmineru_result\.zip\b/gi, "conversion_result.zip"],
+  [/\bmineru_raw\b/gi, "converted_raw"],
+  [/\bmineru\b/gi, "hyperscribe"],
+  [/\bRAGFlow\b/g, "KnowledgeCore"],
+  [/\bragflow-schema-indexer\b/gi, "knowledge-schema-indexer"],
+  [/\bragflow_index\b/gi, "knowledge_index"],
+  [/\bragflow_ingestion\b/gi, "knowledge_sync"],
+  [/\bragflow\b/gi, "knowledgecore"],
+  [/\bRAG-ready\b/g, "Knowledge-ready"],
+  [/\bRAG\b/g, "Knowledge Retrieval"],
+  [/\bFreeLLMAPI\b/g, "LLM Gateway"],
+  [/\bFastAPI\b/g, "Application API"],
+  [/\bpoc_workflow\b/g, "workflow runtime"],
+];
+
+function displayAlias(value) {
+  return TECH_DISPLAY_ALIASES.reduce(
+    (text, [pattern, replacement]) => text.replace(pattern, replacement),
+    String(value ?? ""),
+  );
+}
+
+function displayText(value) {
+  return escapeHtml(displayAlias(value));
+}
+
 function parseMarkdown(text) {
   if (!text) return "";
   
   // First escape HTML to prevent XSS
-  const html = escapeHtml(text);
+  const html = displayText(text);
   const lines = html.split("\n");
   const result = [];
   let inUl = false;
@@ -59,7 +89,8 @@ function parseMarkdown(text) {
   let codeLang = "";
   let codeLines = [];
   
-  for (let line of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
     const trimmed = line.trim();
 
     if (trimmed.startsWith("```")) {
@@ -86,6 +117,21 @@ function parseMarkdown(text) {
 
     if (inCode) {
       codeLines.push(line);
+      continue;
+    }
+
+    if (isMarkdownTableStart(lines, lineIndex)) {
+      if (inUl) {
+        result.push("</ul>");
+        inUl = false;
+      }
+      if (inOl) {
+        result.push("</ol>");
+        inOl = false;
+      }
+      const table = collectMarkdownTable(lines, lineIndex);
+      result.push(renderMarkdownTable(table.rows));
+      lineIndex = table.endIndex;
       continue;
     }
     
@@ -151,6 +197,302 @@ function parseMarkdown(text) {
   return result.join("\n");
 }
 
+function renderStructuredAnswer(answer, formatPlan = {}, citations = []) {
+  if (!answer || typeof answer !== "object") return parseMarkdown(NO_SOURCE_TEXT);
+  const steps = Array.isArray(answer.steps) ? answer.steps : [];
+  const responsibilities = Array.isArray(answer.responsibilities) ? answer.responsibilities : [];
+  const forms = Array.isArray(answer.forms_records) ? answer.forms_records : [];
+  const notes = Array.isArray(answer.notes) ? answer.notes : [];
+  const sources = Array.isArray(answer.sources) ? answer.sources : [];
+  const primaryFormat = formatPlan?.primary_format || answer.answer_type || "summary";
+  const markdown = typeof answer.markdown === "string" ? answer.markdown.trim() : "";
+  const hasDetailBlocks = Boolean(steps.length || responsibilities.length || forms.length || notes.length);
+  const shouldRenderMarkdown = Boolean(
+    markdown && (!hasDetailBlocks || primaryFormat === "table" || primaryFormat === "comparison_table"),
+  );
+  if (primaryFormat === "no_answer_card" || answer.answer_type === "no_answer") {
+    return renderNoAnswerCard(answer, formatPlan);
+  }
+  return `
+    <section class="structured-answer" data-format="${displayText(primaryFormat)}">
+      ${answer.title ? `<h3>${displayText(answer.title)}</h3>` : ""}
+      ${answer.summary ? `<p class="structured-summary">${displayText(answer.summary)}</p>` : ""}
+      ${renderFormatBadges(primaryFormat, formatPlan)}
+      ${shouldRenderWorkflowDiagram(primaryFormat, formatPlan, steps) ? renderStructuredWorkflow(steps) : ""}
+      ${shouldRenderMarkdown ? renderStructuredMarkdown(markdown) : ""}
+      ${steps.length ? renderStructuredSteps(steps, primaryFormat, citations) : ""}
+      ${responsibilities.length ? renderStructuredList("Bộ phận phụ trách", responsibilities, citations) : ""}
+      ${forms.length ? renderStructuredForms(forms, primaryFormat, citations) : ""}
+      ${notes.length ? renderStructuredList("Lưu ý", notes, citations) : ""}
+      ${sources.length ? renderStructuredSources(sources, citations) : parseMarkdown(answer.markdown || "")}
+    </section>
+  `;
+}
+
+function renderNoAnswerCard(answer, formatPlan = {}) {
+  const message = answer.summary || answer.markdown || NO_SOURCE_TEXT;
+  const hints = formatPlan?.render_hints || {};
+  return `
+    <section class="structured-answer no-answer-card" data-format="no_answer_card">
+      <h3>Không có căn cứ đủ để trả lời</h3>
+      <p class="structured-summary">${displayText(message)}</p>
+      ${hints.show_no_answer_card ? `<p class="structured-note">Hệ thống chỉ trả lời khi có nguồn active/latest/approved.</p>` : ""}
+    </section>
+  `;
+}
+
+function renderStructuredMarkdown(markdown) {
+  return `<div class="structured-markdown">${parseMarkdown(markdown)}</div>`;
+}
+
+function hasStructuredAnswer(answer) {
+  if (!answer || typeof answer !== "object") return false;
+  return Boolean(
+    answer.title ||
+    answer.summary ||
+    answer.markdown ||
+    (Array.isArray(answer.steps) && answer.steps.length) ||
+    (Array.isArray(answer.sources) && answer.sources.length),
+  );
+}
+
+function structuredAnswerForResult(result = {}) {
+  if (hasStructuredAnswer(result.structured_answer)) {
+    return result.structured_answer;
+  }
+  if (result.format_type === "no_answer_card") {
+    return {
+      answer_type: "no_answer",
+      title: result.quality_decision?.decision === "scope_reject" ? "Ngoài phạm vi hỗ trợ" : "Không có căn cứ đủ để trả lời",
+      summary: result.answer || NO_SOURCE_TEXT,
+      steps: [],
+      responsibilities: [],
+      forms_records: [],
+      notes: [],
+      sources: [],
+    };
+  }
+  return null;
+}
+
+function shouldRenderWorkflowDiagram(primaryFormat, formatPlan = {}, steps = []) {
+  if (!Array.isArray(steps) || steps.length < 2) return false;
+  const hints = formatPlan.render_hints || {};
+  return Boolean(
+    hints.show_mermaid_button ||
+      primaryFormat === "mermaid" ||
+      primaryFormat === "timeline" ||
+      primaryFormat === "workflow",
+  );
+}
+
+function renderStructuredWorkflow(steps) {
+  return `
+    <div class="workflow-diagram structured-workflow" aria-label="Sơ đồ quy trình">
+      <div class="workflow-nodes">
+        ${steps.map((step, index) => `
+          ${index > 0 ? `<div class="workflow-arrow">↓</div>` : ""}
+          <div class="workflow-node">
+            <span>${displayText(step.step_no || index + 1)}</span>
+            <p>${displayText(step.title || step.description || `Bước ${index + 1}`)}</p>
+          </div>
+        `).join("")}
+      </div>
+    </div>
+  `;
+}
+
+function renderFormatBadges(primaryFormat, formatPlan = {}) {
+  const blocks = Array.isArray(formatPlan.secondary_blocks) ? formatPlan.secondary_blocks : [];
+  const hints = formatPlan.render_hints || {};
+  const badges = [primaryFormat, ...blocks.slice(0, 4)];
+  if (hints.show_timeline) badges.push("timeline");
+  if (hints.show_checklist_button) badges.push("checklist");
+  if (hints.show_mermaid_button) badges.push("diagram-ready");
+  const unique = [...new Set(badges.filter(Boolean))];
+  if (!unique.length) return "";
+  return `
+    <div class="structured-format-badges" aria-label="Định dạng câu trả lời">
+      ${unique.map((badge) => `<span>${displayText(badge)}</span>`).join("")}
+    </div>
+  `;
+}
+
+function renderStructuredSteps(steps, primaryFormat, citations = []) {
+  const className = primaryFormat === "checklist" ? "structured-checklist" : "structured-timeline";
+  const isChecklist = primaryFormat === "checklist";
+  return `
+    <div class="${className}">
+      <h4>Các bước thực hiện</h4>
+      <ol>
+        ${steps.map((step) => `
+          <li>
+            <span class="step-index">${isChecklist ? "" : displayText(step.step_no || "")}</span>
+            <div>
+              <strong>${displayText(step.title || "Bước thực hiện")}</strong>
+              ${step.description ? `<p>${displayText(step.description)}</p>` : ""}
+              <div class="structured-item-meta">
+                ${step.owner ? `<small>Phụ trách: ${displayText(step.owner)}</small>` : ""}
+                ${renderAnswerSourceLink(step.source_anchor, citations)}
+              </div>
+            </div>
+          </li>
+        `).join("")}
+      </ol>
+    </div>
+  `;
+}
+
+function renderStructuredList(title, items, citations = []) {
+  return `
+    <div class="structured-block">
+      <h4>${displayText(title)}</h4>
+      <ul>
+        ${items.map((item) => `
+          <li>
+            <strong>${displayText(item.label || item.title || item.name || "")}</strong>
+            ${item.detail ? `<span>${displayText(item.detail)}</span>` : ""}
+            ${renderAnswerSourceLink(item.source_anchor, citations)}
+          </li>
+        `).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function renderStructuredForms(items, primaryFormat, citations = []) {
+  if (primaryFormat === "table" || primaryFormat === "comparison_table") {
+    return `
+      <div class="structured-table-wrap">
+        <h4>Hồ sơ / biểu mẫu liên quan</h4>
+        <table class="structured-table">
+          <thead>
+            <tr>
+              <th>Tên</th>
+              <th>Chi tiết</th>
+              <th>Nguồn</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${items.map((item) => `
+              <tr>
+                <td>${displayText(item.label || item.title || item.name || "")}</td>
+                <td>${displayText(item.detail || "")}</td>
+                <td>${renderAnswerSourceLink(item.source_anchor, citations)}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+  return renderStructuredList("Hồ sơ / biểu mẫu liên quan", items, citations);
+}
+
+function renderStructuredSources(sources, citations = []) {
+  return `
+    <div class="structured-sources">
+      <h4>Nguồn</h4>
+      <ul>
+        ${sources.map((source) => {
+          const label = source.display_code || source.doc_id || "Nguồn";
+          const version = source.display_version || (source.version ? `v${source.version}` : "");
+          const sourceButton = renderStructuredSourceButton(source, citations);
+          return `<li>${displayText(`${label} ${version}`.trim())}${source.title ? ` — ${displayText(source.title)}` : ""}${sourceButton}</li>`;
+        }).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function renderAnswerSourceLink(anchor, citations = []) {
+  if (!anchor) return "";
+  const index = findCitationIndex(anchor, citations);
+  if (index >= 0 && canOpenCitation(citations[index])) {
+    return `<button class="answer-source-link" type="button" data-citation-index="${index}">Nguồn ${index + 1}</button>`;
+  }
+  return `<span class="answer-source-link muted">${displayText(anchor)}</span>`;
+}
+
+function renderStructuredSourceButton(source, citations = []) {
+  const index = findSourceCitationIndex(source, citations);
+  if (index < 0 || !canOpenCitation(citations[index])) return "";
+  return `<button class="answer-source-link" type="button" data-citation-index="${index}">Tải nguồn ${index + 1}</button>`;
+}
+
+function canOpenCitation(citation) {
+  return Boolean(citation?.doc_id && citation?.version);
+}
+
+function findCitationIndex(anchor, citations = []) {
+  const value = String(anchor || "").trim();
+  if (!value) return -1;
+  return citations.findIndex((citation) => {
+    const candidates = [
+      citation.anchor_id,
+      citation.citation,
+      citation.chunk_id,
+      citation.doc_id,
+      citation.display_code,
+      `${citation.doc_id || ""}:${citation.version || ""}`,
+      `${citation.display_code || ""}:${citation.display_version || ""}`,
+    ];
+    return candidates.some((candidate) => String(candidate || "").trim() === value);
+  });
+}
+
+function findSourceCitationIndex(source, citations = []) {
+  if (!source || typeof source !== "object") return -1;
+  return citations.findIndex((citation) => {
+    const sameDoc = source.doc_id && citation.doc_id && String(source.doc_id) === String(citation.doc_id);
+    const sameVersion = !source.version || !citation.version || String(source.version) === String(citation.version);
+    const sameCode = source.display_code && citation.display_code && String(source.display_code) === String(citation.display_code);
+    return (sameDoc && sameVersion) || sameCode;
+  });
+}
+
+function isMarkdownTableStart(lines, index) {
+  const current = lines[index]?.trim() || "";
+  const next = lines[index + 1]?.trim() || "";
+  return isMarkdownTableRow(current) && /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(next);
+}
+
+function isMarkdownTableRow(line) {
+  return line.includes("|") && line.replace(/\|/g, "").trim().length > 0;
+}
+
+function collectMarkdownTable(lines, startIndex) {
+  const rows = [];
+  let index = startIndex;
+  while (index < lines.length && isMarkdownTableRow(lines[index].trim())) {
+    rows.push(lines[index].trim());
+    index += 1;
+  }
+  return { rows, endIndex: index - 1 };
+}
+
+function renderMarkdownTable(rows) {
+  if (rows.length < 2) return rows.map((row) => `<p class="markdown-para">${formatInlineMarkdown(row)}</p>`).join("");
+  const header = splitMarkdownTableRow(rows[0]);
+  const bodyRows = rows.slice(2).map(splitMarkdownTableRow);
+  return `
+    <div class="markdown-table-wrap">
+      <table class="markdown-table">
+        <thead>
+          <tr>${header.map((cell) => `<th>${formatInlineMarkdown(cell)}</th>`).join("")}</tr>
+        </thead>
+        <tbody>
+          ${bodyRows.map((row) => `<tr>${row.map((cell) => `<td>${formatInlineMarkdown(cell || " ")}</td>`).join("")}</tr>`).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function splitMarkdownTableRow(row) {
+  return row.replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+}
+
 function formatInlineMarkdown(value) {
   let html = String(value ?? "");
   html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
@@ -210,7 +552,7 @@ function renderMermaidWorkflow(code) {
 
 function toast(message) {
   const target = qs("#toast");
-  target.textContent = message;
+  target.textContent = displayAlias(message);
   target.classList.add("show");
   window.setTimeout(() => target.classList.remove("show"), 2800);
 }
@@ -251,6 +593,75 @@ async function api(path, options = {}) {
     throw new Error(payload?.detail || payload?.error || response.statusText);
   }
   return payload;
+}
+
+function chatPayload(query) {
+  return {
+    query,
+    template_id: state.templateId,
+    answer_style: qs("#answerStyle").value,
+    session_id: state.sessionId,
+    device_id: state.deviceId,
+    use_llm: true,
+  };
+}
+
+function qaAgentStreamingEnabled() {
+  return Boolean(state.bootstrap?.qa_agent?.enabled && state.bootstrap?.qa_agent?.streaming);
+}
+
+async function streamChat(payload) {
+  const response = await fetch("/api/user/chat/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok || !response.body) {
+    const text = await response.text();
+    const error = text ? JSON.parse(text) : null;
+    throw new Error(error?.detail || error?.error || response.statusText);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalResult = null;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split("\n\n");
+    buffer = events.pop() || "";
+    for (const rawEvent of events) {
+      const parsed = parseSseEvent(rawEvent);
+      if (!parsed) continue;
+      if (parsed.event === "trace") {
+        renderTrace(parsed.data.trace_steps || []);
+      } else if (parsed.event === "final") {
+        finalResult = parsed.data.result;
+      } else if (parsed.event === "error") {
+        throw new Error(parsed.data.detail || "Stream error");
+      }
+    }
+  }
+  if (!finalResult) {
+    throw new Error("Stream ended before final answer.");
+  }
+  return finalResult;
+}
+
+function parseSseEvent(rawEvent) {
+  const lines = rawEvent.split("\n");
+  const eventLine = lines.find((line) => line.startsWith("event:"));
+  const dataLines = lines.filter((line) => line.startsWith("data:"));
+  if (!dataLines.length) return null;
+  try {
+    return {
+      event: eventLine ? eventLine.replace("event:", "").trim() : "message",
+      data: JSON.parse(dataLines.map((line) => line.replace("data:", "").trimStart()).join("\n")),
+    };
+  } catch {
+    return null;
+  }
 }
 
 function statusClass(serviceStatus) {
@@ -299,8 +710,8 @@ function renderWelcomeCards() {
           data-label="${escapeHtml(card.label)}"
           data-answer-style="${escapeHtml(card.answer_style || "brief")}"
         >
-          <span>${escapeHtml(card.label)}</span>
-          <small>${escapeHtml(card.question)}</small>
+          <span>${displayText(card.label)}</span>
+          <small>${displayText(card.question)}</small>
         </button>
       `,
     )
@@ -325,7 +736,7 @@ function renderTemplates() {
             data-question="${escapeHtml(template.question)}"
             data-label="${escapeHtml(group.label)}"
           >
-            ${escapeHtml(group.label)}
+            ${displayText(group.label)}
           </button>
         `,
       ),
@@ -344,7 +755,7 @@ function selectPrompt(button) {
   if (button.dataset.answerStyle) {
     qs("#answerStyle").value = button.dataset.answerStyle;
   }
-  qs("#selectedTemplate").textContent = state.templateLabel || "Không dùng mẫu";
+  qs("#selectedTemplate").textContent = displayAlias(state.templateLabel || "Không dùng mẫu");
   document.querySelectorAll(".template-chip").forEach((item) => {
     item.classList.toggle("active", item.dataset.templateId === state.templateId);
   });
@@ -440,33 +851,33 @@ async function submitChat(event) {
   renderTrace(LOADING_STEPS.map((label) => ({ label, status: "empty", detail: "" })));
 
   try {
-    const result = await api("/api/user/chat", {
-      method: "POST",
-      body: JSON.stringify({
-        query,
-        template_id: state.templateId,
-        answer_style: qs("#answerStyle").value,
-        session_id: state.sessionId,
-        device_id: state.deviceId,
-        use_llm: true,
-      }),
-    });
+    const payload = chatPayload(query);
+    const result = qaAgentStreamingEnabled()
+      ? await streamChat(payload)
+      : await api("/api/user/chat", {
+          method: "POST",
+          body: JSON.stringify(payload),
+        });
     state.lastResponse = result;
     if (result.session?.session_id) {
       state.sessionId = result.session.session_id;
       localStorage.setItem("kbUserChatSessionId", state.sessionId);
     }
-    pending.querySelector(".message-body").innerHTML = parseMarkdown(result.answer || NO_SOURCE_TEXT);
+    const structuredAnswer = structuredAnswerForResult(result);
+    pending.querySelector(".message-body").innerHTML = structuredAnswer
+      ? renderStructuredAnswer(structuredAnswer, result.format_plan, result.citations || [])
+      : parseMarkdown(result.answer || NO_SOURCE_TEXT);
     pending.insertAdjacentHTML("beforeend", renderFeedbackActions(result.log_id || result.query_log_id));
     wireFeedback(pending);
-    renderSources(result.citations || []);
+    wireAnswerSourceLinks(pending, result.citations || []);
+    renderSources(result.citations || [], result);
     renderTrace(result.trace_steps || result.trace?.steps || []);
     switchDrawerTab("sources");
-    qs("#drawerMeta").textContent = `${result.citations?.length || 0} nguồn`;
+    qs("#drawerMeta").textContent = drawerMetaLabel(result);
     qs("#queryInput").value = "";
     autoGrowTextarea();
   } catch (error) {
-    pending.querySelector(".message-body").textContent = error.message || "Hệ thống chưa sẵn sàng.";
+    pending.querySelector(".message-body").textContent = displayAlias(error.message || "Hệ thống chưa sẵn sàng.");
     toast(error.message);
   } finally {
     qs("#sendBtn").disabled = false;
@@ -486,42 +897,185 @@ function renderLoadingMessage() {
   `;
 }
 
-function renderSources(citations) {
+function renderSources(citations, result = null) {
   const target = qs("#sourcesPanel");
   state.selectedCitation = null;
+  const summaryHtml = renderEvidenceDrawerSummary(result);
+  const evidenceHtml = renderEvidenceClaims(result, citations);
   if (!citations.length) {
     target.innerHTML = `
+      ${summaryHtml}
+      ${evidenceHtml}
       <div class="empty-state">
         Chưa có nguồn tham chiếu. Khi bạn đặt câu hỏi, tài liệu được dùng để trả lời sẽ hiển thị tại đây.
       </div>
     `;
     return;
   }
-  target.innerHTML = citations
+  target.innerHTML = summaryHtml + evidenceHtml + citations
     .map(
       (citation, index) => `
         <article class="source-card citation-source-card" data-citation-index="${index}">
-          <div class="source-title">${index + 1}. ${escapeHtml(citation.title || citation.doc_id || "Nguồn")}</div>
+          <div class="source-title">${index + 1}. ${displayText(citation.title || citation.doc_id || "Nguồn")}</div>
           <div class="source-meta">
-            ${escapeHtml(citation.display_code || citation.doc_id || "-")} | ${escapeHtml(citation.display_version || `v${citation.version || "-"}`)}
-            ${citation.display_code && citation.doc_id ? ` | ${escapeHtml(citation.doc_id)}` : ""}
+            ${displayText(citation.display_code || citation.doc_id || "-")} | ${displayText(citation.display_version || `v${citation.version || "-"}`)}
+            ${citation.display_code && citation.doc_id ? ` | ${displayText(citation.doc_id)}` : ""}
           </div>
-          <div class="source-excerpt">${escapeHtml(citation.excerpt || "Không có đoạn trích công khai.")}</div>
-          <button class="source-open-btn" type="button" ${citation.anchor_id || citation.excerpt ? "" : "disabled"}>
-            Mở Markdown
-          </button>
+          <div class="source-excerpt">${displayText(citation.excerpt || "Không có đoạn trích công khai.")}</div>
+          ${canOpenCitation(citation)
+            ? `<a class="source-open-btn" href="${escapeHtml(publicSourceFilePath(citation))}" target="_blank" rel="noopener" download>Tải PDF gốc</a>`
+            : `<button class="source-open-btn" type="button" disabled>Tải PDF gốc</button>`}
         </article>
       `,
     )
     .join("");
   wireSpotlight(".source-card");
-  document.querySelectorAll(".citation-source-card").forEach((card) => {
-    card.addEventListener("click", async () => {
-      const citation = citations[Number(card.dataset.citationIndex)];
-      if (!citation?.anchor_id && !citation?.excerpt) return;
+  wireEvidenceClaimLinks(citations);
+}
+
+function renderEvidenceDrawerSummary(result) {
+  if (!result || typeof result !== "object") return "";
+  const evidence = result.evidence_summary || {};
+  const quality = result.quality_decision || {};
+  const compliance = result.procedure_compliance || {};
+  const run = result.answer_run || {};
+  const missing = Array.isArray(evidence.missing_evidence) ? evidence.missing_evidence : [];
+  const conflicts = Array.isArray(evidence.conflicts) ? evidence.conflicts : [];
+  const chips = [];
+  if (result.format_type) chips.push(["Format", result.format_type]);
+  if (run.intent) chips.push(["Intent", run.intent]);
+  if (quality.decision) chips.push(["Critic", quality.decision]);
+  if (compliance.final_decision) chips.push(["Compliance", compliance.final_decision]);
+  if (evidence.selected_chunks !== undefined) chips.push(["Chunks", evidence.selected_chunks]);
+  if (evidence.claim_count !== undefined) chips.push(["Claims", evidence.claim_count]);
+  if (run.final_confidence !== undefined) chips.push(["Confidence", formatPercent(run.final_confidence)]);
+  if (compliance.citation_coverage !== undefined) chips.push(["Citations", formatPercent(compliance.citation_coverage)]);
+  if (!chips.length && !missing.length && !conflicts.length && !result.knowledge_gap_id) return "";
+  return `
+    <article class="source-summary-card">
+      <div class="source-summary-title">Tóm tắt căn cứ</div>
+      <div class="source-summary-grid">
+        ${chips.map(([label, value]) => `
+          <div>
+            <span>${displayText(label)}</span>
+            <strong>${displayText(value)}</strong>
+          </div>
+        `).join("")}
+      </div>
+      ${missing.length ? `<div class="source-summary-warning">Thiếu căn cứ: ${displayText(missing.slice(0, 4).join(", "))}</div>` : ""}
+      ${conflicts.length ? `<div class="source-summary-warning">Có mâu thuẫn nguồn: ${displayText(conflicts.length)}</div>` : ""}
+      ${result.knowledge_gap_id ? `<div class="source-summary-warning">Đã ghi knowledge gap: ${displayText(result.knowledge_gap_id)}</div>` : ""}
+    </article>
+  `;
+}
+
+function renderEvidenceClaims(result, citations = []) {
+  const pack = result?.evidence_pack;
+  if (!pack || typeof pack !== "object") return "";
+  const claims = Array.isArray(pack.verified_evidence) ? pack.verified_evidence : [];
+  const missing = Array.isArray(pack.missing_evidence) ? pack.missing_evidence : [];
+  const conflicts = Array.isArray(pack.conflicts) ? pack.conflicts : [];
+  if (!claims.length && !missing.length && !conflicts.length) return "";
+  return `
+    <article class="evidence-pack-card">
+      <div class="source-summary-title">Claim đã kiểm chứng</div>
+      ${claims.length ? `
+        <div class="evidence-claim-list">
+          ${claims.slice(0, 8).map((claim, index) => renderEvidenceClaim(claim, index, citations)).join("")}
+        </div>
+      ` : ""}
+      ${missing.length ? renderEvidenceAlert("Thiếu bằng chứng", missing) : ""}
+      ${conflicts.length ? renderEvidenceAlert("Mâu thuẫn nguồn", conflicts) : ""}
+    </article>
+  `;
+}
+
+function renderEvidenceClaim(claim, index, citations = []) {
+  const citationIndex = findEvidenceClaimCitationIndex(claim, citations);
+  const confidence = claim.confidence !== undefined ? formatPercent(claim.confidence) : "";
+  const sourceLabel = [claim.doc_id, claim.version ? `v${claim.version}` : ""].filter(Boolean).join(" ");
+  return `
+    <div class="evidence-claim">
+      <div class="evidence-claim-index">${index + 1}</div>
+      <div class="evidence-claim-body">
+        <p>${displayText(claim.claim || "Claim")}</p>
+        <div class="evidence-claim-meta">
+          ${claim.evidence_type ? `<span>${displayText(claim.evidence_type)}</span>` : ""}
+          ${sourceLabel ? `<span>${displayText(sourceLabel)}</span>` : ""}
+          ${confidence ? `<span>${displayText(confidence)}</span>` : ""}
+          ${claim.citation ? `<span>${displayText(claim.citation)}</span>` : ""}
+          ${citationIndex >= 0 && canOpenCitation(citations[citationIndex])
+            ? `<button class="answer-source-link" type="button" data-citation-index="${citationIndex}">Tải nguồn ${citationIndex + 1}</button>`
+            : ""}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderEvidenceAlert(title, items) {
+  return `
+    <div class="evidence-alert">
+      <strong>${displayText(title)}</strong>
+      <ul>
+        ${items.slice(0, 6).map((item) => `<li>${displayText(item)}</li>`).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function findEvidenceClaimCitationIndex(claim, citations = []) {
+  if (!claim || typeof claim !== "object") return -1;
+  const anchorIndex = findCitationIndex(claim.citation, citations);
+  if (anchorIndex >= 0) return anchorIndex;
+  return citations.findIndex((citation) => {
+    const sameDoc = claim.doc_id && citation.doc_id && String(claim.doc_id) === String(citation.doc_id);
+    const sameVersion = !claim.version || !citation.version || String(claim.version) === String(citation.version);
+    return sameDoc && sameVersion;
+  });
+}
+
+function wireEvidenceClaimLinks(citations = []) {
+  document.querySelectorAll(".evidence-pack-card .answer-source-link[data-citation-index]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const citation = citations[Number(button.dataset.citationIndex)];
+      if (canOpenCitation(citation)) {
+        await openPublicCitation(citation);
+      }
+    });
+  });
+}
+
+function drawerMetaLabel(result = {}) {
+  const count = result.citations?.length || 0;
+  const decision = result.quality_decision?.decision || result.procedure_compliance?.final_decision || "";
+  return decision ? `${count} nguồn · ${displayAlias(decision)}` : `${count} nguồn`;
+}
+
+function formatPercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return String(value ?? "");
+  if (number <= 1) return `${Math.round(number * 100)}%`;
+  return `${Math.round(number)}%`;
+}
+
+function wireAnswerSourceLinks(container, citations = []) {
+  container.querySelectorAll(".answer-source-link[data-citation-index]").forEach((button) => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const index = Number(button.dataset.citationIndex);
+      const citation = citations[index];
+      if (!canOpenCitation(citation)) return;
+      ensureDrawerVisible();
+      switchDrawerTab("sources");
       await openPublicCitation(citation);
     });
   });
+}
+
+function publicSourceFilePath(citation) {
+  return `/api/user/documents/${encodeURIComponent(citation.doc_id)}/${encodeURIComponent(citation.version)}/source-file`;
 }
 
 function publicCitationPath(citation) {
@@ -540,20 +1094,20 @@ async function openPublicCitation(citation) {
   const target = qs("#sourcesPanel");
   state.selectedCitation = citation;
   qs("#citationPreviewPanel")?.remove();
-  target.insertAdjacentHTML("beforeend", `<div id="citationPreviewPanel" class="citation-preview-card">Đang mở Markdown...</div>`);
+  target.insertAdjacentHTML("beforeend", `<div id="citationPreviewPanel" class="citation-preview-card">Đang chuẩn bị tài liệu gốc...</div>`);
   try {
     const payload = await api(publicCitationPath(citation));
     renderCitationPreview(payload);
   } catch (error) {
     const panel = qs("#citationPreviewPanel");
     if (panel) {
-      panel.textContent = error.message || "Không mở được Markdown.";
+      panel.textContent = displayAlias(error.message || "Không chuẩn bị được tài liệu gốc.");
     }
   }
 }
 
 function citationMarkdownInline(value) {
-  return formatInlineMarkdown(escapeHtml(value));
+  return formatInlineMarkdown(displayText(value));
 }
 
 function citationLineRange(lines) {
@@ -651,7 +1205,7 @@ function citationHtmlCellText(node) {
 }
 
 function citationHtmlCellContent(node) {
-  return escapeHtml(citationHtmlCellText(node) || " ").replace(/\n/g, "<br>");
+  return displayText(citationHtmlCellText(node) || " ").replace(/\n/g, "<br>");
 }
 
 function renderSafeCitationHtmlTable(table) {
@@ -696,7 +1250,7 @@ function renderCitationHtmlTableBlock(lines) {
     tableHtml = "";
   }
   if (!tableHtml.trim()) {
-    tableHtml = `<p>${escapeHtml(source.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() || " ")}</p>`;
+    tableHtml = `<p>${displayText(source.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() || " ")}</p>`;
   }
   return `
     <div
@@ -724,7 +1278,7 @@ function renderCitationCodeBlock(lines) {
       ${anchor ? `data-anchor-id="${escapeHtml(anchor)}"` : ""}
     >
       <span>${escapeHtml(citationLineRange(lines))}</span>
-      <div class="citation-markdown-content"><pre><code>${escapeHtml(code || " ")}</code></pre></div>
+      <div class="citation-markdown-content"><pre><code>${displayText(code || " ")}</code></pre></div>
     </div>
   `;
 }
@@ -809,25 +1363,39 @@ function renderCitationMarkdownViewer(lines) {
 
 function renderCitationPreview(payload) {
   const existing = qs("#citationPreviewPanel");
-  const preview = payload?.preview || {};
   const record = payload?.record || {};
-  const lines = Array.isArray(preview.lines) ? preview.lines : [];
+  const citation = payload?.citation || {};
+  const sourceFile = payload?.source_file || {};
+  const selected = state.selectedCitation || {};
+  const downloadUrl = sourceFile.download_url || (selected.doc_id && selected.version ? publicSourceFilePath(selected) : "");
+  const fileName = sourceFile.file_name || "Tài liệu gốc";
+  const fileKind = sourceFile.kind === "pdf" ? "PDF gốc" : "Tài liệu gốc";
   const html = `
     <div class="citation-preview-header">
       <div>
-        <div class="source-title">${escapeHtml(record.title || record.doc_id || "Markdown")}</div>
+        <div class="source-title">${displayText(record.title || record.doc_id || "Tài liệu nguồn")}</div>
         <div class="source-meta">
-          ${escapeHtml(record.doc_id || "-")} | v${escapeHtml(record.version || "-")} |
-          ${escapeHtml(preview.locator_status || "exact")}
+          ${displayText(record.doc_id || selected.doc_id || "-")} | v${displayText(record.version || selected.version || "-")}
         </div>
       </div>
     </div>
-    ${renderCitationMarkdownViewer(lines)}
+    <div class="source-download-panel">
+      <div>
+        <strong>${displayText(fileKind)}</strong>
+        <span>${displayText(fileName)}</span>
+      </div>
+      ${downloadUrl
+        ? `<a class="source-download-btn" href="${escapeHtml(downloadUrl)}" target="_blank" rel="noopener" download>Tải xuống</a>`
+        : `<button class="source-download-btn" type="button" disabled>Tải xuống</button>`}
+    </div>
+    ${citation.matched_excerpt
+      ? `<div class="source-excerpt source-excerpt-compact">${displayText(citation.matched_excerpt)}</div>`
+      : ""}
   `;
   if (existing) {
     existing.innerHTML = html;
   }
-  qs("#citationPreviewPanel .citation-markdown-line.highlight")?.scrollIntoView({
+  qs("#citationPreviewPanel")?.scrollIntoView({
     block: "center",
     behavior: "smooth",
   });
@@ -846,14 +1414,83 @@ function renderTrace(steps) {
         <article class="trace-step">
           <span class="trace-dot ${escapeHtml(step.status || "")}"></span>
           <div class="trace-card">
-            <div class="source-title">${escapeHtml(step.label || "Bước xử lý")}</div>
-            ${step.detail ? `<div class="trace-meta">${escapeHtml(step.detail)}</div>` : ""}
+            <div class="source-title">${displayText(step.label || "Bước xử lý")}</div>
+            ${step.detail ? `<div class="trace-meta">${displayText(step.detail)}</div>` : ""}
+            ${renderTraceMetadata(step.metadata)}
           </div>
         </article>
       `,
     )
     .join("");
   wireSpotlight(".trace-card");
+}
+
+function renderTraceMetadata(metadata) {
+  if (!metadata || typeof metadata !== "object") return "";
+  const rows = [];
+  if (Array.isArray(metadata.queries) && metadata.queries.length) {
+    rows.push(["Queries", metadata.queries.slice(0, 6).join(" | ")]);
+  }
+  if (Array.isArray(metadata.datasets) && metadata.datasets.length) {
+    rows.push(["Datasets", `${metadata.datasets.length} allowlisted`]);
+  }
+  if (Array.isArray(metadata.filters) && metadata.filters.length) {
+    rows.push(["Filters", metadata.filters.join(", ")]);
+  }
+  if (metadata.selected_chunks !== undefined) {
+    rows.push(["Evidence", `${metadata.selected_chunks} chunks`]);
+  }
+  if (metadata.claim_count !== undefined) {
+    rows.push(["Claims", `${metadata.claim_count}`]);
+  }
+  if (Array.isArray(metadata.required_evidence) && metadata.required_evidence.length) {
+    rows.push(["Evidence types", metadata.required_evidence.slice(0, 5).join(", ")]);
+  }
+  if (Array.isArray(metadata.missing_evidence) && metadata.missing_evidence.length) {
+    rows.push(["Missing", metadata.missing_evidence.slice(0, 5).join(", ")]);
+  }
+  if (Array.isArray(metadata.conflicts) && metadata.conflicts.length) {
+    rows.push(["Conflicts", metadata.conflicts.length]);
+  }
+  if (metadata.quality_decision?.decision) {
+    rows.push(["Critic", metadata.quality_decision.decision]);
+  }
+  if (metadata.answer_run?.stage) {
+    rows.push(["Run stage", metadata.answer_run.stage]);
+  }
+  if (metadata.answer_run?.final_confidence !== undefined) {
+    rows.push(["Confidence", formatPercent(metadata.answer_run.final_confidence)]);
+  }
+  if (metadata.context?.context_used !== undefined) {
+    rows.push(["Memory", metadata.context.context_used ? "context used" : "standalone"]);
+  }
+  if (metadata.citation_count !== undefined) {
+    rows.push(["Citations", `${metadata.citation_count}`]);
+  }
+  if (metadata.procedure_compliance?.final_decision) {
+    rows.push(["Compliance", metadata.procedure_compliance.final_decision]);
+  }
+  if (metadata.procedure_compliance?.citation_coverage !== undefined) {
+    rows.push(["Citation coverage", `${metadata.procedure_compliance.citation_coverage}`]);
+  }
+  if (metadata.format_plan?.primary_format) {
+    rows.push(["Planned format", metadata.format_plan.primary_format]);
+  }
+  if (Array.isArray(metadata.format_plan?.secondary_blocks) && metadata.format_plan.secondary_blocks.length) {
+    rows.push(["Blocks", metadata.format_plan.secondary_blocks.join(", ")]);
+  }
+  if (metadata.answer_verification?.final_action) {
+    rows.push(["Verification", metadata.answer_verification.final_action]);
+  }
+  if (metadata.format_type) {
+    rows.push(["Format", metadata.format_type]);
+  }
+  if (!rows.length) return "";
+  return `
+    <dl class="trace-details">
+      ${rows.map(([label, value]) => `<div><dt>${displayText(label)}</dt><dd>${displayText(value)}</dd></div>`).join("")}
+    </dl>
+  `;
 }
 
 function switchDrawerTab(tabName) {
@@ -888,7 +1525,7 @@ function resetChat() {
   qs("#messages").innerHTML = `
     <div id="welcomeState" class="welcome-state">
       <div class="welcome-hero">
-        <div class="welcome-badge">Hệ thống RAG thông minh</div>
+        <div class="welcome-badge">Hệ thống tri thức thông minh</div>
         <p class="welcome-eyebrow">Tôi có thể giúp gì cho bạn hôm nay?</p>
         <p class="welcome-sub">Tìm kiếm nhanh chóng, trích dẫn chính xác từ kho quy trình nội bộ của doanh nghiệp.</p>
       </div>

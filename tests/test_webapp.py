@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from poc_workflow.chatbot import NO_SOURCE_ANSWER
 from poc_workflow.database import QualityDatabase
 from poc_workflow.pipeline import approve_record, process_sources
+from poc_workflow.text_cleaning import normalized_text
 from poc_workflow.webapp import create_app
 
 
@@ -286,7 +287,18 @@ def test_user_chat_app_public_api_safe_citations_policy_and_feedback(tmp_path: P
     assert "chunk_id" not in public_text
     assert "category" not in public_body["record"]
     assert public_body["record"]["doc_id"] == public_citation["doc_id"]
+    assert public_body["source_file"]["exists"] is True
+    assert public_body["source_file"]["download_url"] == (
+        f"/api/user/documents/{public_citation['doc_id']}/{public_citation['version']}/source-file"
+    )
+    assert "path" not in public_body["source_file"]
     assert any(line["highlight"] for line in public_body["preview"]["lines"])
+
+    public_source = client.get(
+        f"/api/user/documents/{public_citation['doc_id']}/{public_citation['version']}/source-file"
+    )
+    assert public_source.status_code == 200
+    assert b"Quy trinh nghiem thu" in public_source.content
 
     public_legacy_detail = client.get(
         f"/api/user/documents/{public_citation['doc_id']}/{public_citation['version']}/citation",
@@ -312,6 +324,329 @@ def test_user_chat_app_public_api_safe_citations_policy_and_feedback(tmp_path: P
     )
     assert feedback.status_code == 200
     assert feedback.json()["knowledge_gap_id"]
+
+
+def test_public_source_file_prefers_supporting_pdf_for_user_verification(tmp_path: Path) -> None:
+    write_source(tmp_path)
+    process_sources(tmp_path)
+    approve_record(tmp_path, "KT-QT-010", "1.0", "Lead")
+
+    pdf_path = tmp_path / "source" / "technical" / "procedure" / "KT-QT-010_original.pdf"
+    pdf_path.write_bytes(b"%PDF-1.4\noriginal pdf evidence\n%%EOF")
+    records_path = tmp_path / "manifest" / "records.json"
+    records = json.loads(records_path.read_text(encoding="utf-8"))
+    records[0].setdefault("extra", {})
+    records[0]["extra"].update(
+        {
+            "primary_source_type": "xlsx",
+            "primary_source_path": records[0]["source_path"],
+            "supporting_sources": [
+                {
+                    "type": "pdf",
+                    "path": str(pdf_path),
+                    "role": "display_print_version",
+                    "used_for_retrieval": False,
+                }
+            ],
+        }
+    )
+    records_path.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    client = TestClient(create_app(tmp_path))
+    citation_detail = client.get(
+        "/api/user/documents/KT-QT-010/1.0/citation",
+        params={"excerpt": "Can kiem tra checklist"},
+    )
+    assert citation_detail.status_code == 200
+    assert citation_detail.json()["source_file"]["kind"] == "pdf"
+    assert citation_detail.json()["source_file"]["file_name"] == "KT-QT-010_original.pdf"
+    assert "path" not in citation_detail.json()["source_file"]
+
+    source_file = client.get("/api/user/documents/KT-QT-010/1.0/source-file")
+    assert source_file.status_code == 200
+    assert source_file.content == b"%PDF-1.4\noriginal pdf evidence\n%%EOF"
+    assert "KT-QT-010_original.pdf" in source_file.headers["content-disposition"]
+
+
+def test_user_bootstrap_exposes_qa_agent_flags(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("KB_QA_AGENT_WORKFLOW_ENABLED", "true")
+    monkeypatch.setenv("KB_QA_AGENT_STREAMING_ENABLED", "true")
+    client = TestClient(create_app(tmp_path))
+
+    response = client.get("/api/user/bootstrap")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["qa_agent"] == {
+        "enabled": True,
+        "streaming": True,
+        "trace_visibility": "detailed_safe_rationale",
+    }
+
+
+def test_user_chat_qa_agent_scope_reject_preserves_safe_reply(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("KB_QA_AGENT_WORKFLOW_ENABLED", "true")
+    client = TestClient(create_app(tmp_path))
+
+    response = client.post(
+        "/api/user/chat",
+        json={"query": "thoi tiet hom nay the nao", "session_id": "scope-reject-session"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "ngoai pham vi" in normalized_text(body["answer"])
+    assert body["format_type"] == "no_answer_card"
+    assert body["format_plan"]["primary_format"] == "no_answer_card"
+    assert body["structured_answer"]["answer_type"] == "no_answer"
+    assert body["quality_decision"]["decision"] == "scope_reject"
+    assert body["knowledge_gap_id"]
+    assert body["citations"] == []
+
+
+def test_user_chat_qa_agent_flag_on_returns_public_payload(tmp_path: Path, monkeypatch) -> None:
+    from poc_workflow import user_chat as user_chat_module
+
+    def fake_workflow(root, query, **kwargs):
+        return {
+            "answer": "Tom tat:\nPhong Ky thuat co 3 quy trinh.\n\nNguon:\nKT-QT-215 v1.0",
+            "citations": [
+                {
+                    "title": "Danh sach SOP",
+                    "doc_id": "KT-QT-215",
+                    "version": "1.0",
+                    "display_code": "PD-IC-A-001",
+                    "display_version": "Rev 10",
+                    "excerpt": "Phong Ky thuat co 3 quy trinh.",
+                    "anchor_id": "chunk-1",
+                    "status": "active",
+                    "score": 0.93,
+                }
+            ],
+            "trace_steps": [
+                {
+                    "id": "retrieval_plan",
+                    "label": "Ke hoach truy xuat",
+                    "status": "done",
+                    "detail": "3 query tren 1 dataset allowlist.",
+                    "metadata": {
+                        "queries": ["danh sach quy trinh phong ky thuat"],
+                        "datasets": ["dataset-a"],
+                        "filters": ["status=active"],
+                    },
+                }
+            ],
+            "evidence_summary": {"selected_chunks": 1, "doc_ids": ["KT-QT-215"]},
+            "quality_decision": {"decision": "pass", "rationale": "ok"},
+            "procedure_compliance": {
+                "procedure_compliance": "passed",
+                "final_decision": "release",
+                "citation_coverage": 1.0,
+            },
+            "format_type": "table",
+            "format_plan": {
+                "primary_format": "table",
+                "secondary_blocks": ["sources"],
+                "render_hints": {"show_timeline": False},
+            },
+            "structured_answer": {
+                "answer_type": "table",
+                "title": "Danh sach SOP",
+                "summary": "Phong Ky thuat co 3 quy trinh.",
+                "steps": [],
+                "responsibilities": [],
+                "forms_records": [],
+                "notes": [],
+                "sources": [{"doc_id": "KT-QT-215", "version": "1.0", "title": "Danh sach SOP"}],
+            },
+            "evidence_pack": {
+                "verified_evidence": [
+                    {
+                        "claim": "Phong Ky thuat co 3 quy trinh.",
+                        "doc_id": "KT-QT-215",
+                        "version": "1.0",
+                        "citation": "chunk-1",
+                        "confidence": 0.95,
+                    }
+                ],
+                "missing_evidence": [],
+                "conflicts": [],
+            },
+            "answer_run": {
+                "answer_run_id": "run_test_payload",
+                "user_question": query,
+                "intent": "catalog/list_procedure",
+                "stage": "finalized",
+                "retrieval_round": 1,
+                "revision_round": 1,
+                "answer_quality_status": "passed",
+                "evidence_status": "sufficient",
+                "citations_required": True,
+                "final_confidence": 0.95,
+            },
+            "answer_source": "qa_agent_llm",
+            "fallback_reason": None,
+            "latency_ms": 42,
+            "llm_used": True,
+            "llm_error": None,
+            "llm_provider": "custom",
+            "llm_model": "test-model",
+            "needs_clarification": False,
+        }
+
+    monkeypatch.setenv("KB_QA_AGENT_WORKFLOW_ENABLED", "true")
+    monkeypatch.setattr(user_chat_module, "run_qa_agent_workflow", fake_workflow)
+    client = TestClient(create_app(tmp_path))
+
+    response = client.post(
+        "/api/user/chat",
+        json={"query": "cac quy trinh cua phong ky thuat", "session_id": "qa-agent-session"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["citations"][0]["doc_id"] == "KT-QT-215"
+    assert set(body["citations"][0]) == {
+        "title",
+        "doc_id",
+        "version",
+        "display_code",
+        "display_version",
+        "excerpt",
+        "anchor_id",
+    }
+    assert body["format_type"] == "table"
+    assert body["quality_decision"]["decision"] == "pass"
+    assert body["procedure_compliance"]["final_decision"] == "release"
+    assert body["format_plan"]["primary_format"] == "table"
+    assert body["structured_answer"]["title"] == "Danh sach SOP"
+    assert body["answer_run"]["stage"] == "finalized"
+    assert body["evidence_pack"]["verified_evidence"][0]["doc_id"] == "KT-QT-215"
+    assert body["evidence_summary"]["selected_chunks"] == 1
+    assert body["trace_steps"][0]["metadata"]["queries"] == ["danh sach quy trinh phong ky thuat"]
+    assert "answer_source" not in body
+    assert "llm_error" not in body
+    with QualityDatabase(tmp_path).connect() as conn:
+        row = conn.execute("SELECT * FROM answer_runs WHERE answer_run_id = ?", ("run_test_payload",)).fetchone()
+        assert row is not None
+        assert row["stage"] == "finalized"
+    context = QualityDatabase(tmp_path).user_chat_context("qa-agent-session")
+    assert context["active_doc_id"] == "KT-QT-215"
+    assert context["last_answer_style"] == "brief"
+
+
+def test_user_chat_stream_emits_trace_then_final(tmp_path: Path, monkeypatch) -> None:
+    from poc_workflow import user_chat as user_chat_module
+
+    def fake_workflow(root, query, **kwargs):
+        emit = kwargs.get("emit")
+        trace_steps = [
+            {
+                "id": "analyze",
+                "label": "Phan tich cau hoi",
+                "status": "done",
+                "detail": "Intent catalog/list_procedure.",
+                "metadata": {"confidence": "high"},
+            },
+            {
+                "id": "critic",
+                "label": "Kiem dinh cau tra loi",
+                "status": "done",
+                "detail": "pass",
+                "metadata": {"quality_decision": {"decision": "pass"}},
+            },
+        ]
+        if emit:
+            emit({"event": "trace", "step": trace_steps[0], "trace_steps": trace_steps[:1]})
+            emit({"event": "trace", "step": trace_steps[1], "trace_steps": trace_steps})
+        return {
+            "answer": "Tom tat:\nCo can cu.\n\nNguon:\nKT-QT-215 v1.0",
+            "citations": [
+                {
+                    "title": "Danh sach SOP",
+                    "doc_id": "KT-QT-215",
+                    "version": "1.0",
+                    "excerpt": "Co can cu.",
+                    "anchor_id": "chunk-1",
+                    "status": "active",
+                }
+            ],
+            "trace_steps": trace_steps,
+            "evidence_summary": {"selected_chunks": 1},
+            "quality_decision": {"decision": "pass"},
+            "procedure_compliance": {
+                "procedure_compliance": "passed",
+                "final_decision": "release",
+                "citation_coverage": 1.0,
+            },
+            "format_type": "markdown",
+            "format_plan": {
+                "primary_format": "summary",
+                "secondary_blocks": ["sources"],
+                "render_hints": {},
+            },
+            "structured_answer": {
+                "answer_type": "summary",
+                "title": "Can cu",
+                "summary": "Co can cu.",
+                "steps": [],
+                "responsibilities": [],
+                "forms_records": [],
+                "notes": [],
+                "sources": [{"doc_id": "KT-QT-215", "version": "1.0", "title": "Danh sach SOP"}],
+            },
+            "evidence_pack": {
+                "verified_evidence": [
+                    {
+                        "claim": "Co can cu.",
+                        "doc_id": "KT-QT-215",
+                        "version": "1.0",
+                        "citation": "chunk-1",
+                        "confidence": 0.92,
+                    }
+                ],
+                "missing_evidence": [],
+                "conflicts": [],
+            },
+            "answer_run": {
+                "answer_run_id": "run_stream_payload",
+                "user_question": query,
+                "intent": "catalog/list_procedure",
+                "stage": "finalized",
+                "retrieval_round": 1,
+                "revision_round": 1,
+                "answer_quality_status": "passed",
+                "evidence_status": "sufficient",
+                "citations_required": True,
+                "final_confidence": 0.92,
+            },
+            "answer_source": "qa_agent_llm",
+            "fallback_reason": None,
+            "latency_ms": 12,
+            "llm_used": True,
+            "llm_error": None,
+            "llm_provider": "custom",
+            "llm_model": "test-model",
+            "needs_clarification": False,
+        }
+
+    monkeypatch.setenv("KB_QA_AGENT_WORKFLOW_ENABLED", "true")
+    monkeypatch.setenv("KB_QA_AGENT_STREAMING_ENABLED", "true")
+    monkeypatch.setattr(user_chat_module, "run_qa_agent_workflow", fake_workflow)
+    client = TestClient(create_app(tmp_path))
+
+    with client.stream(
+        "POST",
+        "/api/user/chat/stream",
+        json={"query": "cac quy trinh cua phong ky thuat", "session_id": "stream-session"},
+    ) as response:
+        text = response.read().decode("utf-8")
+
+    assert response.status_code == 200
+    assert text.count("event: trace") == 2
+    assert "event: final" in text
+    assert "quality_decision" in text
+    assert "answer_source" not in text
 
 
 def test_user_chat_rejects_unknown_template_and_no_answer_trace(tmp_path: Path) -> None:

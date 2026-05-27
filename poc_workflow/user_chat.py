@@ -5,18 +5,20 @@ import os
 import re
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .chatbot import (
     ANSWER_STYLE_LABELS,
     NO_SOURCE_ANSWER,
     ask,
+    infer_category,
     infer_query_answer_style,
     mermaid_flowchart,
     workflow_label,
 )
 from .database import QualityDatabase
 from .manifest import ManifestStore, latest_active_records
+from .qa_agent_workflow import qa_agent_workflow_enabled, run_qa_agent_workflow
 from .text_cleaning import clean_excerpt, clean_retrieval_text, contains_raw_markup, normalized_text
 from .utils import utc_now
 
@@ -151,6 +153,7 @@ def user_chat_response(
     device_id: str | None = None,
     use_llm: bool = True,
     user_id: str | None = "anonymous-user-chat",
+    stream_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     policy = load_policy_pack(root)
     active_answer_style = infer_answer_style(query, normalize_answer_style(answer_style))
@@ -161,8 +164,9 @@ def user_chat_response(
         device_id=device_id,
         ttl_seconds=user_session_ttl_seconds(),
     )
+    session_context = db.user_chat_context(active_session_id)
     history = db.recent_user_chat_turns(active_session_id, limit=user_context_turn_limit())
-    if needs_clarification(query, history):
+    if needs_clarification(query, history, session_context):
         return clarification_response(
             db,
             policy,
@@ -174,7 +178,23 @@ def user_chat_response(
             answer_style=active_answer_style,
             user_id=user_id,
         )
-    effective_query = contextual_query(query, history)
+    if qa_agent_workflow_enabled():
+        return qa_agent_chat_response(
+            root,
+            db,
+            policy,
+            query=query,
+            active_session_id=active_session_id,
+            session=session,
+            session_context=session_context,
+            history=history,
+            template_id=template_id,
+            answer_style=active_answer_style,
+            use_llm=use_llm,
+            user_id=user_id,
+            stream_callback=stream_callback,
+        )
+    effective_query = contextual_query(query, history, session_context)
     result = ask(
         root,
         effective_query,
@@ -205,6 +225,17 @@ def user_chat_response(
         citation_doc_ids=citation_doc_ids,
         query_log_id=log_id if isinstance(log_id, int) else None,
         template_id=template_id,
+    )
+    db.update_user_chat_context(
+        active_session_id,
+        build_session_context(
+            query=query,
+            answer=str(result.get("answer") or ""),
+            answer_style=active_answer_style,
+            citations=citations,
+            previous=session_context,
+            structured_answer={},
+        ),
     )
     answer_check = public_answer_check(str(result.get("answer") or ""), citations)
     trace = build_public_trace(result, len(citations), policy, answer_check=answer_check)
@@ -245,6 +276,154 @@ def user_chat_response(
             "last_seen_at": session.get("last_seen_at"),
             "expires_at": session.get("expires_at"),
             "ttl_seconds": user_session_ttl_seconds(),
+        },
+    }
+
+
+def qa_agent_chat_response(
+    root: Path,
+    db: QualityDatabase,
+    policy: dict[str, Any],
+    *,
+    query: str,
+    active_session_id: str,
+    session: dict[str, Any],
+    session_context: dict[str, Any],
+    history: list[dict[str, Any]],
+    template_id: str | None,
+    answer_style: str,
+    use_llm: bool,
+    user_id: str | None,
+    stream_callback: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    effective_query = contextual_query(query, history, session_context)
+    context_info = conversation_context_payload(query, effective_query, history, session_context)
+    result = run_qa_agent_workflow(
+        root,
+        effective_query,
+        history=history,
+        conversation_context=context_info,
+        answer_style=answer_style,
+        use_llm=use_llm,
+        emit=stream_callback,
+    )
+    citations = sanitize_public_citations(
+        root,
+        result.get("citations") or [],
+        require_manifest=False,
+    )
+    if result.get("answer_source") in {"clarification", "scope_guard"}:
+        answer = str(result.get("answer") or "")
+    else:
+        answer = format_user_answer(str(result.get("answer") or ""), citations, answer_style)
+    citation_doc_ids = sorted({str(citation.get("doc_id")) for citation in citations if citation.get("doc_id")})
+    log_id = db.log_query(
+        query,
+        user_id,
+        citation_doc_ids,
+        bool(citations),
+        int(result.get("latency_ms") or 0),
+        answer,
+        llm_used=bool(result.get("llm_used")),
+        llm_error=result.get("llm_error"),
+        answer_source=str(result.get("answer_source") or ""),
+        llm_provider=result.get("llm_provider"),
+        llm_model=result.get("llm_model"),
+    )
+    gap_id = None
+    fallback_reason = str(result.get("fallback_reason") or "")
+    if fallback_reason and result.get("answer_source") not in {"clarification", "qa_agent_llm"}:
+        gap_id = db.create_gap(query, fallback_reason, infer_category(query))
+    db.annotate_query(
+        log_id,
+        session_id=active_session_id,
+        template_id=template_id,
+        policy_id=str(policy.get("policy_id") or ""),
+        policy_version=str(policy.get("version") or ""),
+    )
+    db.log_user_chat_turn(
+        active_session_id,
+        query=query,
+        effective_query=effective_query,
+        answer=answer,
+        citation_doc_ids=citation_doc_ids,
+        query_log_id=log_id,
+        template_id=template_id,
+    )
+    answer_run = result.get("answer_run") if isinstance(result.get("answer_run"), dict) else {}
+    if answer_run:
+        db.log_answer_run(
+            answer_run,
+            query_log_id=log_id,
+            session_id=active_session_id,
+            user_question=query,
+        )
+    db.update_user_chat_context(
+        active_session_id,
+        build_session_context(
+            query=query,
+            answer=answer,
+            answer_style=answer_style,
+            citations=citations,
+            previous=session_context,
+            structured_answer=result.get("structured_answer") if isinstance(result.get("structured_answer"), dict) else {},
+        ),
+    )
+    trace_steps = list(result.get("trace_steps") or [])
+    context_used = effective_query != query
+    if context_used:
+        trace_steps.insert(
+            0,
+            {
+                "id": "context",
+                "label": "Dùng bối cảnh hội thoại",
+                "status": "done",
+                "detail": f"Dùng {len(history)} lượt gần nhất để hiểu câu hỏi nối tiếp.",
+            },
+        )
+    trace = {
+        "source_count": len(citations),
+        "generated_at": utc_now(),
+        "steps": trace_steps,
+        "context": {
+            "session_id": active_session_id,
+            "turns_available": len(history),
+            "turns_used": len(history) if context_used else 0,
+            "context_used": context_used,
+            "active_doc_id": context_info.get("active_doc_id"),
+            "active_display_code": context_info.get("active_display_code"),
+            "active_topic": context_info.get("active_topic"),
+            "expires_at": session["expires_at"],
+        },
+    }
+    return {
+        "answer": answer or policy.get("no_answer") or NO_SOURCE_ANSWER,
+        "citations": citations,
+        "trace": trace,
+        "trace_steps": trace_steps,
+        "evidence_summary": result.get("evidence_summary") or {},
+        "quality_decision": result.get("quality_decision") or {},
+        "procedure_compliance": result.get("procedure_compliance") or {},
+        "format_type": result.get("format_type") or "markdown",
+        "evidence_pack": result.get("evidence_pack") or {},
+        "answer_run": answer_run,
+        "structured_answer": result.get("structured_answer") or {},
+        "format_plan": result.get("format_plan") or {},
+        "query_log_id": log_id,
+        "log_id": log_id,
+        "knowledge_gap_id": gap_id,
+        "policy": public_policy_summary(policy),
+        "template_id": template_id,
+        "answer_style": answer_style,
+        "needs_clarification": bool(result.get("needs_clarification")),
+        "session_id": active_session_id,
+        "session": {
+            "session_id": active_session_id,
+            "device_id": session.get("device_id"),
+            "last_seen_at": session.get("last_seen_at"),
+            "expires_at": session.get("expires_at"),
+            "ttl_seconds": user_session_ttl_seconds(),
+            "context": context_info,
         },
     }
 
@@ -357,15 +536,32 @@ def user_context_turn_limit() -> int:
     return min(_positive_int_env("KB_USER_CONTEXT_TURN_LIMIT", DEFAULT_CONTEXT_TURN_LIMIT), 12)
 
 
-def contextual_query(query: str, history: list[dict[str, Any]]) -> str:
+def contextual_query(
+    query: str,
+    history: list[dict[str, Any]],
+    session_context: dict[str, Any] | None = None,
+) -> str:
     clean_query = query.strip()
-    if not history or not should_use_context(clean_query):
+    session_context = session_context or {}
+    if not should_use_context(clean_query):
         return clean_query
-    anchor_turn = next((turn for turn in reversed(history) if turn.get("citation_doc_ids")), history[-1])
-    context_lines = [f"Chủ đề trước: {public_excerpt(anchor_turn.get('query') or '')}"]
+    if not history and not session_context.get("active_doc_id"):
+        return clean_query
+    anchor_turn = next((turn for turn in reversed(history) if turn.get("citation_doc_ids")), history[-1] if history else {})
+    context_lines: list[str] = []
+    if session_context.get("active_topic"):
+        context_lines.append(f"Chủ đề đang theo: {public_excerpt(session_context.get('active_topic') or '')}")
+    if session_context.get("active_doc_id"):
+        display = session_context.get("active_display_code") or session_context.get("active_doc_id")
+        version = session_context.get("active_display_version") or ""
+        context_lines.append(f"Tài liệu đang theo: {display} {version}".strip())
+    if anchor_turn:
+        context_lines.append(f"Chủ đề trước: {public_excerpt(anchor_turn.get('query') or '')}")
     citation_doc_ids = [str(doc_id) for doc_id in anchor_turn.get("citation_doc_ids") or [] if doc_id]
     if citation_doc_ids:
         context_lines.append(f"Tài liệu đã dùng trước: {', '.join(citation_doc_ids[:5])}")
+    if not context_lines:
+        return clean_query
     return "\n".join(
         [
             "Cau hoi hien tai:",
@@ -377,16 +573,105 @@ def contextual_query(query: str, history: list[dict[str, Any]]) -> str:
     )
 
 
+def conversation_context_payload(
+    query: str,
+    effective_query: str,
+    history: list[dict[str, Any]],
+    session_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    session_context = session_context or {}
+    return {
+        "needs_clarification": False,
+        "is_follow_up": should_use_context(query),
+        "effective_query": effective_query,
+        "context_used": effective_query != query,
+        "turns_used": len(history) if effective_query != query else 0,
+        "active_doc_id": session_context.get("active_doc_id"),
+        "active_display_code": session_context.get("active_display_code"),
+        "active_display_version": session_context.get("active_display_version"),
+        "active_topic": session_context.get("active_topic"),
+        "last_answer_style": session_context.get("last_answer_style"),
+        "last_steps": session_context.get("last_steps") or [],
+        "last_citations": session_context.get("last_citations") or [],
+    }
+
+
+def build_session_context(
+    *,
+    query: str,
+    answer: str,
+    answer_style: str,
+    citations: list[dict[str, Any]],
+    previous: dict[str, Any] | None = None,
+    structured_answer: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    previous = previous or {}
+    structured_answer = structured_answer or {}
+    primary = citations[0] if citations else {}
+    active_doc_id = primary.get("doc_id") or previous.get("active_doc_id")
+    active_topic = primary.get("title") or structured_answer.get("title") or previous.get("active_topic") or query
+    return {
+        "active_doc_id": active_doc_id,
+        "active_topic": public_excerpt(active_topic or query, 160),
+        "active_display_code": primary.get("display_code") or previous.get("active_display_code"),
+        "active_display_version": primary.get("display_version") or previous.get("active_display_version"),
+        "last_answer_style": answer_style,
+        "last_steps": extract_context_steps(structured_answer, answer),
+        "last_citations": [
+            {
+                "doc_id": citation.get("doc_id"),
+                "version": citation.get("version"),
+                "display_code": citation.get("display_code"),
+                "display_version": citation.get("display_version"),
+                "title": citation.get("title"),
+            }
+            for citation in citations[:5]
+        ],
+        "session_summary": public_excerpt(answer, 360),
+        "updated_at": utc_now(),
+    }
+
+
+def extract_context_steps(structured_answer: dict[str, Any], answer: str) -> list[dict[str, Any]]:
+    steps = structured_answer.get("steps") if isinstance(structured_answer.get("steps"), list) else []
+    if steps:
+        return [
+            {
+                "step_no": item.get("step_no"),
+                "title": public_excerpt(item.get("title") or item.get("description") or "", 120),
+                "source_anchor": item.get("source_anchor"),
+            }
+            for item in steps[:8]
+            if isinstance(item, dict)
+        ]
+    extracted = []
+    for line in answer.splitlines():
+        match = re.match(r"\s*(\d+)[.)]\s+(.+)", line)
+        if not match:
+            continue
+        extracted.append({"step_no": int(match.group(1)), "title": public_excerpt(match.group(2), 120)})
+        if len(extracted) >= 8:
+            break
+    return extracted
+
+
 def infer_answer_style(query: str, selected_style: str) -> str:
     return infer_query_answer_style(query, selected_style)
 
 
-def needs_clarification(query: str, history: list[dict[str, Any]]) -> bool:
+def needs_clarification(
+    query: str,
+    history: list[dict[str, Any]],
+    session_context: dict[str, Any] | None = None,
+) -> bool:
     clean_query = query.strip()
+    session_context = session_context or {}
     if history and should_use_context(clean_query):
         last_turn = history[-1]
         if last_turn.get("citation_doc_ids"):
             return False
+    if should_use_context(clean_query) and session_context.get("active_doc_id"):
+        return False
     normalized = normalized_text(clean_query)
     if has_specific_document_hint(normalized):
         return False
@@ -471,7 +756,12 @@ def public_policy_summary(policy: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def sanitize_public_citations(root: Path, citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def sanitize_public_citations(
+    root: Path,
+    citations: list[dict[str, Any]],
+    *,
+    require_manifest: bool = True,
+) -> list[dict[str, Any]]:
     active_records = latest_active_records(ManifestStore(root).load())
     active_latest = {(record.doc_id, record.version): record for record in active_records}
     safe: list[dict[str, Any]] = []
@@ -481,19 +771,25 @@ def sanitize_public_citations(root: Path, citations: list[dict[str, Any]]) -> li
         doc_id = str(citation.get("doc_id") or "")
         version = str(citation.get("version") or "")
         record = active_latest.get((doc_id, version))
-        if not doc_id or not version or record is None:
+        if not doc_id or not version:
             continue
-        display_code = str(citation.get("display_code") or record.extra.get("display_code") or "")
+        if record is None and require_manifest:
+            continue
+        if record is None and str(citation.get("status") or "").lower() not in {"active", "approved", "latest"}:
+            continue
+        record_extra = record.extra if record else {}
+        display_code = str(citation.get("display_code") or record_extra.get("display_code") or "")
         display_version = str(
             citation.get("display_version")
             or citation.get("source_revision")
-            or record.extra.get("display_version")
-            or record.extra.get("source_revision")
+            or record_extra.get("display_version")
+            or record_extra.get("source_revision")
             or ""
         )
+        title = citation.get("title") or (record.title if record else doc_id)
         safe.append(
             {
-                "title": public_excerpt(clean_retrieval_text(citation.get("title") or doc_id or "Nguồn"), 160),
+                "title": public_excerpt(clean_retrieval_text(title or doc_id or "Nguồn"), 160),
                 "doc_id": doc_id,
                 "version": version,
                 "display_code": display_code,

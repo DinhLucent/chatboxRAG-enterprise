@@ -6,6 +6,7 @@ from poc_workflow.models import ManifestRecord
 from poc_workflow.manifest import ManifestStore
 from poc_workflow import ragflow_http
 from poc_workflow.ragflow_http import (
+    RAGFlowHTTPClient,
     bootstrap_ragflow_resources,
     extract_reference_citations,
     record_to_ragflow_metadata,
@@ -76,6 +77,51 @@ def test_record_to_ragflow_metadata_carries_source_of_truth_paths() -> None:
     assert metadata["source_path"] == "/source/KT-QT-003_v1.2.pdf"
     assert metadata["normalized_path"] == "/normalized/KT-QT-003_v1.2.md"
     assert metadata["content_hash"] == "sha256"
+
+
+def test_retrieve_chunks_sends_dataset_allowlist_and_active_filter(monkeypatch) -> None:
+    calls: list[tuple[str, str, dict | None]] = []
+    client = RAGFlowHTTPClient("http://ragflow", "key")
+
+    def fake_json_request(method: str, path: str, payload: dict | None = None) -> dict:
+        calls.append((method, path, payload))
+        return {"code": 0, "data": {"chunks": []}}
+
+    monkeypatch.setattr(client, "_json_request", fake_json_request)
+    condition = {
+        "logic": "and",
+        "conditions": [{"name": "status", "comparison_operator": "is", "value": "active"}],
+    }
+
+    result = client.retrieve_chunks(
+        ["dataset-a", "dataset-b"],
+        "danh sach quy trinh",
+        top_k=24,
+        page_size=24,
+        metadata_condition=condition,
+        rerank_id="reranker-1",
+    )
+
+    assert result["code"] == 0
+    assert calls == [
+        (
+            "POST",
+            "/api/v1/chunks/retrieval",
+            {
+                "dataset_ids": ["dataset-a", "dataset-b"],
+                "question": "danh sach quy trinh",
+                "page": 1,
+                "page_size": 24,
+                "top_k": 24,
+                "similarity_threshold": 0.0,
+                "vector_similarity_weight": 0.3,
+                "highlight": False,
+                "reference_metadata": {"include": True},
+                "metadata_condition": condition,
+                "rerank_id": "reranker-1",
+            },
+        )
+    ]
 
 
 def test_bootstrap_ragflow_resources_finds_existing_dataset_and_creates_chat(monkeypatch) -> None:

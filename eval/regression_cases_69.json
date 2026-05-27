@@ -3,16 +3,16 @@
     "id": "scope-count",
     "query": "Có bao nhiêu tài liệu quy trình kỹ thuật?",
     "should_answer": true,
-    "expected_doc_ids": ["KT-QT-142", "KT-QT-144", "KT-QT-146", "KT-QT-148", "KT-QT-150", "KT-QT-152", "KT-QT-356", "KT-QT-360", "KT-QT-376", "KT-QT-401", "KT-QT-426", "KT-QT-431"],
+    "expected_doc_ids": ["KT-QT-001", "KT-QT-002", "KT-QT-003", "KT-QT-057", "KT-QT-075", "KT-QT-125"],
     "expected_category": "procedure",
     "answer_style": "steps",
-    "expected_answer_terms": ["12 file active", "6 nhóm quy trình", "Nguồn"]
+    "expected_answer_terms": ["6 file active", "6 nhóm quy trình", "Nguồn"]
   },
   {
     "id": "installation",
     "query": "Quy trình lắp đặt gồm những bước nào?",
     "should_answer": true,
-    "expected_doc_ids": ["KT-QT-426"],
+    "expected_doc_ids": ["KT-QT-001"],
     "expected_category": "procedure",
     "answer_style": "steps"
   },
@@ -20,7 +20,7 @@
     "id": "maintenance",
     "query": "Quy trình bảo dưỡng gồm những bước nào?",
     "should_answer": true,
-    "expected_doc_ids": ["KT-QT-401"],
+    "expected_doc_ids": ["KT-QT-002"],
     "expected_category": "procedure",
     "answer_style": "steps"
   },
@@ -28,7 +28,7 @@
     "id": "repair",
     "query": "Quy trình sửa chữa gồm những bước nào?",
     "should_answer": true,
-    "expected_doc_ids": ["KT-QT-431"],
+    "expected_doc_ids": ["KT-QT-003"],
     "expected_category": "procedure",
     "answer_style": "steps"
   },
@@ -36,7 +36,7 @@
     "id": "accessory-order",
     "query": "Quy trình đặt hàng phụ kiện như thế nào?",
     "should_answer": true,
-    "expected_doc_ids": ["KT-QT-376"],
+    "expected_doc_ids": ["KT-QT-125"],
     "expected_category": "procedure",
     "answer_style": "steps"
   },
@@ -44,14 +44,14 @@
     "id": "calibration",
     "query": "Tóm tắt quy trình thực hiện hiệu chuẩn dụng cụ.",
     "should_answer": true,
-    "expected_doc_ids": ["KT-QT-360"],
+    "expected_doc_ids": ["KT-QT-057"],
     "expected_category": "procedure"
   },
   {
     "id": "engineer-training-certificate",
     "query": "Hướng dẫn theo dõi chứng chỉ đào tạo kỹ sư nói về gì?",
     "should_answer": true,
-    "expected_doc_ids": ["KT-QT-356"],
+    "expected_doc_ids": ["KT-QT-075"],
     "expected_category": "procedure"
   },
   {
