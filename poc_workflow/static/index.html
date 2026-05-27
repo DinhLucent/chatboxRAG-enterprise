@@ -7,7 +7,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/static/styles.css?v=20260525-upload-workflow" />
+    <link rel="stylesheet" href="/static/styles.css?v=20260526-zoom-architecture-v3" />
   </head>
   <body>
     <div class="app-shell">
@@ -82,47 +82,53 @@
           <div class="split">
             <section class="panel chat-panel">
               <div class="panel-header">
-                <h2>Hỏi kho tri thức hiệu lực</h2>
+                <h2>Hỏi đáp Kho tri thức</h2>
+              </div>
+              <div id="chatHistory" class="chat-history">
+                <div class="chat-welcome">
+                  <div class="welcome-icon">💬</div>
+                  <h3>Trợ lý Quy trình Nội bộ sẵn sàng!</h3>
+                  <p>Đặt câu hỏi về các quy trình, tài liệu kỹ thuật hoặc biểu mẫu trong kho tri thức hiệu lực.</p>
+                  <div class="suggested-questions-grid">
+                    <button class="suggested-question-card" data-query="Quy trình xử lý sự cố kỹ thuật gồm những bước nào?" type="button">
+                      <span class="suggested-question-title">Quy trình xử lý sự cố kỹ thuật</span>
+                      <small class="suggested-question-desc">Xem các bước xử lý sự cố chuẩn</small>
+                    </button>
+                    <button class="suggested-question-card" data-query="Làm thế nào để cập nhật phiên bản tài liệu mới?" type="button">
+                      <span class="suggested-question-title">Cập nhật tài liệu mới</span>
+                      <small class="suggested-question-desc">Quy trình kiểm soát phiên bản</small>
+                    </button>
+                    <button class="suggested-question-card" data-query="Yêu cầu cấp phát thiết bị kỹ thuật cần biểu mẫu nào?" type="button">
+                      <span class="suggested-question-title">Biểu mẫu cấp phát thiết bị</span>
+                      <small class="suggested-question-desc">Xem biểu mẫu & checklist liên quan</small>
+                    </button>
+                  </div>
+                </div>
               </div>
               <form id="chatForm" class="chat-form">
-                <textarea id="queryInput" rows="5" placeholder="Nhập câu hỏi về quy trình..."></textarea>
-                <div class="form-row">
-                  <button class="button" type="submit">Hỏi</button>
+                <div class="chat-input-wrapper">
+                  <textarea id="queryInput" placeholder="Nhập câu hỏi của bạn về quy trình kỹ thuật... (Nhấn Enter để gửi)"></textarea>
+                  <button class="chat-send-btn" type="submit" aria-label="Gửi câu hỏi">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width: 16px; height: 16px;"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                  </button>
                 </div>
-                <details class="admin-debug admin-only">
-                  <summary>Kiểm tra kỹ thuật</summary>
-                  <div class="debug-grid">
-                    <label class="field-stack" for="providerSelect">
-                      <span>Nguồn trả lời</span>
-                      <select id="providerSelect">
-                        <option value="auto">Tự động</option>
-                        <option value="ragflow">Chỉ RAGFlow</option>
-                        <option value="local">Dự phòng cục bộ</option>
-                      </select>
-                    </label>
-                    <label class="field-stack" for="userIdInput">
-                      <span>Mã người dùng</span>
-                      <input id="userIdInput" placeholder="Không bắt buộc" />
-                    </label>
-                    <label class="checkbox">
-                      <input id="useLlmInput" type="checkbox" />
-                      <span>Dùng LLM sau truy xuất</span>
-                    </label>
-                  </div>
-                </details>
+                <!-- Ẩn kiểm tra kỹ thuật khỏi giao diện nhưng giữ lại giá trị DOM mặc định để tránh lỗi logic trong JS -->
+                <div style="display: none;">
+                  <select id="providerSelect">
+                    <option value="auto" selected>Tự động</option>
+                    <option value="local">Dự phòng cục bộ</option>
+                    <option value="ragflow">Chỉ RAGFlow</option>
+                  </select>
+                  <input id="userIdInput" value="" />
+                  <input id="useLlmInput" type="checkbox" checked />
+                  <div id="answerFeedback" class="answer-feedback" hidden></div>
+                </div>
               </form>
-              <div id="answerBox" class="answer empty">Chưa có câu hỏi.</div>
-              <div id="answerFeedback" class="answer-feedback" hidden>
-                <span>Phản hồi</span>
-                <button class="button secondary compact answer-feedback-btn" data-feedback="correct" type="button">Đúng</button>
-                <button class="button warning compact answer-feedback-btn" data-feedback="wrong_source" type="button">Sai nguồn</button>
-                <button class="button danger compact answer-feedback-btn" data-feedback="no_answer" type="button">Không trả lời được</button>
-              </div>
             </section>
 
-            <section class="panel">
+            <section class="panel citations-panel">
               <div class="panel-header">
-                <h2>Nguồn tài liệu</h2>
+                <h2>Căn cứ & Nguồn trích dẫn</h2>
               </div>
               <div id="citations" class="list empty">Chưa có nguồn trích dẫn.</div>
             </section>
@@ -131,34 +137,49 @@
 
         <section class="view admin-only" id="view-upload">
           <div class="upload-grid">
-            <section class="panel upload-panel">
-              <div class="panel-header">
-                <div>
-                  <h2>Nạp file / Hàng chờ nguồn</h2>
-                  <p class="panel-caption">Đưa file vào hàng chờ và tạo prompt xử lý cho tác nhân vận hành.</p>
+            <div class="panel-stack">
+              <section class="panel upload-panel">
+                <div class="panel-header">
+                  <div>
+                    <h2>Nạp tệp tin / Hàng chờ nguồn</h2>
+                    <p class="panel-caption">Đưa file vào hàng chờ và tạo prompt xử lý cho tác nhân vận hành.</p>
+                  </div>
                 </div>
-              </div>
-              <form id="uploadForm" class="stack-form">
-                <label class="upload-zone" for="uploadFiles">
-                  <input id="uploadFiles" type="file" multiple />
-                  <span>Kéo thả hoặc chọn PDF, Word, Excel, ảnh scan, tài liệu hãng, văn bản hoặc Markdown.</span>
-                </label>
-                <div class="form-row">
-                  <label class="field-stack" for="uploadCategory">
-                    <span>Kiểu phân loại</span>
-                    <select id="uploadCategory">
-                      <option value="">Tự phân loại</option>
-                      <option value="procedure">Tài liệu quy trình</option>
-                      <option value="vendor_document">Tài liệu hãng</option>
-                      <option value="form_checklist">Biểu mẫu / checklist</option>
-                      <option value="faq_troubleshooting">FAQ / xử lý lỗi</option>
-                    </select>
+                <form id="uploadForm" class="stack-form">
+                  <label class="upload-zone" for="uploadFiles">
+                    <input id="uploadFiles" type="file" multiple />
+                    <span>Kéo thả hoặc chọn PDF, Word, Excel, ảnh scan, tài liệu hãng, văn bản hoặc Markdown.</span>
                   </label>
-                  <button class="button" type="submit">Nạp file</button>
-                  <button id="scanSourceBtn" class="button secondary" type="button">Quét thư mục nguồn</button>
+                  <div class="form-row">
+                    <label class="field-stack" for="uploadCategory">
+                      <span>Kiểu phân loại</span>
+                      <select id="uploadCategory">
+                        <option value="">Tự phân loại</option>
+                        <option value="procedure">Tài liệu quy trình</option>
+                        <option value="vendor_document">Tài liệu hãng</option>
+                        <option value="form_checklist">Biểu mẫu / checklist</option>
+                        <option value="faq_troubleshooting">FAQ / xử lý lỗi</option>
+                      </select>
+                    </label>
+                    <button class="button" type="submit">Nạp file</button>
+                    <button id="scanSourceBtn" class="button secondary" type="button">Quét thư mục nguồn</button>
+                  </div>
+                </form>
+              </section>
+
+              <section class="status-cards" id="uploadStatusCards" aria-label="Trạng thái hàng chờ nạp file"></section>
+
+              <section class="panel upload-workflow-guide">
+                <div class="panel-header">
+                  <div>
+                    <h2>Quy trình xử lý của AI Agent</h2>
+                    <p class="panel-caption">Mỗi file chạy tuần tự qua các bước xử lý dữ liệu; bước đang chạy sẽ sáng lên trong hàng chờ.</p>
+                  </div>
                 </div>
-              </form>
-            </section>
+                <div id="uploadWorkflowOverview" class="workflow-overview" aria-label="Quy trình xử lý dữ liệu"></div>
+                <div id="agentWorkflowMap" class="agent-workflow-map" aria-label="Bản đồ tác nhân xử lý dữ liệu"></div>
+              </section>
+            </div>
 
             <section class="panel prompt-panel">
               <div class="panel-header">
@@ -168,6 +189,7 @@
                 </div>
               </div>
               <div class="prompt-body">
+                <section id="promptArchitecture" class="prompt-architecture collapsed" aria-label="Kiến trúc prompt tác nhân"></section>
                 <div class="prompt-tabs" role="tablist" aria-label="Upload prompt modes">
                   <button id="taskPromptTab" class="prompt-tab-button active" type="button" data-prompt-tab="task">Task prompt</button>
                   <button id="goalPromptTab" class="prompt-tab-button" type="button" data-prompt-tab="goal">GOAL long-run</button>
@@ -175,62 +197,70 @@
                 <div id="taskPromptPane" class="prompt-tab-pane active">
                   <div class="prompt-controls">
                     <label class="field-stack" for="promptModeSelect">
-                      <span>Che do prompt</span>
+                      <span>Chế độ prompt</span>
                       <select id="promptModeSelect">
-                        <option value="process_raw">Xu ly raw data</option>
+                        <option value="process_raw">Xử lý dữ liệu thô (Raw data)</option>
                       </select>
                     </label>
-                    <div id="promptModeHelp" class="prompt-mode-help">Workflow mac dinh: xu ly raw data tu inbox den review queue.</div>
+                    <div id="promptModeHelp" class="prompt-mode-help">Quy trình mặc định: Xử lý dữ liệu thô từ hòm thư (inbox) đến hàng chờ phê duyệt (review queue).</div>
                   </div>
                   <label class="field-stack" for="promptRequestInput">
-                    <span>Yeu cau admin / boi canh them</span>
-                    <textarea id="promptRequestInput" class="prompt-request-box" rows="4" placeholder="Vi du: file nay la revision moi, hay kiem tra duplicate truoc; hoac chi phan loai va hoi lai neu thieu thong tin."></textarea>
+                    <span>Yêu cầu quản trị viên / Bối cảnh bổ sung</span>
+                    <textarea id="promptRequestInput" class="prompt-request-box" rows="4" placeholder="Ví dụ: Tệp tin này là phiên bản cập nhật mới, hãy kiểm tra trùng lặp trước; hoặc chỉ phân loại và hỏi lại nếu thiếu thông tin."></textarea>
                   </label>
                 </div>
                 <div id="goalPromptPane" class="prompt-tab-pane">
                   <div class="goal-prompt-grid">
                     <label class="field-stack" for="goalBranchInput">
-                      <span>Branch cho GOAL</span>
+                      <span>Nhánh (Branch) cho GOAL</span>
                       <input id="goalBranchInput" type="text" value="codex/upload-data-long-run" />
                     </label>
                     <label class="field-stack" for="goalVerificationInput">
-                      <span>Verification bat buoc</span>
+                      <span>Kiểm chứng (Verification) bắt buộc</span>
                       <input id="goalVerificationInput" type="text" placeholder="pytest, compileall, node --check, smoke API Upload..." />
                     </label>
                   </div>
                   <label class="field-stack" for="goalTargetInput">
-                    <span>Target end-state /goal</span>
-                    <textarea id="goalTargetInput" class="prompt-request-box" rows="5" placeholder="De trong de dung target mac dinh cho Upload data pipeline long-run, hoac nhap outcome-driven target rieng."></textarea>
+                    <span>Trạng thái đích mong muốn (Target end-state) /goal</span>
+                    <textarea id="goalTargetInput" class="prompt-request-box" rows="5" placeholder="Để trống để dùng mục tiêu mặc định cho Upload data pipeline long-run, hoặc nhập mục tiêu hướng kết quả (outcome-driven target) riêng."></textarea>
                   </label>
                   <label class="field-stack" for="goalRequestInput">
-                    <span>Boi canh admin cho GOAL</span>
-                    <textarea id="goalRequestInput" class="prompt-request-box" rows="4" placeholder="Vi du: chay lien tuc den khi inbox het file, dung lai neu lap blocker 3 lan, tao resume handoff truoc khi stop."></textarea>
+                    <span>Bối cảnh quản trị cho GOAL</span>
+                    <textarea id="goalRequestInput" class="prompt-request-box" rows="4" placeholder="Ví dụ: Chạy liên tục đến khi inbox hết tệp tin, dừng lại nếu gặp lỗi lặp 3 lần, tạo biên bản bàn giao trước khi dừng."></textarea>
                   </label>
-                  <button id="generateGoalPromptBtn" class="button" type="button">Tao GOAL prompt</button>
+                  <button id="generateGoalPromptBtn" class="button" type="button">Tạo GOAL prompt</button>
                 </div>
-                <div id="promptTrace" class="prompt-trace">Chưa tạo prompt.</div>
-                <textarea id="agentPromptBox" class="prompt-box" rows="18" readonly placeholder="Prompt sau khi tạo sẽ hiển thị tại đây."></textarea>
-                <div class="button-row prompt-actions">
-                  <button id="copyPromptBtn" class="button secondary" type="button">Sao chép prompt</button>
-                  <button id="moveWorkplaceBtn" class="button secondary" type="button">Chuyển vào xử lý</button>
-                  <button id="markFailedBtn" class="button danger" type="button">Đánh dấu lỗi</button>
-                  <button id="clearPromptBtn" class="button secondary" type="button">Xóa</button>
+
+                <div class="prompt-output-container maintaining">
+                  <div class="maintenance-overlay">
+                    <div class="maintenance-content">
+                      <div class="maintenance-icon">
+                        <svg class="animate-spin-slow" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                          <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.1a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+                          <circle cx="12" cy="12" r="3"/>
+                        </svg>
+                      </div>
+                      <h3>Hộp Prompt Đang Bảo Trì</h3>
+                      <div class="maintenance-status-badge">
+                        <span class="pulse-dot"></span>
+                        <span>ĐANG BẢO TRÌ</span>
+                      </div>
+                      <p>Tính năng hiển thị Prompt chi tiết và các hành động liên quan hiện đang bảo trì để tối ưu hóa hiệu năng.</p>
+                    </div>
+                  </div>
+                  <div id="promptTrace" class="prompt-trace">Chưa tạo prompt.</div>
+                  <textarea id="agentPromptBox" class="prompt-box" rows="18" readonly placeholder="Prompt sau khi tạo sẽ hiển thị tại đây."></textarea>
+                  <div class="button-row prompt-actions">
+                    <button id="copyPromptBtn" class="button secondary" type="button">Sao chép prompt</button>
+                    <button id="moveWorkplaceBtn" class="button secondary" type="button">Chuyển vào xử lý</button>
+                    <button id="markFailedBtn" class="button danger" type="button">Đánh dấu lỗi</button>
+                    <button id="clearPromptBtn" class="button secondary" type="button">Xóa</button>
+                  </div>
                 </div>
               </div>
             </section>
           </div>
 
-          <section class="status-cards" id="uploadStatusCards" aria-label="Trạng thái hàng chờ nạp file"></section>
-
-          <section class="panel upload-workflow-guide">
-            <div class="panel-header">
-              <div>
-                <h2>Workflow AI agent</h2>
-                <p class="panel-caption">Mỗi file chạy tuần tự qua các bước xử lý data; bước đang chạy sẽ sáng lên trong hàng chờ.</p>
-              </div>
-            </div>
-            <div id="uploadWorkflowOverview" class="workflow-overview" aria-label="Workflow xử lý data"></div>
-          </section>
 
           <section class="panel">
             <div class="panel-header queue-header">
@@ -325,169 +355,126 @@
                   <button class="prompt-tab-button" type="button" data-arch-tab="security">Ranh Giới Bảo Mật</button>
                 </div>
 
-                <div id="arch-runtime-pane" class="prompt-tab-pane active">
-                  <div class="mermaid-container">
-                    <pre class="mermaid">
-flowchart LR
-    U["Người dùng nội bộ"] -->|Hỏi đáp quy trình| WEB["Dashboard UI<br/>(FastAPI + static HTML)"]
-    WEB -->|Gọi API| APP["poc_workflow API<br/>(FastAPI Webapp)"]
-    APP -->|Truy xuất hiệu lực| RET["Tầng truy xuất (Retrieval)"]
-    RET -->|Dự phòng cục bộ| LOCAL["Index JSONL cục bộ<br/>(ragflow_index/)"]
-    RET -->|RAG chính| RAG["RAGFlow technical_active<br/>(refs/ragflow)"]
-    APP -->|Gửi Context + Câu hỏi| LLM["OpenAI-compatible LLM"]
-    LLM -->|Cổng điều hướng| FREE["FreeLLMAPI proxy<br/>(refs/freellmapi)"]
-    FREE -->|Miễn phí / Demo| P1["Pollinations / LLM7"]
-    FREE -->|API Keys cá nhân| P2["Google / Groq / OpenRouter"]
-    APP -->|Lưu nhật ký & gap| QDB["SQLite quality.db<br/>(data/poc_quality.db)"]
-    APP -->|Trả về đáp án + nguồn| UI["Đáp án có trích dẫn nguồn"]
-    UI --> U
-
-    style U fill:#f9fafb,stroke:#d1d5db,stroke-width:2px,color:#111827
-    style WEB fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0369a1
-    style APP fill:#e6fffa,stroke:#0f766e,stroke-width:2px,color:#0b5f59
-    style RET fill:#fef9c3,stroke:#ca8a04,stroke-width:2px,color:#854d0e
-    style LOCAL fill:#f3f4f6,stroke:#9ca3af,stroke-width:2px,color:#4b5563
-    style RAG fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#166534
-    style LLM fill:#f3e8ff,stroke:#7e22ce,stroke-width:2px,color:#6b21a8
-    style FREE fill:#fae8ff,stroke:#c026d3,stroke-width:2px,color:#86198f
-    style QDB fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#991b1b
-    style UI fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0369a1
-                    </pre>
+                <div class="diagram-wrapper">
+                  <div class="zoom-controls">
+                    <button id="zoomOutBtn" class="button secondary compact" type="button" title="Thu nhỏ">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="nav-icon"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                    </button>
+                    <span id="zoomLevelDisplay">100%</span>
+                    <button id="zoomInBtn" class="button secondary compact" type="button" title="Phóng to">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="nav-icon"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                    </button>
+                    <button id="zoomResetBtn" class="button secondary compact" type="button" title="Đặt lại">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="nav-icon"><path d="M23 4v6h-6"></path><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                    </button>
                   </div>
-                </div>
-
-                <div id="arch-ingestion-pane" class="prompt-tab-pane">
-                  <div class="mermaid-container">
-                    <pre class="mermaid">
-flowchart TD
-    A["Tài liệu tải lên / Drop vào inbox/"] -->|Quét thư mục| B["AI Agent chuẩn hóa (Ingest)"]
-    B -->|Tạo metadata thô| C["Lưu source/ & metadata.json"]
-    C -->|Số hóa tài liệu| D["MinerU OCR (PDF/ảnh) hoặc Native Parser"]
-    D -->|Lưu trữ văn bản| E["Thư mục normalized/ (Markdown/JSON)"]
-    E -->|Kiểm định 3 lớp| F["Validation Quality Gate (taxonomy, version, schema)"]
-    F -->|Đưa vào hàng chờ| G["Trạng thái pending_review"]
-    G -->|Đánh giá thủ công| H{"Hội đồng duyệt duyệt?"}
-    H -->|Phê duyệt| I["Trạng thái active (Hiệu lực)"]
-    H -->|Từ chối| J["Trạng thái failed_review"]
-    I -->|Cập nhật cache| K["Index JSONL cục bộ"]
-    I -->|Đồng bộ dataset RAG| L["RAGFlow dataset sync"]
-    I -->|Lưu trữ lịch sử| M["Lưu trữ phiên bản cũ (archived/retired)"]
-    J --> B
-
-    style A fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0369a1
-    style B fill:#e6fffa,stroke:#0f766e,stroke-width:2px,color:#0b5f59
-    style D fill:#f3e8ff,stroke:#7e22ce,stroke-width:2px,color:#6b21a8
-    style F fill:#fef9c3,stroke:#ca8a04,stroke-width:2px,color:#854d0e
-    style H fill:#fef08a,stroke:#eab308,stroke-width:2px,color:#854d0e
-    style I fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#166534
-    style J fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#991b1b
-                    </pre>
-                  </div>
-                </div>
-
-                <div id="arch-query-pane" class="prompt-tab-pane">
-                  <div class="mermaid-container">
-                    <pre class="mermaid">
-sequenceDiagram
-    autonumber
-    participant User as Người dùng nội bộ
-    participant UI as Dashboard UI
-    participant Webapp as FastAPI Backend
-    participant Retrieval as Tầng Truy Xuất (RAG)
-    participant LLM as AI Brain (LLM)
-    participant DB as SQLite Quality DB
-
-    User->>UI: Đặt câu hỏi quy trình
-    UI->>Webapp: POST /api/chat (query, provider, use_llm)
-    Webapp->>Retrieval: Tìm kiếm tài liệu hiệu lực (Active Only)
-    Retrieval-->>Webapp: Trả về danh sách trích dẫn (Citations)
-    Note over Webapp, Retrieval: Lọc theo canonical_doc_id của phiên bản mới nhất
-    Webapp->>LLM: Gửi câu hỏi + Văn cảnh được trích dẫn (Context)
-    LLM-->>Webapp: Trả về câu trả lời tóm tắt đã tổng hợp
-    Webapp->>DB: Lưu nhật ký (query, citations, latency)
-    Webapp-->>UI: Response (answer, citations, query_log_id)
-    UI-->>User: Hiển thị giao diện trực quan kèm nguồn dẫn
-                    </pre>
-                  </div>
-                </div>
-
-                <div id="arch-security-pane" class="prompt-tab-pane">
-                  <div class="mermaid-container">
-                    <pre class="mermaid">
-flowchart LR
-    subgraph PUBLIC["Lớp Công Cộng (Public Demo)"]
-        A["Trình duyệt người dùng"] -->|HTTPS / API Token| B["Vercel API Proxy"]
-    end
-    subgraph TUNNEL["Đường Truyền Bảo Mật"]
-        B -->|Secure HTTPS Tunnel| C["Localtunnel / Cloudflare Tunnel"]
-    end
-    subgraph LOCAL["Lớp Nội Bộ (Local Server Machine)"]
-        C -->|X-KB-Token Auth| D["FastAPI Backend (Port :8088)"]
-        D -->|Đọc file| E["Thư mục normalized/ & manifest/"]
-        D -->|Lưu logs| F["SQLite data/poc_quality.db"]
-    end
-
-    style A fill:#f9fafb,stroke:#d1d5db,stroke-width:2px,color:#111827
-    style B fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0369a1
-    style C fill:#fae8ff,stroke:#c026d3,stroke-width:2px,color:#86198f
-    style D fill:#e6fffa,stroke:#0f766e,stroke-width:2px,color:#0b5f59
-    style E fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#166534
-    style F fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#991b1b
-                    </pre>
-                  </div>
+                  <div id="mermaid-render-area" class="mermaid-container"></div>
                 </div>
               </div>
             </section>
 
-            <section class="panel">
-              <div class="panel-header">
-                <h2>Chi tiết vận hành</h2>
-              </div>
-              <div class="prompt-body">
-                <div id="arch-runtime-desc" class="arch-desc-pane active-desc">
-                  <h3>Cơ chế Runtime & Tích hợp</h3>
-                  <p>Hệ thống kết hợp giữa giao diện quản trị gọn nhẹ và các tác nhân AI chạy ngầm. Khi người dùng đặt câu hỏi:</p>
-                  <ul class="arch-list">
-                    <li><strong>FastAPI Backend</strong> tiếp nhận yêu cầu tại cổng <code>:8088</code>.</li>
-                    <li><strong>Tầng Truy xuất (Retrieval)</strong> sẽ kiểm tra và chỉ lấy dữ liệu từ các tài liệu có trạng thái <code>active</code> trong <code>manifest/records.json</code>.</li>
-                    <li>Hệ thống ưu tiên sử dụng RAGFlow thông qua API nếu được cấu hình. Nếu không, hệ thống sẽ tự động dùng <strong>Index JSONL cục bộ</strong> tại <code>ragflow_index/</code> làm phương án dự phòng (fallback) để tránh gián đoạn dịch vụ.</li>
-                    <li>Sau khi lấy các đoạn trích (chunks), câu hỏi cùng văn cảnh được gửi tới LLM thông qua <strong>FreeLLMAPI proxy</strong> ở cổng <code>:3001</code> để tổng hợp câu trả lời cuối cùng, tuyệt đối không gửi toàn bộ file lên Cloud.</li>
-                  </ul>
+            <div class="right-panel-group">
+              <section class="panel">
+                <div class="panel-header">
+                  <h2>Chi tiết vận hành</h2>
                 </div>
+                <div class="prompt-body">
+                  <div id="arch-runtime-desc" class="arch-desc-pane active-desc">
+                    <h3>Cơ chế Runtime & Tích hợp</h3>
+                    <p>Hệ thống kết hợp giữa giao diện quản trị gọn nhẹ và các tác nhân AI chạy ngầm. Khi người dùng đặt câu hỏi:</p>
+                    <ul class="arch-list">
+                      <li><strong>FastAPI Backend</strong> tiếp nhận yêu cầu tại cổng <code>:8088</code>.</li>
+                      <li><strong>Tầng Truy xuất (Retrieval)</strong> sẽ kiểm tra và chỉ lấy dữ liệu từ các tài liệu có trạng thái <code>active</code> trong <code>manifest/records.json</code>.</li>
+                      <li>Hệ thống ưu tiên sử dụng RAGFlow thông qua API nếu được cấu hình. Nếu không, hệ thống sẽ tự động dùng <strong>Index JSONL cục bộ</strong> tại <code>ragflow_index/</code> làm phương án dự phòng (fallback) để tránh gián đoạn dịch vụ.</li>
+                      <li>Sau khi lấy các đoạn trích (chunks), câu hỏi cùng văn cảnh được gửi tới LLM thông qua <strong>FreeLLMAPI proxy</strong> ở cổng <code>:3001</code> để tổng hợp câu trả lời cuối cùng, tuyệt đối không gửi toàn bộ file lên Cloud.</li>
+                    </ul>
+                  </div>
 
-                <div id="arch-ingestion-desc" class="arch-desc-pane">
-                  <h3>Quy trình số hóa & Vòng đời</h3>
-                  <p>Vòng đời tài liệu tuân thủ quy tắc kiểm soát nghiêm ngặt 3 bước trước khi đưa vào chatbot:</p>
-                  <ul class="arch-list">
-                    <li><strong>Intake:</strong> File PDF, Word, Excel, ảnh scan... được đưa vào thư mục <code>inbox/</code> (hoặc qua giao diện nạp file).</li>
-                    <li><strong>Số hóa & Chuẩn hóa:</strong> Các script chạy ngầm sẽ kích hoạt <strong>MinerU Engine</strong> (API ở cổng <code>:8010</code>) để chuyển đổi PDF/ảnh quét phức tạp thành Markdown sạch, trích xuất cấu trúc bảng và công thức toán học chính xác.</li>
-                    <li><strong>Governance (Quality Gate):</strong> Tài liệu chuẩn hóa đi qua bộ lọc kiểm tra taxonomy, định dạng metadata, trùng lặp phiên bản, và được gắn mác <code>pending_review</code>.</li>
-                    <li><strong>Duyệt (Approval):</strong> Quản trị viên kiểm tra metadata và nội dung trên Dashboard. Chỉ khi được phê duyệt, tài liệu mới chuyển sang <code>active</code> và đồng bộ lên RAGFlow.</li>
-                  </ul>
-                </div>
+                  <div id="arch-ingestion-desc" class="arch-desc-pane">
+                    <h3>Quy trình số hóa & Vòng đời</h3>
+                    <p>Vòng đời tài liệu tuân thủ quy tắc kiểm soát nghiêm ngặt 3 bước trước khi đưa vào chatbot:</p>
+                    <ul class="arch-list">
+                      <li><strong>Intake:</strong> File PDF, Word, Excel, ảnh scan... được đưa vào thư mục <code>inbox/</code> (hoặc qua giao diện nạp file).</li>
+                      <li><strong>Số hóa & Chuẩn hóa:</strong> Các script chạy ngầm sẽ kích hoạt <strong>MinerU Engine</strong> (API ở cổng <code>:8010</code>) để chuyển đổi PDF/ảnh quét phức tạp thành Markdown sạch, trích xuất cấu trúc bảng và công thức toán học chính xác.</li>
+                      <li><strong>Governance (Quality Gate):</strong> Tài liệu chuẩn hóa đi qua bộ lọc kiểm tra taxonomy, định dạng metadata, trùng lặp phiên bản, và được gắn mác <code>pending_review</code>.</li>
+                      <li><strong>Duyệt (Approval):</strong> Quản trị viên kiểm tra metadata và nội dung trên Dashboard. Chỉ khi được phê duyệt, tài liệu mới chuyển sang <code>active</code> và đồng bộ lên RAGFlow.</li>
+                    </ul>
+                  </div>
 
-                <div id="arch-query-desc" class="arch-desc-pane">
-                  <h3>Trình tự xử lý hội thoại</h3>
-                  <p>Mỗi lượt Hỏi-Đáp được giám sát và lưu trữ để đánh giá chất lượng liên tục:</p>
-                  <ul class="arch-list">
-                    <li>Giao diện gửi các thông số kiểm tra kỹ thuật (provider, sử dụng LLM hay trích xuất thuần).</li>
-                    <li>Hệ thống trả lời đính kèm danh sách <strong>Citations (nguồn dẫn)</strong> chứa mã tài liệu, phiên bản cụ thể và đoạn trích matched.</li>
-                    <li>Nhật ký hội thoại được lưu vào bảng SQLite. Phản hồi của người dùng (Đúng, Sai nguồn, Không trả lời được) sẽ tự động tạo các bản ghi <strong>Khoảng trống tri thức (Knowledge Gap)</strong> để người vận hành biết tài liệu nào đang bị thiếu hoặc trả lời sai.</li>
-                  </ul>
-                </div>
+                  <div id="arch-query-desc" class="arch-desc-pane">
+                    <h3>Trình tự xử lý hội thoại</h3>
+                    <p>Mỗi lượt Hỏi-Đáp được giám sát và lưu trữ để đánh giá chất lượng liên tục:</p>
+                    <ul class="arch-list">
+                      <li>Giao diện gửi các thông số kiểm tra kỹ thuật (provider, sử dụng LLM hay trích xuất thuần).</li>
+                      <li>Hệ thống trả lời đính kèm danh sách <strong>Citations (nguồn dẫn)</strong> chứa mã tài liệu, phiên bản cụ thể và đoạn trích matched.</li>
+                      <li>Nhật ký hội thoại được lưu vào bảng SQLite. Phản hồi của người dùng (Đúng, Sai nguồn, Không trả lời được) sẽ tự động tạo các bản ghi <strong>Khoảng trống tri thức (Knowledge Gap)</strong> để người vận hành biết tài liệu nào đang bị thiếu hoặc trả lời sai.</li>
+                    </ul>
+                  </div>
 
-                <div id="arch-security-desc" class="arch-desc-pane">
-                  <h3>Thiết lập bảo mật & Môi trường</h3>
-                  <p>Cơ chế phân tách lớp giúp đảm bảo an toàn cho tài liệu nội bộ:</p>
-                  <ul class="arch-list">
-                    <li>Bản web chạy trên Vercel chỉ đóng vai trò giao diện (không lưu trữ cơ sở dữ liệu hay file tài liệu gốc).</li>
-                    <li>Mọi giao tiếp đến máy chủ cục bộ đi qua <strong>Secure Tunnel</strong> được bảo vệ bởi header <code>X-KB-Token</code>.</li>
-                    <li>Nếu token xác thực sai hoặc thiếu, API sẽ lập tức chuyển sang chế độ <code>fail-closed</code> (từ chối phản hồi) bảo vệ dữ liệu.</li>
-                    <li>Hệ thống lưu giữ toàn bộ dữ liệu gốc của manifest và file Markdown chuẩn hóa cục bộ trên máy chủ nội bộ.</li>
-                  </ul>
+                  <div id="arch-security-desc" class="arch-desc-pane">
+                    <h3>Ranh giới & Bảo mật</h3>
+                    <p>Mô hình triển khai kết hợp đám mây lai (Hybrid Cloud Deployment) đảm bảo an toàn thông tin tối đa:</p>
+                    <ul class="arch-list">
+                      <li>Bản web chạy trên Vercel chỉ đóng vai trò giao diện (không lưu trữ cơ sở dữ liệu hay file tài liệu gốc).</li>
+                      <li>Mọi giao tiếp đến máy chủ cục bộ đi qua <strong>Secure Tunnel</strong> được bảo vệ bởi header <code>X-KB-Token</code>.</li>
+                      <li>Nếu token xác thực sai hoặc thiếu, API sẽ lập tức chuyển sang chế độ <code>fail-closed</code> (từ chối phản hồi) bảo vệ dữ liệu.</li>
+                      <li>Hệ thống lưu giữ toàn bộ dữ liệu gốc của manifest và file Markdown chuẩn hóa cục bộ trên máy chủ nội bộ.</li>
+                    </ul>
+                  </div>
                 </div>
-              </div>
-            </section>
+              </section>
+
+              <section class="panel">
+                <div class="panel-header">
+                  <div class="checkpoint-header-wrapper" style="display: flex; flex-direction: column; gap: var(--space-1);">
+                    <div style="display: flex; align-items: center; gap: var(--space-2);">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="var(--primary)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="nav-icon" style="width: 16px; height: 16px;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
+                      <h2 style="margin: 0; font-size: 16px;">AI Agent Checkpoint Prompt</h2>
+                    </div>
+                  </div>
+                </div>
+                <div class="prompt-body">
+                  <p class="checkpoint-caption">Sao chép prompt chuẩn kỹ nghệ này đưa cho AI Agent để tự động quét codebase và cập nhật lại sơ đồ kiến trúc khi cấu trúc dự án thay đổi.</p>
+                  <div class="code-box">
+                    <pre><code id="checkpointPromptText">Act as an expert AI documentation architect and senior codebase auditor.
+
+# Objective
+Scan the current codebase structure, system dependencies, configuration settings, and database schemas. Update the project's visual architecture dashboard, text explanations, and the architecture changelog (docs/architecture-changelog.md) to accurately reflect the changes.
+
+# Context
+The project is a Chatbot Workflow with document processing (Intake, MinerU normalization, Quality Governance, RAG, and LLM Orchestration). The frontend is a FastAPI + Vanilla CSS HTML dashboard featuring Mermaid.js diagrams, a Bento Grid system showing component statuses, and documentation detailing ports and directories.
+
+# Instructions
+Follow these steps systematically:
+1. **Research & Scan**: Inspect critical backend files in `poc_workflow/` (specifically `webapp.py`, `pipeline.py`, `database.py`, `quality_gate.py`, `converter.py`) to discover changes in:
+   - Port configurations and default API endpoints (FastAPI: :8088, MinerU: :8010, LLM Proxy: :3001, RAGFlow: :9380).
+   - Active ingestion stages, quality checks, folder definitions, or database schema models.
+2. **Synchronize Code & UI**: If differences are found between current codebase settings and the UI representation:
+   - Modify the `MERMAID_DIAGRAMS` dictionary in `poc_workflow/static/app.js` (maintain strict Mermaid syntax, escape special characters, use matching status styling).
+   - Update textual descriptions in the split panes under `<section class="view" id="view-architecture">` in `poc_workflow/static/index.html`.
+   - Update metadata labels or names in the Bento Grid (`.bento-grid` in `index.html`) if the underlying modules/ports changed.
+3. **Maintain Architecture Changelog**:
+   - Write or update `docs/architecture-changelog.md`.
+   - Maintain a version history table using GFM format:
+     | Version | Date (YYYY-MM-DD) | Description of Changes | Affected Components | Author |
+   - Document any deprecations, environment variable changes, or new ports.
+4. **Verification**:
+   - Run `pytest` to ensure all system tests pass.
+   - Verify the Mermaid diagrams compile correctly by inspecting the browser logs.
+
+# Constraints & Rules
+- Do NOT use external CSS frameworks. Only utilize standard design tokens from `styles.css`.
+- Ensure all Mermaid diagrams are properly escaped. Do not use raw "&" in node labels (use "và" or "and").
+- Retain the exact visual theme and premium glassmorphic style.
+- Only modify architecture-related files and documentation.
+
+# Output Format
+Respond with a clear list of files scanned, details of changes identified, and a diff of modifications applied to app.js, index.html, and docs/architecture-changelog.md.</code></pre>
+                    <button id="copyCheckpointBtn" class="button secondary compact" type="button">Sao chép</button>
+                  </div>
+                </div>
+              </section>
+            </div>
           </div>
 
           <section class="panel">
@@ -499,56 +486,62 @@ flowchart LR
             </div>
             <div class="bento-grid">
 
-              <div class="bento-card bento-cyan">
+              <div class="bento-card bento-cyan" id="bento-inbox">
                 <div class="bento-icon">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
                 </div>
                 <h3>Inbox & Upload Queue</h3>
+                <div class="bento-status-badge"></div>
                 <p class="bento-meta">Thư mục: <code>inbox/</code> | Module: <code>poc_workflow.intake</code></p>
                 <p>Nơi tiếp nhận tài liệu đầu vào. Hỗ trợ hàng chờ file, tự động gợi ý phân loại (Quy trình, tài liệu hãng, FAQ, biểu mẫu) và ghi nhận lịch sử nạp.</p>
               </div>
 
-              <div class="bento-card bento-purple">
+              <div class="bento-card bento-purple" id="bento-mineru">
                 <div class="bento-icon">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/></svg>
                 </div>
                 <h3>MinerU Normalizer</h3>
+                <div class="bento-status-badge"></div>
                 <p class="bento-meta">API: <code>:8010</code> | Module: <code>poc_workflow.converter</code></p>
                 <p>Bộ chuyển đổi tài liệu thô (PDF, ảnh, Word, Excel) sang Markdown sạch. Nhận diện bảng biểu cấu trúc phức tạp và công thức chính xác.</p>
               </div>
 
-              <div class="bento-card bento-teal">
+              <div class="bento-card bento-teal" id="bento-governance">
                 <div class="bento-icon">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
                 </div>
                 <h3>Governance & Quality Gate</h3>
+                <div class="bento-status-badge"></div>
                 <p class="bento-meta">Bản ghi: <code>manifest/records.json</code> | Module: <code>poc_workflow.quality_gate</code></p>
                 <p>Cổng kiểm soát chất lượng nghiêm ngặt. Xác thực taxonomy, phiên bản, tính toàn vẹn của file và chạy đánh giá hồi quy độ chính xác tự động.</p>
               </div>
 
-              <div class="bento-card bento-orange">
+              <div class="bento-card bento-orange" id="bento-rag">
                 <div class="bento-icon">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                 </div>
                 <h3>RAG Engine & Index</h3>
+                <div class="bento-status-badge"></div>
                 <p class="bento-meta">Index: <code>ragflow_index/</code> | API RAGFlow: <code>:9380</code></p>
                 <p>Tầng tìm kiếm thông minh. Đồng bộ tài liệu đã duyệt sang dataset của RAGFlow. Tự động chuyển đổi sang Local JSONL Index nếu kết nối RAGFlow lỗi.</p>
               </div>
 
-              <div class="bento-card bento-blue">
+              <div class="bento-card bento-blue" id="bento-llm">
                 <div class="bento-icon">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
                 </div>
                 <h3>AI LLM Orchestrator</h3>
+                <div class="bento-status-badge"></div>
                 <p class="bento-meta">Proxy: <code>:3001</code> | Module: <code>poc_workflow.chatbot</code></p>
                 <p>Tác nhân tổng hợp tri thức. Gọi API LLM để trả lời dựa trên văn cảnh trích dẫn. Cưỡng chế quy tắc trích nguồn và xử lý trường hợp không tìm thấy căn cứ.</p>
               </div>
 
-              <div class="bento-card bento-emerald">
+              <div class="bento-card bento-emerald" id="bento-observability">
                 <div class="bento-icon">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="12" x2="22" y2="12"/></svg>
                 </div>
                 <h3>Observability & Diagnostics</h3>
+                <div class="bento-status-badge"></div>
                 <p class="bento-meta">Bảng: <code>query_logs</code>, <code>incidents</code> | DB: <code>poc_quality.db</code></p>
                 <p>Trung tâm chẩn đoán và theo dõi sự cố runtime. Tự động ghi nhận phản hồi của người dùng để phân tích khoảng trống thông tin cần bổ sung.</p>
               </div>
@@ -564,6 +557,15 @@ flowchart LR
                 <h2>Chờ duyệt</h2>
               </div>
               <div id="pendingList" class="list"></div>
+              <div class="panel-subsection">
+                <div class="panel-header compact">
+                  <div>
+                    <h3>Không duyệt / cần AI sửa</h3>
+                    <p class="panel-caption">Các tài liệu bị trả về để agent xử lý lại.</p>
+                  </div>
+                </div>
+                <div id="failedReviewList" class="list compact-list"></div>
+              </div>
             </section>
             <section class="panel">
               <div class="panel-header">
@@ -574,29 +576,45 @@ flowchart LR
               </div>
               <form id="reviewForm" class="stack-form">
                 <div id="reviewSelection" class="review-selection empty">Chưa chọn tài liệu.</div>
-                <div id="reviewInspector" class="document-inspector compact empty">Chọn tài liệu chờ duyệt để kiểm tra metadata và QA trước khi duyệt.</div>
                 <div class="review-checklist">
                   <label class="checkbox">
-                    <input class="review-check" type="checkbox" />
-                    <span>Metadata, taxonomy, chủ sở hữu và phiên bản đã đúng.</span>
+                    <input class="review-check" data-review-key="title_correct" type="checkbox" />
+                    <span>Title/display name is correct.</span>
                   </label>
                   <label class="checkbox">
-                    <input class="review-check" type="checkbox" />
-                    <span>Kết quả Markdown/OCR đọc được và đủ dùng cho trả lời.</span>
+                    <input class="review-check" data-review-key="revision_correct" type="checkbox" />
+                    <span>Revision/version is correct.</span>
                   </label>
                   <label class="checkbox">
-                    <input class="review-check" type="checkbox" />
-                    <span>Tài liệu được phép dùng trong chatbot.</span>
+                    <input class="review-check" data-review-key="headings_source_based" type="checkbox" />
+                    <span>Headings are source-based.</span>
+                  </label>
+                  <label class="checkbox">
+                    <input class="review-check" data-review-key="steps_order_correct" type="checkbox" />
+                    <span>Procedure steps are complete and ordered correctly.</span>
+                  </label>
+                  <label class="checkbox">
+                    <input class="review-check" data-review-key="no_synthetic_content" type="checkbox" />
+                    <span>No synthetic or unsupported content.</span>
+                  </label>
+                  <label class="checkbox">
+                    <input class="review-check" data-review-key="citations_correct" type="checkbox" />
+                    <span>Citations/locators are usable for source display.</span>
+                  </label>
+                  <label class="checkbox">
+                    <input class="review-check" data-review-key="source_output_audit_passed" type="checkbox" />
+                    <span>Source-output QA evidence is acceptable.</span>
                   </label>
                 </div>
                 <input id="reviewDocId" type="hidden" />
                 <input id="reviewVersion" type="hidden" />
                 <input id="approvedBy" placeholder="Người duyệt" />
-                <textarea id="rejectReason" rows="4" placeholder="Lý do từ chối là bắt buộc khi từ chối"></textarea>
+                <textarea id="rejectReason" rows="4" placeholder="Lý do không duyệt / ghi chú duyệt"></textarea>
                 <div class="button-row">
                   <button id="reviewApproveBtn" class="button" data-action="approve" type="submit" disabled>Duyệt</button>
-                  <button id="reviewRejectBtn" class="button warning" data-action="reject" type="submit" disabled>Từ chối</button>
+                  <button id="reviewRejectBtn" class="button warning" data-action="reject" type="submit" disabled>Không duyệt</button>
                 </div>
+                <div id="reviewInspector" class="document-inspector compact empty">Chọn tài liệu chờ duyệt để kiểm tra metadata và QA trước khi duyệt.</div>
               </form>
             </section>
           </div>
@@ -689,8 +707,77 @@ flowchart LR
       </main>
     </div>
 
+    <!-- Markdown Reader Drawer -->
+    <div id="markdownReaderDrawerOverlay" class="drawer-overlay" hidden></div>
+    <div id="markdownReaderDrawer" class="drawer-container" hidden>
+      <header class="drawer-header">
+        <div class="drawer-header-left">
+          <div class="drawer-title-row">
+            <span class="drawer-doc-badge" id="drawerDocVersion">v1.0</span>
+            <h2 id="drawerTitle" class="drawer-title">Tên tài liệu</h2>
+          </div>
+          <p id="drawerSubtitle" class="drawer-subtitle">doc_id</p>
+        </div>
+
+        <div class="drawer-header-right">
+          <!-- View Modes -->
+          <div class="drawer-tabs" role="tablist">
+            <button id="drawerTabSingle" class="drawer-tab-btn active" type="button" data-view-mode="single">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="nav-icon"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+              <span>Xem tài liệu</span>
+            </button>
+            <button id="drawerTabSplit" class="drawer-tab-btn" type="button" data-view-mode="split">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="nav-icon"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+              <span>Đối chiếu nguồn</span>
+            </button>
+          </div>
+
+          <div class="drawer-control-divider"></div>
+
+          <!-- Quick Actions -->
+          <a id="drawerOpenSourceBtn" href="#" target="_blank" class="button secondary compact" title="Mở file gốc trong tab mới" style="display: inline-flex; align-items: center; gap: var(--space-1); height: 28px; line-height: 28px; padding: 0 var(--space-2); text-decoration: none;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="nav-icon" style="width: 14px; height: 14px;"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path><polyline points="15 3 21 3 21 9"></polyline><line x1="10" y1="14" x2="21" y2="3"></line></svg>
+            <span>Tệp gốc</span>
+          </a>
+
+          <button id="drawerToggleWidthBtn" class="button secondary compact" type="button" title="Mở rộng/Thu hẹp panel" style="width: 28px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center;">
+            <svg id="drawerWidthIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="nav-icon" style="width: 14px; height: 14px;"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>
+          </button>
+
+          <button id="closeDrawerBtn" class="button secondary compact close-drawer-btn" type="button" title="Đóng" style="width: 28px; height: 28px; padding: 0; display: inline-flex; align-items: center; justify-content: center;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="var(--danger)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="nav-icon" style="width: 14px; height: 14px;"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="drawer-body">
+        <div id="drawerSinglePane" class="drawer-content-pane active">
+          <div class="obsidian-markdown-body" id="drawerMarkdownContent"></div>
+        </div>
+        <div id="drawerSplitPane" class="drawer-content-pane">
+          <div class="drawer-split-container">
+            <div class="drawer-left-pane">
+              <div class="pane-header">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="nav-icon" style="width: 13px; height: 13px; display: inline; margin-right: 4px; vertical-align: text-bottom;"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
+                <span>File gốc đối chiếu</span>
+              </div>
+              <div id="drawerSourcePreviewContainer" class="pane-content"></div>
+            </div>
+            <div class="drawer-right-pane">
+              <div class="pane-header">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="nav-icon" style="width: 13px; height: 13px; display: inline; margin-right: 4px; vertical-align: text-bottom;"><polyline points="16 16 12 12 8 16"></polyline><line x1="12" y1="12" x2="12" y2="21"></line><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"></path></svg>
+                <span>Markdown số hóa</span>
+              </div>
+              <div class="pane-content obsidian-markdown-body" id="drawerSplitMarkdownContent"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
-    <script src="/static/app.js?v=20260525-upload-workflow"></script>
+    <script src="/static/app.js?v=20260526-zoom-architecture-v3"></script>
   </body>
 </html>

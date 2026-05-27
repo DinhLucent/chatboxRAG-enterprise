@@ -22,6 +22,7 @@ from .agent_prompt_queue import (
     generate_agent_prompt,
     list_agent_prompt_templates,
     list_upload_queue,
+    record_upload_workflow_event,
     update_upload_status,
 )
 from .auth import public_auth_status, require_operator_auth
@@ -78,6 +79,7 @@ from .user_chat import (
     user_session_cleanup_interval_seconds,
     welcome_cards_payload,
 )
+from .utils import utc_now, write_json
 from .utils import read_json
 
 
@@ -123,6 +125,15 @@ class ApproveRequest(BaseModel):
     doc_id: str
     version: str
     approved_by: str
+
+
+class HumanReviewRequest(BaseModel):
+    doc_id: str
+    version: str
+    review_status: str
+    reviewer: str
+    checklist: dict[str, bool]
+    notes: str = ""
 
 
 class RejectRequest(BaseModel):
@@ -185,6 +196,25 @@ class UploadQueueStatusRequest(BaseModel):
     relative_paths: list[str]
     status: str
     error: str | None = None
+
+
+class UploadWorkflowEventRequest(BaseModel):
+    relative_paths: list[str]
+    status: str = "processing"
+    step: str
+    detail: str | None = None
+    error: str | None = None
+    metadata: dict[str, Any] | None = None
+    artifact_path: str | None = None
+    qa_report_path: str | None = None
+    qa_status: str | None = None
+    qa_issues: list[str] | None = None
+    mineru_profile: dict[str, Any] | None = None
+    handoff_path: str | None = None
+    checkpoint: str | None = None
+    artifacts: list[dict[str, Any]] | None = None
+    quality_gates: dict[str, Any] | None = None
+    next_skill: str | None = None
 
 
 class IncidentRequest(BaseModel):
@@ -351,7 +381,7 @@ def _xlsx_preview(path: Path, *, max_rows: int = 40, max_cols: int = 12) -> dict
             shared_strings = _xlsx_shared_strings(archive)
             sheets = _xlsx_sheet_paths(archive)
             previews = []
-            for sheet in sheets[:3]:
+            for sheet in sheets[:15]:
                 rows = _xlsx_sheet_rows(
                     archive,
                     sheet["path"],
@@ -389,7 +419,8 @@ def _xlsx_sheet_paths(archive: zipfile.ZipFile) -> list[dict[str, str]]:
         target = rel_lookup.get(rel_id, "")
         if not target:
             continue
-        sheet_path = target if target.startswith("xl/") else f"xl/{target.lstrip('/')}"
+        clean_target = target.lstrip('/')
+        sheet_path = clean_target if clean_target.startswith("xl/") else f"xl/{clean_target}"
         sheets.append({"name": sheet.attrib.get("name", "Sheet"), "path": sheet_path})
     return sheets
 
@@ -532,7 +563,150 @@ def _lookup_index_locator(
                     "locator_status": "exact" if anchor_matches else "approximate",
                     "matched_excerpt": clean_excerpt(payload.get("text") or ""),
                 }
+    if not public:
+        return _lookup_manifest_citation_locator(workspace, doc_id, version, anchor_id)
     return None
+
+
+def _lookup_manifest_citation_locator(
+    workspace: Path,
+    doc_id: str,
+    version: str,
+    anchor_id: str | None,
+) -> dict[str, Any] | None:
+    chunk_number = _chunk_number_from_anchor(anchor_id)
+    record = next((item for item in ManifestStore(workspace).load() if item.doc_id == doc_id and item.version == version), None)
+    if not record:
+        return None
+    extra = getattr(record, "extra", {}) or {}
+    citation_path_value = extra.get("citation_map_path")
+    if not citation_path_value:
+        return None
+    citation_path = _record_path(workspace, str(citation_path_value))
+    if not citation_path or not citation_path.exists():
+        return None
+    try:
+        citations = json.loads(citation_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(citations, list):
+        return None
+    for ordinal, citation in enumerate(citations, start=1):
+        if not isinstance(citation, dict):
+            continue
+        anchor_matches = bool(anchor_id and citation.get("anchor_id") == anchor_id)
+        ordinal_matches = bool(chunk_number and ordinal == chunk_number)
+        if not anchor_matches and not ordinal_matches:
+            continue
+        normalized = citation.get("normalized_locator") or {}
+        line_start = normalized.get("line_start")
+        line_end = normalized.get("line_end")
+        if line_start is None or line_end is None:
+            return None
+        return {
+            "anchor_id": citation.get("anchor_id") or anchor_id,
+            "chunk_id": citation.get("chunk_id"),
+            "line_start": int(line_start),
+            "line_end": int(line_end),
+            "locator_status": "exact" if anchor_matches else "approximate",
+            "matched_excerpt": clean_excerpt(citation.get("section_title") or citation.get("display_locator") or ""),
+            "source_locator": citation.get("source_locator"),
+            "display_locator": citation.get("display_locator"),
+        }
+    return None
+
+
+def _record_citation_map(workspace: Path, record: Any) -> list[dict[str, Any]]:
+    extra = getattr(record, "extra", {}) or {}
+    citation_path_value = extra.get("citation_map_path")
+    if not citation_path_value:
+        return []
+    citation_path = _record_path(workspace, str(citation_path_value))
+    if not citation_path or not citation_path.exists():
+        return []
+    try:
+        citations = json.loads(citation_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(citations, list):
+        return []
+    return [item for item in citations if isinstance(item, dict)]
+
+
+def _record_human_review_path(workspace: Path, record: Any) -> Path | None:
+    extra = getattr(record, "extra", {}) or {}
+    review_path = extra.get("human_review_path") or extra.get("review_report_path")
+    if review_path:
+        return _record_path(workspace, str(review_path))
+    display_code = str(extra.get("display_code") or record.doc_id)
+    version = str(extra.get("revision_slug") or record.version)
+    return workspace / "review" / "upload" / f"{display_code}_{version}" / "human_review.json"
+
+
+def _write_human_review_packet(workspace: Path, payload: HumanReviewRequest) -> dict[str, Any]:
+    if payload.review_status not in {"approved", "rejected", "needs_fix", "pending_review"}:
+        raise HTTPException(status_code=400, detail="review_status must be approved, rejected, needs_fix, or pending_review")
+    reviewer = payload.reviewer.strip()
+    if not reviewer:
+        raise HTTPException(status_code=400, detail="reviewer is required")
+    store = ManifestStore(workspace)
+    record = store.get(payload.doc_id, payload.version)
+    if not record:
+        raise HTTPException(status_code=404, detail="Document not found")
+    review_path = _record_human_review_path(workspace, record)
+    if not review_path:
+        raise HTTPException(status_code=400, detail="Human review path is unavailable")
+    existing_preview = _read_json_preview(review_path)
+    existing = existing_preview.get("data") if existing_preview.get("exists") else {}
+    if not isinstance(existing, dict):
+        existing = {}
+    packet = {
+        **existing,
+        "review_status": payload.review_status,
+        "reviewer": reviewer,
+        "doc_id": payload.doc_id,
+        "display_code": (record.extra or {}).get("display_code") or payload.doc_id,
+        "display_version": (record.extra or {}).get("display_version") or record.version,
+        "checklist": payload.checklist,
+        "notes": payload.notes,
+        "reviewed_at": utc_now(),
+    }
+    write_json(review_path, packet)
+    record.extra = {**(record.extra or {}), "human_review_path": str(review_path)}
+    store.upsert(record)
+    return packet
+
+
+def _review_queue_payload(workspace: Path) -> dict[str, Any]:
+    records = ManifestStore(workspace).load()
+
+    def item_payload(record: Any) -> dict[str, Any]:
+        review = _read_json_preview(_record_human_review_path(workspace, record))
+        return {
+            "doc_id": record.doc_id,
+            "version": record.version,
+            "title": record.title,
+            "status": record.status,
+            "status_reason": record.status_reason,
+            "category": record.category,
+            "owner": record.owner,
+            "normalized_path": record.normalized_path,
+            "quality_status": (record.extra or {}).get("quality_status"),
+            "quality_report_path": (record.extra or {}).get("quality_report_path"),
+            "human_review_path": (record.extra or {}).get("human_review_path") or (record.extra or {}).get("review_report_path"),
+            "human_review": review.get("data") if review.get("exists") else None,
+        }
+
+    pending = [item_payload(record) for record in records if record.status == "pending_review"]
+    failed = [item_payload(record) for record in records if record.status == "failed_review"]
+    return {
+        "pending_review": pending,
+        "failed_review": failed,
+        "summary": {
+            "pending_review": len(pending),
+            "failed_review": len(failed),
+        },
+    }
 
 
 def _citation_locator(
@@ -622,6 +796,8 @@ def _document_detail_payload(
     qa_path = None
     if extra.get("qa_report_path"):
         qa_path = _record_path(workspace, str(extra["qa_report_path"]))
+    if not qa_path and extra.get("quality_report_path"):
+        qa_path = _record_path(workspace, str(extra["quality_report_path"]))
     if not qa_path:
         qa_path = (
             workspace
@@ -638,6 +814,8 @@ def _document_detail_payload(
     source_preview["file_url"] = f"/api/documents/{doc_id}/{version}/source-file" if source_preview.get("exists") else None
     qa_report = _read_json_preview(qa_path)
     metadata_sidecar = _read_json_preview(metadata_path)
+    citations = _record_citation_map(workspace, record)
+    human_review = _read_json_preview(_record_human_review_path(workspace, record))
 
     canonical_key = _canonical_document_key(record)
     related = [
@@ -662,8 +840,9 @@ def _document_detail_payload(
         if quality["question_marks"] > 20:
             warnings.append({"level": "warning", "code": "ocr_uncertain_text", "message": "Markdown has many question marks; OCR output should be reviewed."})
     if qa_report["exists"]:
-        qa_status = str((qa_report.get("data") or {}).get("status") or "")
-        if qa_status and qa_status not in {"pass", "repaired"}:
+        qa_data = qa_report.get("data") or {}
+        qa_status = str(qa_data.get("status") or qa_data.get("quality_status") or "")
+        if qa_status and qa_status not in {"pass", "passed", "repaired"}:
             warnings.append({"level": "error", "code": "qa_not_passed", "message": f"QA status is {qa_status}."})
         if qa_report.get("error"):
             warnings.append({"level": "warning", "code": "qa_report_unreadable", "message": str(qa_report["error"])})
@@ -737,6 +916,8 @@ def _document_detail_payload(
             for item in sorted(related, key=lambda item: (item.status, item.doc_id, item.version))
         ],
         "warnings": warnings,
+        "citations": citations,
+        "human_review": human_review,
         "citation": citation_info,
         "citation_preview": citation_preview,
     }
@@ -1065,6 +1246,10 @@ def create_app(root: Path | None = None) -> FastAPI:
     def manifest_summary_api() -> list[dict[str, str | None]]:
         return manifest_summary(workspace)
 
+    @app.get("/api/review-queue")
+    def review_queue_api() -> dict[str, Any]:
+        return _review_queue_payload(workspace)
+
     @app.get("/api/inbox")
     def inbox_api() -> list[dict[str, Any]]:
         return list_inbox(workspace)
@@ -1165,6 +1350,43 @@ def create_app(root: Path | None = None) -> FastAPI:
             )
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/api/upload-queue/workflow-event")
+    def upload_queue_workflow_event_api(payload: UploadWorkflowEventRequest) -> dict[str, Any]:
+        try:
+            return record_upload_workflow_event(
+                workspace,
+                payload.relative_paths,
+                status=payload.status,
+                step=payload.step,
+                detail=payload.detail,
+                error=payload.error,
+                metadata=payload.metadata,
+                artifact_path=payload.artifact_path,
+                qa_report_path=payload.qa_report_path,
+                qa_status=payload.qa_status,
+                qa_issues=payload.qa_issues,
+                mineru_profile=payload.mineru_profile,
+                handoff_path=payload.handoff_path,
+                checkpoint=payload.checkpoint,
+                artifacts=payload.artifacts,
+                quality_gates=payload.quality_gates,
+                next_skill=payload.next_skill,
+            )
+        except Exception as exc:
+            record_incident(
+                workspace,
+                "error",
+                "intake",
+                "Upload workflow event update failed",
+                str(exc),
+                {
+                    "relative_paths": payload.relative_paths,
+                    "status": payload.status,
+                    "step": payload.step,
+                },
+            )
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/api/approve")
     def approve_api(payload: ApproveRequest) -> dict[str, Any]:
         try:
@@ -1177,6 +1399,23 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "Document approval failed",
                 str(exc),
                 {"doc_id": payload.doc_id, "version": payload.version},
+            )
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/human-review")
+    def human_review_api(payload: HumanReviewRequest) -> dict[str, Any]:
+        try:
+            return _write_human_review_packet(workspace, payload)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            record_incident(
+                workspace,
+                "error",
+                "lifecycle",
+                "Human review packet update failed",
+                str(exc),
+                {"doc_id": payload.doc_id, "version": payload.version, "review_status": payload.review_status},
             )
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

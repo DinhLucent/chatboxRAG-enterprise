@@ -109,6 +109,8 @@ def is_low_value_retrieval_text(value: object) -> bool:
     if len(cleaned) < 30:
         return True
     normalized = normalized_text(cleaned)
+    if "tom tat cau truc phuc vu rag" in normalized and "buoc " not in normalized and "ho so" not in normalized:
+        return True
     low_hits = sum(1 for term in LOW_VALUE_TERMS if term in normalized)
     content_hits = sum(1 for term in CONTENT_HEADING_TERMS if term in normalized)
     if low_hits >= 4 and content_hits == 0:

@@ -105,7 +105,7 @@ FRONTEND_REQUIRED_HTML_IDS = {
     "generatePromptBtn",
     "copyPromptBtn",
 }
-UPLOAD_STATUS_ORDER = ["queue", "processing", "done", "ocr_required", "failed"]
+UPLOAD_STATUS_ORDER = ["queue", "processing", "done", "pending_review", "approved", "ocr_required", "failed", "failed_review"]
 FORBIDDEN_UPLOAD_TEXT = (
     "Prepare Inbox",
     "Process Source",

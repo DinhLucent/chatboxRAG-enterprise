@@ -317,9 +317,17 @@ def chunk_markdown_with_metadata(text: str, max_chars: int = 1200) -> list[dict[
     raw_lines = text.splitlines()
     blocks_raw = []
     current_block = []
+    skip_until_line = 0
+    if raw_lines and raw_lines[0].strip() == "---":
+        for idx, line in enumerate(raw_lines[1:], start=2):
+            if line.strip() == "---":
+                skip_until_line = idx
+                break
 
     for idx, line in enumerate(raw_lines):
         line_num = idx + 1
+        if line_num <= skip_until_line:
+            continue
         if line.strip():
             current_block.append((line, line_num))
         else:
@@ -514,6 +522,7 @@ def quality_adjustment(entry: IndexEntry, normalized_query: str) -> int:
         adjustment += 4
     adjustment += procedure_topic_adjustment(entry, normalized_query)
     adjustment += query_intent_adjustment(entry, normalized_query)
+    adjustment += structured_procedure_section_adjustment(entry, normalized_query)
     if is_query_procedure and any(term in entry.normalized_target for term in ["noi dung cong viec", "noi dung chi tiet"]):
         adjustment += 18
         if re.search(r"(^|\n|\s)1\s*\|", entry.normalized_target):
@@ -522,6 +531,43 @@ def quality_adjustment(entry: IndexEntry, normalized_query: str) -> int:
         term in entry.normalized_target for term in ["ma bieu mau", "thong tin khach hang", "dai dien khach hang"]
     ):
         adjustment -= 20
+    return adjustment
+
+
+def structured_procedure_section_adjustment(entry: IndexEntry, normalized_query: str) -> int:
+    target = entry.normalized_target
+    adjustment = 0
+    has_steps = bool(re.search(r"(^|\n|\s)(?:1\s*[.)]|buoc\s*1)", target))
+    asks_steps = (
+        "buoc" in normalized_query
+        or "gom nhung" in normalized_query
+        or "cac buoc" in normalized_query
+        or ("quy trinh" in normalized_query and "nao" in normalized_query)
+    )
+    if asks_steps:
+        if "quy trinh thuc hien" in target and has_steps:
+            adjustment += 95
+        if "tom tat cau truc phuc vu rag" in target and not has_steps:
+            adjustment -= 90
+        if "ho so / bieu mau" in target and "quy trinh thuc hien" not in target:
+            adjustment -= 25
+
+    asks_responsibility = any(term in normalized_query for term in ["trach nhiem", "bo phan", "phu trach", "ai phu trach"])
+    if asks_responsibility:
+        if "trach nhiem" in target or "bo phan lien quan" in target:
+            adjustment += 85
+        if any(term in target for term in ["phong ky thuat", "phong dich vu khach hang", "phong kinh doanh"]):
+            adjustment += 35
+        if "quy trinh thuc hien" in target and "trach nhiem" not in target:
+            adjustment -= 35
+
+    asks_records = any(term in normalized_query for term in ["ho so", "bieu mau", "can luu", "luu sau", "tai lieu dinh kem"])
+    if asks_records:
+        if any(term in target for term in ["ho so / bieu mau", "7. ho so", "tai lieu dinh kem", "bm-"]):
+            adjustment += 85
+        if "quy trinh thuc hien" in target and not any(term in target for term in ["ho so", "bieu mau", "bm-"]):
+            adjustment -= 25
+
     return adjustment
 
 
@@ -670,15 +716,15 @@ def incident_workflow_boost(entry: IndexEntry, normalized_query: str) -> int:
     if "thoi gian" in normalized_query and (
         "bao loi" in normalized_query or ("ghi nhan" in normalized_query and "thong tin" in normalized_query)
     ):
-        return 55
+        return 85
     if "muc do uu tien" in normalized_query and (
         "phan loai" in normalized_query or "bo phan" in normalized_query or "quy dinh" in normalized_query
     ):
-        return 55
+        return 85
     if "su co" in normalized_query and ("ky thuat" in normalized_query or hits >= 2):
-        return 55
+        return 85
     if "ticket" in normalized_query and hits >= 2:
-        return 45
+        return 75
     return 0
 
 

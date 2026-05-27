@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import unicodedata
 from pathlib import Path
@@ -102,6 +103,36 @@ def validate_record_for_approval(record: ManifestRecord) -> None:
         raise ManifestError(f"Normalized file does not exist: {normalized_path}")
     if len(normalized_path.read_text(encoding="utf-8", errors="ignore").strip()) < 20:
         raise ManifestError("Normalized Markdown is too short for approval")
+    extra = record.extra or {}
+    if extra.get("ingest_policy") == "primary_source_only":
+        if extra.get("quality_status") != "passed":
+            raise ManifestError("Primary-source-only Upload records require quality_status=passed before approval")
+        if not extra.get("citation_map_path"):
+            raise ManifestError("Primary-source-only Upload records require citation_map_path before approval")
+        decision = extra.get("primary_source_decision")
+        if not isinstance(decision, dict) or decision.get("selected") not in {"xlsx", "pdf"}:
+            raise ManifestError("Primary-source-only Upload records require a selected PDF/XLSX primary source")
+        review_path = extra.get("human_review_path") or extra.get("review_report_path")
+        if not review_path:
+            raise ManifestError("Primary-source-only Upload records require human_review_path before approval")
+        review_file = Path(str(review_path))
+        if not review_file.exists():
+            raise ManifestError(f"Human review packet does not exist: {review_file}")
+        try:
+            review = json.loads(review_file.read_text(encoding="utf-8"))
+        except Exception as exc:
+            raise ManifestError(f"Human review packet is not valid JSON: {review_file}") from exc
+        if review.get("review_status") != "approved":
+            raise ManifestError("Primary-source-only Upload records require human review_status=approved before approval")
+        reviewer = str(review.get("reviewer") or "").strip().lower()
+        if not reviewer or reviewer in {"ai-agent-quality-gate", "system", "agent", "ai"}:
+            raise ManifestError("Primary-source-only Upload records require a human reviewer before approval")
+        checklist = review.get("checklist")
+        if not isinstance(checklist, dict) or not checklist:
+            raise ManifestError("Primary-source-only Upload records require a populated human review checklist")
+        failed = sorted(key for key, value in checklist.items() if value is not True)
+        if failed:
+            raise ManifestError(f"Human review checklist is not fully approved: {', '.join(failed)}")
 
 
 def ensure_status(status: str) -> None:

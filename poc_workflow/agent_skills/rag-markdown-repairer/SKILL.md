@@ -20,11 +20,11 @@ Dung skill nay khi `source-output-quality-auditor` tra `status: needs_repair` ho
 
 ## Workflow
 
-1. Doc `repair_request.json`, `audit_report.json` va Markdown hien tai.
-2. Nhom issue theo source, page/sheet, table va severity.
+1. Doc `repair_request.json`, `audit_report.json`, Markdown hien tai va `mineru_artifact_index.json`.
+2. Nhom issue theo source, page/sheet, MinerU block id, bbox, table/image va severity.
 3. Sua blocker/major truoc: noi dung mat, bang sai, reading order sai, citation thieu.
 4. Chuan hoa Markdown: heading cap bac, table pipe format, list, code block, image alt text, frontmatter metadata neu pipeline yeu cau.
-5. Them hoac sua anchors citation dang on dinh: page, sheet, row range, table id.
+5. Them hoac sua anchors citation dang on dinh: page, sheet, row range, table id, `mineru_block_ids`, `content_types`, `bbox`, `source_json`, `image_refs`.
 6. Ghi output vao `repaired/<source_id>/content.md` va tao `repair_manifest.json`.
 7. Handoff lai `source-output-quality-auditor` de audit lai tren file goc.
 
@@ -32,6 +32,7 @@ Dung skill nay khi `source-output-quality-auditor` tra `status: needs_repair` ho
 
 - `repair_request`: danh sach issue can sua.
 - `converted_outputs`: Markdown va artifact tu MinerU.
+- `mineru_artifact_index`: sidecar MinerU de lay content_list/middle/images khi Markdown thieu locator.
 - `audit_report`: bang chung tu QA.
 - `source_snippets`: trich xuat goc neu auditor cung cap.
 
@@ -74,6 +75,7 @@ Dung skill nay khi `source-output-quality-auditor` tra `status: needs_repair` ho
 - Khong doan noi dung mat neu khong co bang chung tu file goc; danh dau `blocked` va yeu cau auditor/parent cung cap snippet.
 - Neu sua table lam mat numeric value, revert phan sua table do trong ban repair va giu issue mo.
 - Neu citation khong the xac dinh, them `citation_status: unresolved` trong manifest va khong danh dau pass.
+- Khong xoa image/flowchart/table snapshot; neu chua doc chac, giu placeholder kem `image_ref` va `needs_review`.
 - Neu cung mot issue quay lai sau audit, ghi `repeat_issue: true` de orchestrator dung sau gioi han loop.
 
 ## Quality Gates
@@ -82,4 +84,5 @@ Dung skill nay khi `source-output-quality-auditor` tra `status: needs_repair` ho
 - Markdown parse duoc, khong co heading nhay cap bat thuong neu khong co ly do.
 - Bang co header, cot on dinh, khong mat dong tong/subtotal.
 - Citation anchors khong bi xoa khi sua noi dung.
+- Neu source la MinerU ZIP co rich metadata, output repaired phai giu duong dan den `mineru_artifact_index.json`.
 - `repair_manifest.json` mapping tung `issue_id` sang patch/action va output path.

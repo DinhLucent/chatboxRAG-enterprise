@@ -22,6 +22,7 @@ const state = {
   selectedDocumentRecord: null,
   selectedDocumentDetail: null,
   selectedReviewDetail: null,
+  chatMessagesList: [],
 };
 
 const ADMIN_VIEWS = new Set(["upload", "review", "operations"]);
@@ -31,6 +32,7 @@ const UPLOAD_WORKFLOW_STEPS = [
   { id: "prepare", label: "Nhận file", hint: "Tạo workplace xử lý tuần tự cho một file." },
   { id: "classify", label: "Phân loại", hint: "Nhận diện nhóm tài liệu và hướng xử lý." },
   { id: "mineru_convert", label: "MinerU", hint: "Convert/extract bằng MinerU, gồm OCR khi cần." },
+  { id: "extract_artifacts", label: "Artifact map", hint: "Trích content_list, middle/model JSON và images từ MinerU ZIP." },
   { id: "compare_sources", label: "So sánh nguồn", hint: "So sánh PDF/XLSX và chọn bản sạch hơn." },
   { id: "preclean", label: "Pre-clean", hint: "Loại nhiễu rõ ràng, giữ tối đa nội dung nguồn." },
   { id: "domain_agent", label: "Domain agent", hint: "Chuẩn hóa nội dung theo domain quy trình." },
@@ -39,9 +41,106 @@ const UPLOAD_WORKFLOW_STEPS = [
   { id: "repair_loop", label: "Repair", hint: "Trả về đúng agent để sửa nếu QA fail." },
   { id: "rag_ready", label: "RAG-ready", hint: "Đóng schema, metadata và chunk/citation map." },
   { id: "review", label: "Human review", hint: "Admin duyệt trước khi đồng bộ tri thức." },
-  { id: "done", label: "Approved", hint: "File đã pass và sẵn sàng cho knowledge base." },
+  { id: "done", label: "Review queue", hint: "Xử lý xong và chờ human approval; chưa đồng bộ knowledge base." },
   { id: "ocr_required", label: "Cần OCR", hint: "Cần OCR hoặc kiểm tra thủ công trước khi tiếp tục." },
   { id: "failed", label: "Lỗi", hint: "Workflow dừng vì lỗi cần xử lý." },
+];
+
+const AGENT_WORKFLOW_BLUEPRINT = [
+  {
+    id: "intake",
+    title: "Intake",
+    stage: "prepare",
+    skill: "data-pipeline-orchestrator",
+    input: "inbox/root_source raw file",
+    output: "run_plan + source_id",
+    gate: "single file/group only",
+  },
+  {
+    id: "convert",
+    title: "MinerU Convert",
+    stage: "mineru_convert",
+    skill: "mineru-source-converter",
+    input: "PDF/XLSX primary candidates",
+    output: "raw .md + ZIP sidecars",
+    gate: "MinerU only, no parser fallback",
+  },
+  {
+    id: "artifact",
+    title: "Artifact Map",
+    stage: "extract_artifacts",
+    skill: "mineru-source-converter",
+    input: "mineru_result.zip",
+    output: "mineru_artifact_index.json",
+    gate: "content_list/middle/images kept",
+  },
+  {
+    id: "audit",
+    title: "Source QA",
+    stage: "qa",
+    skill: "source-output-quality-auditor",
+    input: "source + Markdown + sidecars",
+    output: "audit_report + repair_request",
+    gate: "source-faithfulness + citation",
+  },
+  {
+    id: "repair",
+    title: "Repair Loop",
+    stage: "repair_loop",
+    skill: "rag-markdown-repairer",
+    input: "QA handoff + MinerU refs",
+    output: "clean Markdown + fixed anchors",
+    gate: "max loop then human review",
+  },
+  {
+    id: "package",
+    title: "RAG-ready",
+    stage: "rag_ready",
+    skill: "ragflow-schema-indexer",
+    input: "approved QA output",
+    output: "metadata, chunks, citation_map",
+    gate: "no RAGFlow sync yet",
+  },
+  {
+    id: "evolve",
+    title: "Learning",
+    stage: "review",
+    skill: "data-skill-evolution",
+    input: "run logs + audit issues",
+    output: "rule candidates",
+    gate: "human approves changes",
+  },
+];
+
+const PROMPT_PACKET_BLUEPRINT = [
+  {
+    title: "Source Packet",
+    items: ["selected files", "absolute paths", "business role", "primary/supporting candidates"],
+  },
+  {
+    title: "Policy Packet",
+    items: ["immutable raw source", "MinerU-only conversion", "no duplicate PDF/XLSX ingest"],
+  },
+  {
+    title: "Workflow Packet",
+    items: ["skill order", "one file at a time", "repair loop limit", "dashboard stage updates"],
+  },
+  {
+    title: "Skill Contract Packet",
+    items: ["skill_read_receipts", "subagent prompt contract", "handoff checker", "RAG readiness contract"],
+  },
+  {
+    title: "Evidence Packet",
+    items: ["mineru_artifact_index", "content_list_v2", "middle.json", "images", "citation anchors"],
+  },
+  {
+    title: "Handoff Packet",
+    items: ["run_id", "step", "status", "source_ids", "artifacts", "quality_gates", "next_skill"],
+  },
+  {
+    title: "Output Packet",
+    items: ["normalized Markdown", "metadata", "section index", "chunk plan", "citation map", "quality report"],
+  },
 ];
 
 const WORKFLOW_STEP_ALIASES = {
@@ -54,6 +153,7 @@ const WORKFLOW_STEP_ALIASES = {
   queue: "mineru_convert",
   parse: "mineru_convert",
   download: "mineru_convert",
+  extract_artifacts: "extract_artifacts",
   build_outputs: "mineru_convert",
   mineru: "mineru_convert",
   mineru_convert: "mineru_convert",
@@ -188,6 +288,7 @@ async function refreshAll() {
     api("/api/llm/config"),
   ]);
   Object.assign(state, { authStatus, health, manifest, uploadQueue, promptTemplates, gaps, queries, runs, incidents, diagnostics, llmPresets, llmConfig });
+  await refreshSelectedDetails();
   syncAdminAccess();
   if (!state.llmDraft) {
     state.llmDraft = llmConfigToDraft(llmConfig, llmPresets);
@@ -205,9 +306,42 @@ async function refreshAll() {
   renderInbox();
   renderPromptTemplates();
   renderManifest();
+  if (state.selectedDocumentRecord) {
+    renderDocumentInspector("#documentInspector", state.selectedDocumentDetail);
+  }
   renderPending();
+  if (state.selectedReviewRecord) {
+    renderDocumentInspector("#reviewInspector", state.selectedReviewDetail, {
+      emptyText: "Chọn tài liệu chờ duyệt để kiểm tra metadata và QA trước khi duyệt.",
+    });
+    syncReviewFormFromDetail(state.selectedReviewDetail);
+  }
   renderQuality();
   renderOperations();
+  updateArchitectureStatus(health);
+}
+
+async function refreshSelectedDetails() {
+  if (state.selectedDocumentRecord) {
+    const current = state.manifest.find((record) => documentKey(record) === documentKey(state.selectedDocumentRecord));
+    if (current) {
+      state.selectedDocumentRecord = current;
+      state.selectedDocumentDetail = await api(`/api/documents/${encodeURIComponent(current.doc_id)}/${encodeURIComponent(current.version)}`);
+    } else {
+      state.selectedDocumentRecord = null;
+      state.selectedDocumentDetail = null;
+    }
+  }
+  if (state.selectedReviewRecord) {
+    const current = state.manifest.find((record) => documentKey(record) === documentKey(state.selectedReviewRecord));
+    if (current) {
+      state.selectedReviewRecord = current;
+      state.selectedReviewDetail = await api(`/api/documents/${encodeURIComponent(current.doc_id)}/${encodeURIComponent(current.version)}`);
+    } else {
+      state.selectedReviewRecord = null;
+      state.selectedReviewDetail = null;
+    }
+  }
 }
 
 function serviceClass(state) {
@@ -269,7 +403,8 @@ function renderUploadWorkflow() {
   const summary = state.uploadQueue?.summary || {};
   const items = state.uploadQueue?.items || [];
   const overviewTarget = qs("#uploadWorkflowOverview");
-  const statusOrder = ["queue", "processing", "done", "ocr_required", "failed"];
+  const mapTarget = qs("#agentWorkflowMap");
+  const statusOrder = ["queue", "processing", "done", "pending_review", "approved", "ocr_required", "failed", "failed_review"];
   cardsTarget.innerHTML = statusOrder
     .map((status) => `
       <div class="status-card ${escapeHtml(status)}">
@@ -280,6 +415,9 @@ function renderUploadWorkflow() {
     .join("");
   if (overviewTarget) {
     overviewTarget.innerHTML = renderWorkflowOverview(items);
+  }
+  if (mapTarget) {
+    mapTarget.innerHTML = renderAgentWorkflowMap(items);
   }
 
   rowsTarget.innerHTML = items.length
@@ -331,12 +469,13 @@ function renderPromptTemplates() {
           `
         )
         .join("")
-    : `<option value="process_raw">Xu ly raw data</option>`;
+    : `<option value="process_raw">Xử lý dữ liệu thô (Raw data)</option>`;
   const nextValue = templates.some((mode) => mode.id === current)
     ? current
     : state.promptTemplates?.default_mode || templates[0]?.id || "process_raw";
   select.value = nextValue;
   renderPromptModeHelp();
+  renderPromptArchitecture();
   renderPromptTabs();
 }
 
@@ -345,7 +484,8 @@ function renderPromptModeHelp() {
   const help = qs("#promptModeHelp");
   if (!select || !help) return;
   const mode = (state.promptTemplates?.modes || []).find((item) => item.id === select.value);
-  help.textContent = mode?.description || "Chon che do prompt de dieu phoi AI agent xu ly data dung workflow.";
+  help.textContent = mode?.description || "Chọn chế độ prompt để điều phối AI agent xử lý dữ liệu đúng quy trình (workflow).";
+  renderPromptArchitecture();
 }
 
 function renderPromptTabs() {
@@ -385,7 +525,7 @@ function renderQueueRow(item) {
         <div class="item-meta">${escapeHtml(item.relative_path)}${item.doc_id ? `<br>${escapeHtml(item.doc_id)} ${escapeHtml(item.title || "")}` : ""}${trace}</div>
       </td>
       <td>${escapeHtml(typeLabel(item.suggested_type))}</td>
-      <td>${statusPill(item.status)}</td>
+      <td>${statusPill(item.display_status || item.status)}</td>
       <td>${renderProcessingStage(item)}</td>
       <td>${escapeHtml(item.version || "-")}</td>
       <td>${escapeHtml(formatDateTime(item.updated_at))}</td>
@@ -406,6 +546,23 @@ function renderProcessingStage(item) {
         item.qa_issues?.length ? ` | ${escapeHtml(item.qa_issues.join(", "))}` : ""
       }</div>`
     : "";
+  const checkpoint = item.checkpoint ? `<div class="item-meta">Checkpoint: ${escapeHtml(item.checkpoint)}</div>` : "";
+  const handoff = item.handoff_path ? `<div class="item-meta">Handoff: ${escapeHtml(item.handoff_path)}</div>` : "";
+  const nextSkill = item.next_skill ? `<div class="item-meta">Next skill: ${escapeHtml(item.next_skill)}</div>` : "";
+  const qualityGateKeys = item.quality_gates && typeof item.quality_gates === "object" ? Object.keys(item.quality_gates) : [];
+  const gates = qualityGateKeys.length ? `<div class="item-meta">Quality gates: ${escapeHtml(qualityGateKeys.join(", "))}</div>` : "";
+  const artifacts = Array.isArray(item.artifacts) && item.artifacts.length
+    ? `<div class="item-meta">Artifacts: ${escapeHtml(String(item.artifacts.length))}</div>`
+    : "";
+  const manifest = item.manifest_status
+    ? `<div class="item-meta">Manifest: ${escapeHtml(item.manifest_status)}${item.approved_by ? ` | approved_by: ${escapeHtml(item.approved_by)}` : ""}</div>`
+    : "";
+  const review = item.review_status
+    ? `<div class="item-meta">Review: ${escapeHtml(item.review_status)}${item.simulated_approval ? " | simulated" : ""}</div>`
+    : "";
+  const ragflow = item.ragflow_ingestion
+    ? `<div class="item-meta">RAGFlow: ${escapeHtml(typeof item.ragflow_ingestion === "string" ? item.ragflow_ingestion : JSON.stringify(item.ragflow_ingestion))}</div>`
+    : "";
   return `
     <div class="stage-cell">
       <div class="stage-current">
@@ -413,7 +570,7 @@ function renderProcessingStage(item) {
         ${rawLabel}
       </div>
       ${renderWorkflowTimeline(item)}
-      ${detail}${qa}
+      ${detail}${qa}${manifest}${review}${ragflow}${checkpoint}${handoff}${nextSkill}${gates}${artifacts}
     </div>
   `;
 }
@@ -439,6 +596,91 @@ function renderWorkflowOverview(items) {
       }).join("")}
     </div>
   `;
+}
+
+function renderAgentWorkflowMap(items) {
+  const activeStep = mostCommonActiveWorkflowStep(items);
+  return `
+    <div class="workflow-map-header">
+      <div>
+        <h3>Workflow xử lý data khép kín</h3>
+        <p>Agent đọc từ trái sang phải, mỗi bước tạo handoff rõ ràng cho bước kế tiếp.</p>
+      </div>
+      <span class="workflow-map-badge">${escapeHtml(items.length)} file trong hàng chờ</span>
+    </div>
+    <div class="workflow-map-lanes" role="list">
+      ${AGENT_WORKFLOW_BLUEPRINT.map((node, index) => {
+        const stateClass = activeStep === node.stage ? "active" : workflowStepIndex(node.stage) < workflowStepIndex(activeStep) ? "done" : "waiting";
+        return `
+          <article class="workflow-map-node ${stateClass}" role="listitem">
+            <div class="workflow-map-node-top">
+              <span class="workflow-map-order">${index + 1}</span>
+              <strong>${escapeHtml(node.title)}</strong>
+            </div>
+            <div class="workflow-map-skill">${escapeHtml(node.skill)}</div>
+            <dl class="workflow-map-meta">
+              <div><dt>Input</dt><dd>${escapeHtml(node.input)}</dd></div>
+              <div><dt>Output</dt><dd>${escapeHtml(node.output)}</dd></div>
+              <div><dt>Gate</dt><dd>${escapeHtml(node.gate)}</dd></div>
+            </dl>
+          </article>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function mostCommonActiveWorkflowStep(items) {
+  if (!items.length) return "waiting";
+  const counts = items.reduce((memo, item) => {
+    const step = workflowVisualStep(item);
+    memo[step] = (memo[step] || 0) + 1;
+    return memo;
+  }, {});
+  return Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || "waiting";
+}
+
+function renderPromptArchitecture() {
+  const target = qs("#promptArchitecture");
+  if (!target) return;
+  const selectedMode = qs("#promptModeSelect")?.value || state.promptTemplates?.default_mode || "process_raw";
+  const mode = (state.promptTemplates?.modes || []).find((item) => item.id === selectedMode);
+  const packets = promptArchitecturePackets();
+  target.innerHTML = `
+    <div class="prompt-architecture-header">
+      <div>
+        <h3>Kiến trúc prompt bàn giao cho AI Agent</h3>
+        <p>${escapeHtml(mode?.label || "Task prompt")} · ${escapeHtml(mode?.request_type || "workflow")}</p>
+      </div>
+      <span class="workflow-map-badge">${escapeHtml(state.promptTemplates?.prompt_version || "agent-task-v3")}</span>
+    </div>
+    <div class="prompt-packet-grid">
+      ${packets.map((packet) => `
+        <section class="prompt-packet">
+          <strong>${escapeHtml(packet.title)}</strong>
+          ${packet.purpose ? `<p>${escapeHtml(packet.purpose)}</p>` : ""}
+          <ul>
+            ${packet.items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}
+          </ul>
+        </section>
+      `).join("")}
+    </div>
+  `;
+}
+
+function promptArchitecturePackets() {
+  const backendPackets = state.promptTemplates?.prompt_architecture;
+  if (!Array.isArray(backendPackets) || !backendPackets.length) return PROMPT_PACKET_BLUEPRINT;
+  return backendPackets.map((packet) => ({
+    title: packetTitle(packet.packet),
+    purpose: packet.purpose || "",
+    items: Array.isArray(packet.fields) ? packet.fields : [],
+  }));
+}
+
+function packetTitle(packetId) {
+  const value = String(packetId || "packet").replace(/_/g, " ");
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function renderWorkflowTimeline(item) {
@@ -500,6 +742,15 @@ function workflowStepIndex(step) {
 }
 
 function renderQueueAction(item) {
+  if (item.display_status === "approved") {
+    return `<span class="item-meta">Sẵn sàng ingest RAGFlow</span>`;
+  }
+  if (item.display_status === "pending_review") {
+    return `<span class="item-meta">Waiting for human review</span>`;
+  }
+  if (item.display_status === "failed_review") {
+    return `<span class="item-meta">${escapeHtml(item.processing_detail || "Cần AI agent sửa lại")}</span>`;
+  }
   if (item.status === "queue") {
     return `<button class="button secondary compact queue-row-action" data-source="${escapeHtml(item.source)}" data-path="${escapeHtml(item.relative_path)}" data-action="generate" type="button">Tạo prompt</button>`;
   }
@@ -546,6 +797,7 @@ function formatDateTime(value) {
 
 function statusLabel(status) {
   const labels = {
+    approved: "\u0110\u00e3 duy\u1ec7t",
     queue: "Hàng chờ",
     processing: "Đang xử lý",
     done: "Hoàn tất",
@@ -587,6 +839,7 @@ function processingStepLabel(step) {
     queue: "Vào hàng chờ",
     parse: "Phân tích",
     download: "Tải kết quả",
+    extract_artifacts: "Trích artifact",
     build_outputs: "Dựng đầu ra",
     mineru_convert: "MinerU convert",
     compare_sources: "So sánh nguồn",
@@ -725,6 +978,34 @@ function feedbackLabel(feedback) {
   return labels[feedback] || feedback || "chưa phản hồi";
 }
 
+function percentFormat(val) {
+  if (val === null || val === undefined) return "-";
+  const num = Number(val);
+  if (Number.isNaN(num)) return val;
+  return `${Math.round(num * 100)}%`;
+}
+
+function gapReasonLabel(reason) {
+  const labels = {
+    no_active_source: "Không tìm thấy nguồn tài liệu",
+    out_of_active_engineering_scope: "Ngoài phạm vi tài liệu kỹ thuật",
+    user_feedback_correct: "Đánh giá Đúng (Cần xác nhận lại)",
+    user_feedback_wrong_source: "Phản hồi: Sai nguồn thông tin",
+    user_feedback_no_answer: "Phản hồi: Chatbot không trả lời được",
+    ragflow_answer_missing_citation: "Thiếu trích dẫn (RAGFlow)",
+    ragflow_error: "Lỗi kết nối RAGFlow",
+    ragflow_not_configured: "RAGFlow chưa được cấu hình",
+    ragflow_not_configured_local_fallback_disabled: "RAGFlow lỗi/chưa cấu hình (Local Fallback tắt)",
+    ragflow_error_local_fallback_disabled: "Lỗi RAGFlow (Local Fallback tắt)",
+  };
+  if (!reason) return "Khoảng trống chưa xác định";
+  if (reason.startsWith("user_feedback_")) {
+    const feedbackType = reason.replace("user_feedback_", "");
+    return labels[reason] || `Phản hồi tiêu cực: ${feedbackType}`;
+  }
+  return labels[reason] || reason;
+}
+
 function warningCodeLabel(code) {
   const labels = {
     missing_markdown: "Thiếu Markdown",
@@ -845,7 +1126,7 @@ function relatedRecordsTable(records = []) {
   `;
 }
 
-function bindInspectorButtons(container) {
+function bindInspectorButtons(container, detail) {
   container.querySelectorAll(".copy-text-btn").forEach((button) => {
     button.addEventListener("click", async () => {
       await copyText(button.dataset.copy || "", "Đã sao chép");
@@ -856,6 +1137,12 @@ function bindInspectorButtons(container) {
       activateInspectorTab(container, button.dataset.tab);
     });
   });
+  const openReaderBtn = container.querySelector("#openReaderBtn");
+  if (openReaderBtn && detail) {
+    openReaderBtn.addEventListener("click", () => {
+      openMarkdownReader(detail);
+    });
+  }
 }
 
 function activateInspectorTab(container, tab) {
@@ -1201,23 +1488,52 @@ function renderExcelPreview(excel) {
   if (excel.error) {
     return `<div class="review-alert warning"><strong>Không đọc được XLSX</strong><span>${escapeHtml(excel.error)}</span></div>`;
   }
-  const sheet = (excel.sheets || [])[0];
-  if (!sheet?.rows?.length) {
+  const sheets = excel.sheets || [];
+  if (!sheets.length) {
     return `<div class="empty compact-empty">Không có bảng preview trong file Excel.</div>`;
   }
+
+  // Render tabs
+  const tabsHtml = sheets.map((sheet, index) => {
+    const activeClass = index === 0 ? "active" : "";
+    return `<button type="button" class="excel-tab-btn ${activeClass}" data-sheet-index="${index}">${escapeHtml(sheet.name)}</button>`;
+  }).join("");
+
+  // Render sheet tables
+  const tablesHtml = sheets.map((sheet, index) => {
+    const hiddenAttr = index === 0 ? "" : "hidden";
+    if (!sheet.rows?.length) {
+      return `
+        <div class="excel-sheet-pane" data-sheet-index="${index}" ${hiddenAttr}>
+          <div class="empty compact-empty">Không có dữ liệu trong sheet ${escapeHtml(sheet.name)}.</div>
+        </div>
+      `;
+    }
+    return `
+      <div class="excel-sheet-pane" data-sheet-index="${index}" ${hiddenAttr}>
+        <div class="excel-preview-scroll">
+          <table class="excel-preview-table">
+            <tbody>
+              ${sheet.rows.map((row) => `
+                <tr>
+                  ${row.map((cell) => `<td>${escapeHtml(cell || "")}</td>`).join("")}
+                </tr>
+              `).join("")}
+            </tbody>
+          </table>
+        </div>
+        ${sheet.truncated ? `<div class="item-meta warning" style="margin-top: 4px;">* Dữ liệu chỉ hiển thị 40 dòng đầu tiên của sheet.</div>` : ""}
+      </div>
+    `;
+  }).join("");
+
   return `
     <div class="excel-preview">
-      <div class="item-meta">Sheet: ${escapeHtml(sheet.name)} | ${escapeHtml(excel.sheet_count || 1)} sheet</div>
-      <div class="excel-preview-scroll">
-        <table class="excel-preview-table">
-          <tbody>
-            ${sheet.rows.map((row) => `
-              <tr>
-                ${row.map((cell) => `<td>${escapeHtml(cell || "")}</td>`).join("")}
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
+      <div class="excel-tabs">
+        ${tabsHtml}
+      </div>
+      <div class="excel-panes">
+        ${tablesHtml}
       </div>
     </div>
   `;
@@ -1226,12 +1542,23 @@ function renderExcelPreview(excel) {
 function renderSourceCompare(detail) {
   const source = detail.source_preview || {};
   const markdown = detail.markdown || {};
+  const downloadUrl = `/api/documents/${encodeURIComponent(detail.doc_id)}/${encodeURIComponent(detail.version)}/source-file`;
   return `
     <div class="source-compare-grid">
       <section class="source-compare-pane">
         <div class="source-compare-heading">
           <strong>File gốc</strong>
           <span>${escapeHtml(source.file_name || source.path || "-")}</span>
+          ${source.exists ? `
+            <a href="${downloadUrl}" class="button secondary compact" download style="text-decoration: none; margin-left: auto; display: inline-flex; align-items: center; gap: 4px;">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
+              </svg>
+              Tải file gốc
+            </a>
+          ` : ""}
         </div>
         <div class="source-preview-frame">${renderSourcePreview(source)}</div>
       </section>
@@ -1265,6 +1592,11 @@ async function copyText(content, message = "Đã sao chép") {
   toast(message);
 }
 
+function qaDisplayStatus(detail, record) {
+  const data = detail?.qa_report?.data || {};
+  return data.quality_status || data.status || record?.extra?.quality_status || record?.extra?.qa_status || "-";
+}
+
 function renderDocumentInspector(targetSelector, detail, options = {}) {
   const target = qs(targetSelector);
   if (!target) return;
@@ -1275,7 +1607,7 @@ function renderDocumentInspector(targetSelector, detail, options = {}) {
   }
 
   const record = detail.record || {};
-  const qaStatus = detail.qa_report?.data?.status || record.extra?.qa_status || "-";
+  const qaStatus = qaDisplayStatus(detail, record);
   const markdown = detail.markdown || {};
   const citation = detail.citation || null;
   const citationPreview = detail.citation_preview || null;
@@ -1288,6 +1620,10 @@ function renderDocumentInspector(targetSelector, detail, options = {}) {
         <div class="item-meta">${escapeHtml(record.title || "")}</div>
       </div>
       <div class="inspector-statuses">
+        <button id="openReaderBtn" class="button compact primary" type="button" style="display: inline-flex; align-items: center; gap: var(--space-1); font-weight: 600; padding: 5px 10px; height: auto; font-size: 11px; margin-right: 4px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width: 13px; height: 13px;"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+          <span>Đọc tài liệu</span>
+        </button>
         ${statusPill(record.status)}
         <span class="status info">QA ${escapeHtml(qaStatus)}</span>
       </div>
@@ -1352,7 +1688,7 @@ function renderDocumentInspector(targetSelector, detail, options = {}) {
       ${relatedRecordsTable(detail.related_records || [])}
     </div>
   `;
-  bindInspectorButtons(target);
+  bindInspectorButtons(target, detail);
   if (citation) {
     activateInspectorTab(target, "markdown");
     window.setTimeout(() => scrollCitationIntoView(target), 80);
@@ -1373,6 +1709,7 @@ async function loadDocumentDetail(record, target = "documents") {
     renderDocumentInspector("#reviewInspector", detail, {
       emptyText: "Chọn tài liệu chờ duyệt để kiểm tra metadata và QA trước khi duyệt.",
     });
+    syncReviewFormFromDetail(detail);
   } else {
     state.selectedDocumentRecord = record;
     state.selectedDocumentDetail = detail;
@@ -1533,35 +1870,52 @@ function renderDocumentFilters() {
 
 function renderPending() {
   const pending = state.manifest.filter((record) => record.status === "pending_review");
+  const failed = state.manifest.filter((record) => record.status === "failed_review");
   const target = qs("#pendingList");
+  const failedTarget = qs("#failedReviewList");
   if (!target) return;
   if (state.selectedReviewRecord) {
-    const stillPending = pending.some(
+    const stillInReview = [...pending, ...failed].some(
       (record) =>
         record.doc_id === state.selectedReviewRecord.doc_id
         && record.version === state.selectedReviewRecord.version,
     );
-    if (!stillPending) {
+    if (!stillInReview) {
       state.selectedReviewRecord = null;
       state.selectedReviewDetail = null;
     }
   }
   if (!pending.length) {
     target.innerHTML = `<div class="empty">Không có tài liệu chờ duyệt.</div>`;
-    renderReviewSelection();
-    return;
+  } else {
+    target.innerHTML = pending
+      .map((record) => reviewQueueButton(record, "pending-pick"))
+      .join("");
   }
-  target.innerHTML = pending
-    .map((record) => `
-      <button class="item pending-pick" data-doc-id="${escapeHtml(record.doc_id)}" data-version="${escapeHtml(record.version)}" type="button">
-        <div class="item-title">${escapeHtml(record.doc_id)} v${escapeHtml(record.version)}</div>
-        <div class="item-meta">${escapeHtml(record.title)}<br>${escapeHtml(categoryLabel(record.category))} | ${escapeHtml(record.owner)}</div>
-      </button>
-    `)
-    .join("");
-  document.querySelectorAll(".pending-pick").forEach((button) => {
+  if (failedTarget) {
+    failedTarget.innerHTML = failed.length
+      ? failed.map((record) => reviewQueueButton(record, "failed-review-pick")).join("")
+      : `<div class="empty compact-empty">Không có tài liệu không duyệt.</div>`;
+  }
+  bindReviewQueuePickers(".pending-pick", pending);
+  bindReviewQueuePickers(".failed-review-pick", failed);
+  renderReviewSelection();
+}
+
+function reviewQueueButton(record, className) {
+  const reason = record.status_reason ? `<br>Lý do: ${escapeHtml(record.status_reason)}` : "";
+  return `
+    <button class="item ${className}" data-doc-id="${escapeHtml(record.doc_id)}" data-version="${escapeHtml(record.version)}" type="button">
+      <div class="item-title">${escapeHtml(record.doc_id)} v${escapeHtml(record.version)}</div>
+      <div class="item-meta">${escapeHtml(record.title)}<br>${escapeHtml(categoryLabel(record.category))} | ${escapeHtml(record.owner)}${reason}</div>
+    </button>
+  `;
+}
+
+function bindReviewQueuePickers(selector, records) {
+  document.querySelectorAll(selector).forEach((button) => {
     button.addEventListener("click", () => {
-      state.selectedReviewRecord = pending.find(
+      state.selectedReviewRecord = records.find(
         (record) => record.doc_id === button.dataset.docId && record.version === button.dataset.version,
       ) || null;
       state.selectedReviewDetail = null;
@@ -1569,7 +1923,6 @@ function renderPending() {
       loadDocumentDetail(state.selectedReviewRecord, "review").catch((err) => toast(err.message));
     });
   });
-  renderReviewSelection();
 }
 
 function renderReviewSelection() {
@@ -1579,6 +1932,12 @@ function renderReviewSelection() {
   qs("#reviewDocId").value = record?.doc_id || "";
   qs("#reviewVersion").value = record?.version || "";
   document.querySelectorAll(".pending-pick").forEach((button) => {
+    button.classList.toggle(
+      "selected",
+      record?.doc_id === button.dataset.docId && record?.version === button.dataset.version,
+    );
+  });
+  document.querySelectorAll(".failed-review-pick").forEach((button) => {
     button.classList.toggle(
       "selected",
       record?.doc_id === button.dataset.docId && record?.version === button.dataset.version,
@@ -1605,9 +1964,44 @@ function renderReviewSelection() {
       emptyText: "Đang tải hồ sơ tài liệu...",
     });
   }
-  const enabled = Boolean(record);
+  const enabled = Boolean(record && record.status === "pending_review");
   qs("#reviewApproveBtn").disabled = !enabled;
   qs("#reviewRejectBtn").disabled = !enabled;
+}
+
+function collectReviewChecklist() {
+  const checklist = {};
+  document.querySelectorAll(".review-check[data-review-key]").forEach((input) => {
+    checklist[input.dataset.reviewKey] = Boolean(input.checked);
+  });
+  return checklist;
+}
+
+function allReviewChecksPassed(checklist) {
+  const values = Object.values(checklist || {});
+  return values.length > 0 && values.every(Boolean);
+}
+
+function resetReviewFormInputs() {
+  qs("#rejectReason").value = "";
+  document.querySelectorAll(".review-check").forEach((input) => {
+    input.checked = false;
+  });
+}
+
+function syncReviewFormFromDetail(detail) {
+  const checklist = detail?.human_review?.data?.checklist || {};
+  document.querySelectorAll(".review-check[data-review-key]").forEach((input) => {
+    input.checked = checklist[input.dataset.reviewKey] === true;
+  });
+  const reviewer = detail?.human_review?.data?.reviewer || "";
+  if (reviewer && qs("#approvedBy") && !qs("#approvedBy").value) {
+    qs("#approvedBy").value = reviewer;
+  }
+  const notes = detail?.human_review?.data?.notes || "";
+  if (notes && qs("#rejectReason") && !qs("#rejectReason").value) {
+    qs("#rejectReason").value = notes;
+  }
 }
 
 function renderQuality() {
@@ -1617,14 +2011,38 @@ function renderQuality() {
   evaluationBox.classList.toggle("empty", !evaluation);
   evaluationBox.innerHTML = evaluation
     ? `
-      <div class="item">
-        <div class="item-title">${evaluation.pass ? "Đánh giá đạt" : "Đánh giá cần xử lý"}</div>
-        <div class="item-meta">
-          Nguồn: ${escapeHtml(evaluation.provider || "-")} | Hoàn tất: ${escapeHtml(evaluation.finished_at || "-")}<br>
-          Top-3 hit: ${escapeHtml(evaluation.metrics?.top3_doc_hit_rate ?? "-")} |
-          Trích dẫn: ${escapeHtml(evaluation.metrics?.citation_accuracy ?? "-")} |
-          Không trả lời: ${escapeHtml(evaluation.metrics?.no_answer_accuracy ?? "-")} |
-          Độ trễ p95: ${escapeHtml(evaluation.metrics?.latency_p95_ms ?? "-")}ms
+      <div style="display: flex; flex-direction: column; gap: var(--space-4); width: 100%;">
+        <div class="item" style="border-left: 4px solid ${evaluation.pass ? 'var(--success)' : 'var(--danger)'}; background: ${evaluation.pass ? 'var(--success-soft)' : 'var(--danger-soft)'}; margin: 0; padding: var(--space-3); border-radius: var(--radius-md);">
+          <div class="item-title" style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);">
+            <strong style="color: ${evaluation.pass ? 'var(--success)' : 'var(--danger)'}; font-size: 14px;">
+              ${evaluation.pass ? "✓ ĐÁNH GIÁ ĐẠT TIÊU CHUẨN" : "✗ ĐÁNH GIÁ CẦN XỬ LÝ"}
+            </strong>
+            <span class="status ${evaluation.pass ? 'done' : 'failed'}">
+              ${evaluation.pass ? 'Đạt' : 'Lỗi'}
+            </span>
+          </div>
+          <div class="item-meta" style="margin-top: var(--space-1); font-size: 11px; color: var(--muted-strong);">
+            Bộ kiểm thử: <strong>${escapeHtml(evaluation.provider || "-")}</strong> | Hoàn tất: ${formatDateTime(evaluation.finished_at)}
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--space-3); width: 100%;">
+          <div class="bento-card bento-cyan" style="padding: var(--space-3); margin: 0; min-height: auto; align-items: center; justify-content: center; text-align: center;">
+            <div style="font-size: 10px; font-weight: bold; color: var(--muted); text-transform: uppercase; margin-bottom: var(--space-1);">Top-3 Doc Hit</div>
+            <div style="font-size: 18px; font-weight: 800; color: var(--primary-strong);">${percentFormat(evaluation.metrics?.top3_doc_hit_rate)}</div>
+          </div>
+          <div class="bento-card bento-teal" style="padding: var(--space-3); margin: 0; min-height: auto; align-items: center; justify-content: center; text-align: center;">
+            <div style="font-size: 10px; font-weight: bold; color: var(--muted); text-transform: uppercase; margin-bottom: var(--space-1);">Trích dẫn</div>
+            <div style="font-size: 18px; font-weight: 800; color: var(--success);">${percentFormat(evaluation.metrics?.citation_accuracy)}</div>
+          </div>
+          <div class="bento-card bento-orange" style="padding: var(--space-3); margin: 0; min-height: auto; align-items: center; justify-content: center; text-align: center;">
+            <div style="font-size: 10px; font-weight: bold; color: var(--muted); text-transform: uppercase; margin-bottom: var(--space-1);">Không trả lời</div>
+            <div style="font-size: 18px; font-weight: 800; color: var(--warning);">${percentFormat(evaluation.metrics?.no_answer_accuracy)}</div>
+          </div>
+          <div class="bento-card bento-blue" style="padding: var(--space-3); margin: 0; min-height: auto; align-items: center; justify-content: center; text-align: center;">
+            <div style="font-size: 10px; font-weight: bold; color: var(--muted); text-transform: uppercase; margin-bottom: var(--space-1);">Trễ p95</div>
+            <div style="font-size: 18px; font-weight: 800; color: #0369a1;">${evaluation.metrics?.p95_latency_ms ?? "-"} ms</div>
+          </div>
         </div>
       </div>
     `
@@ -1634,8 +2052,19 @@ function renderQuality() {
   qs("#gapList").innerHTML = visibleGaps.length
     ? `${listLimitNote(visibleGaps.length, state.gaps.length)}${visibleGaps.map((gap) => `
       <div class="item">
-        <div class="item-title">${escapeHtml(gap.reason)}</div>
-        <div class="item-meta">${escapeHtml(gap.query)}<br>Chủ xử lý: ${escapeHtml(gap.suggested_owner)} | ${escapeHtml(statusLabel(gap.status))}</div>
+        <div class="item-title" style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); width: 100%;">
+          <span style="font-weight: 700; color: var(--primary);">${escapeHtml(gapReasonLabel(gap.reason))}</span>
+          ${statusPill(gap.status)}
+        </div>
+        <div class="item-meta" style="margin-top: var(--space-2); width: 100%;">
+          <div style="font-size: 12px; color: var(--text); font-style: italic; background: var(--surface-muted); padding: var(--space-2); border-radius: var(--radius-sm); border: 1px solid var(--line); margin-bottom: var(--space-2); word-break: break-all; white-space: pre-wrap;">
+            &ldquo;${escapeHtml(gap.query)}&rdquo;
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--muted);">
+            <span>Chủ xử lý: <strong style="color: var(--muted-strong);">${escapeHtml(gap.suggested_owner || "Phòng Kỹ thuật")}</strong></span>
+            <span>Lập lúc: ${formatDateTime(gap.created_at)}</span>
+          </div>
+        </div>
       </div>
     `).join("")}`
     : `<div class="empty">Không có khoảng trống tri thức.</div>`;
@@ -1644,12 +2073,26 @@ function renderQuality() {
   qs("#queryList").innerHTML = visibleQueries.length
     ? `${listLimitNote(visibleQueries.length, state.queries.length)}${visibleQueries.map((query) => `
       <div class="item">
-        <div class="item-title">#${escapeHtml(query.id)} ${escapeHtml(feedbackLabel(query.feedback))}</div>
-        <div class="item-meta">${escapeHtml(query.query)}<br>Độ trễ: ${escapeHtml(query.latency_ms)}ms | Trích dẫn: ${query.answer_has_citation ? "có" : "không"}</div>
-        <div class="button-row">
-          <button class="button secondary feedback-btn" data-id="${escapeHtml(query.id)}" data-feedback="correct" type="button">Đúng</button>
-          <button class="button warning feedback-btn" data-id="${escapeHtml(query.id)}" data-feedback="wrong_source" type="button">Sai nguồn</button>
-          <button class="button danger feedback-btn" data-id="${escapeHtml(query.id)}" data-feedback="no_answer" type="button">Không trả lời</button>
+        <div class="item-title" style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); width: 100%;">
+          <span style="font-weight: 700;">Truy vấn #${escapeHtml(query.id)}</span>
+          <span class="status ${query.feedback ? (query.feedback === 'correct' ? 'done' : (query.feedback === 'wrong_source' ? 'warning' : 'failed')) : 'queue'}">
+            ${escapeHtml(feedbackLabel(query.feedback))}
+          </span>
+        </div>
+        <div class="item-meta" style="margin-top: var(--space-2); width: 100%;">
+          <div style="font-size: 12px; color: var(--text); font-style: italic; background: var(--surface-muted); padding: var(--space-2); border-radius: var(--radius-sm); border: 1px solid var(--line); margin-bottom: var(--space-2); word-break: break-all; white-space: pre-wrap;">
+            &ldquo;${escapeHtml(query.query)}&rdquo;
+          </div>
+          <div style="display: flex; justify-content: space-between; flex-wrap: wrap; gap: var(--space-2); font-size: 11px; color: var(--muted); margin-bottom: var(--space-3);">
+            <span>Độ trễ: <strong style="color: var(--muted-strong);">${escapeHtml(query.latency_ms)} ms</strong></span>
+            <span>Trích dẫn: <strong style="color: ${query.answer_has_citation ? 'var(--success)' : 'var(--danger)'};">${query.answer_has_citation ? "Có dẫn nguồn" : "Không dẫn nguồn"}</strong></span>
+            <span>Thời gian: ${formatDateTime(query.created_at)}</span>
+          </div>
+          <div class="button-row" style="margin-top: var(--space-2);">
+            <button class="button secondary feedback-btn${query.feedback === 'correct' ? ' active-correct' : ''}" data-id="${escapeHtml(query.id)}" data-feedback="correct" type="button" style="min-height: 28px; padding: 4px 10px; font-size: 12px;">Đúng</button>
+            <button class="button secondary feedback-btn${query.feedback === 'wrong_source' ? ' active-wrong' : ''}" data-id="${escapeHtml(query.id)}" data-feedback="wrong_source" type="button" style="min-height: 28px; padding: 4px 10px; font-size: 12px;">Sai nguồn</button>
+            <button class="button secondary feedback-btn${query.feedback === 'no_answer' ? ' active-no' : ''}" data-id="${escapeHtml(query.id)}" data-feedback="no_answer" type="button" style="min-height: 28px; padding: 4px 10px; font-size: 12px;">Không trả lời</button>
+          </div>
         </div>
       </div>
     `).join("")}`
@@ -1683,21 +2126,28 @@ function renderOperations() {
   const visibleIncidents = state.incidents.slice(0, 10);
   qs("#incidentList").innerHTML = visibleIncidents.length
     ? `${listLimitNote(visibleIncidents.length, state.incidents.length)}${visibleIncidents.map((incident) => `
-      <div class="item">
-        <div class="item-title">
-          ${statusPill(incident.severity)} #${escapeHtml(incident.id)} ${escapeHtml(incident.title)}
-        </div>
-        <div class="item-meta">
-          Thành phần: ${escapeHtml(incident.component)} | Trạng thái: ${escapeHtml(statusLabel(incident.status))}<br>
-          ${escapeHtml(incident.detail)}<br>
-          ${escapeHtml(incident.created_at)}
-        </div>
-        ${incident.status === "open" ? `
-          <div class="button-row">
-            <button class="button copy-incident-prompt-btn" data-id="${escapeHtml(incident.id)}" type="button">Sao chép prompt fix</button>
-            <button class="button secondary resolve-incident-btn" data-id="${escapeHtml(incident.id)}" type="button">Đánh dấu đã xử lý</button>
+      <div class="item" style="border-left: 4px solid ${incident.severity === 'critical' ? 'var(--danger)' : (incident.severity === 'error' ? 'var(--warning)' : 'var(--primary)')}; padding-left: var(--space-3);">
+        <div class="item-title" style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); width: 100%;">
+          <span style="font-weight: 700;">#${escapeHtml(incident.id)} - ${escapeHtml(incident.title)}</span>
+          <div style="display: flex; align-items: center; gap: var(--space-2);">
+            ${statusPill(incident.severity)}
+            ${statusPill(incident.status)}
           </div>
-        ` : ""}
+        </div>
+        <div class="item-meta" style="margin-top: var(--space-2); width: 100%;">
+          <div style="color: var(--muted); font-size: 11px; margin-bottom: var(--space-2);">
+            Thành phần: <strong style="color: var(--muted-strong);">${escapeHtml(incident.component)}</strong> | Lập lúc: ${formatDateTime(incident.created_at)}
+          </div>
+          <div style="font-family: var(--font-mono); font-size: 11px; background: rgba(15, 118, 110, 0.04); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: var(--space-2); margin-bottom: var(--space-2); white-space: pre-wrap; word-break: break-all;">
+            ${escapeHtml(incident.detail)}
+          </div>
+          ${incident.status === "open" ? `
+            <div class="button-row" style="margin-top: var(--space-2);">
+              <button class="button copy-incident-prompt-btn compact" data-id="${escapeHtml(incident.id)}" type="button" style="min-height: 28px; padding: 4px 10px; font-size: 12px;">Sao chép prompt sửa lỗi</button>
+              <button class="button secondary resolve-incident-btn compact" data-id="${escapeHtml(incident.id)}" type="button" style="min-height: 28px; padding: 4px 10px; font-size: 12px;">Đánh dấu đã xử lý</button>
+            </div>
+          ` : ""}
+        </div>
       </div>
     `).join("")}`
     : `<div class="empty">Không có sự cố. Dùng Chẩn đoán nếu hệ thống có biểu hiện bất thường.</div>`;
@@ -1706,8 +2156,16 @@ function renderOperations() {
   qs("#ingestionList").innerHTML = visibleRuns.length
     ? `${listLimitNote(visibleRuns.length, state.runs.length)}${visibleRuns.map((run) => `
       <div class="item">
-        <div class="item-title">${escapeHtml(run.status)} ${escapeHtml(run.doc_id || "")} ${escapeHtml(run.version || "")}</div>
-        <div class="item-meta">${escapeHtml(run.created_at)}<br>${escapeHtml(run.error_message || run.run_id || "")}</div>
+        <div class="item-title" style="display: flex; align-items: center; gap: var(--space-2);">
+          ${statusPill(run.status)}
+          <span style="font-weight: 700;">${escapeHtml(run.doc_id || "N/A")}</span>
+          <span class="count-pill" style="font-size: 10px; font-weight: normal; min-width: auto; padding: 2px 6px;">v${escapeHtml(run.version || "1.0")}</span>
+        </div>
+        <div class="item-meta" style="margin-top: var(--space-1); font-family: var(--font-mono); font-size: 11px;">
+          <div>Mã lượt chạy: <code>${escapeHtml(run.run_id)}</code></div>
+          <div style="color: var(--muted);">${formatDateTime(run.created_at)}</div>
+          ${run.error_message ? `<div style="color: var(--danger); margin-top: var(--space-1); padding: var(--space-1) var(--space-2); border-left: 3px solid var(--danger); background: var(--danger-soft); border-radius: 2px;">Lỗi: ${escapeHtml(run.error_message)}</div>` : ""}
+        </div>
       </div>
     `).join("")}`
     : `<div class="empty">Chưa có lượt xử lý dữ liệu.</div>`;
@@ -2096,18 +2554,21 @@ function switchView(viewName) {
   qs(`#view-${viewName}`)?.classList.add("active");
   const metrics = qs("#metrics");
   if (metrics) {
-    metrics.hidden = (viewName === "upload" || viewName === "architecture");
+    metrics.hidden = (viewName === "chat" || viewName === "upload" || viewName === "architecture");
   }
   if (viewName === "architecture") {
     const activeTabButton = document.querySelector("[data-arch-tab].active");
     const activeTab = activeTabButton ? activeTabButton.dataset.archTab : "runtime";
-    if (typeof mermaid !== 'undefined') {
-      requestAnimationFrame(() => {
-        mermaid.run({
-          querySelector: `#arch-${activeTab}-pane .mermaid`,
-        }).catch((err) => console.error("Mermaid trigger error:", err));
+    requestAnimationFrame(() => {
+      renderSelectedDiagram(activeTab);
+      document.querySelectorAll(".arch-desc-pane").forEach((desc) => {
+        desc.classList.remove("active-desc");
       });
-    }
+      const targetDesc = document.getElementById(`arch-${activeTab}-desc`);
+      if (targetDesc) {
+        targetDesc.classList.add("active-desc");
+      }
+    });
   }
   if (window.matchMedia("(max-width: 980px)").matches) {
     const activeView = qs(`#view-${viewName}`);
@@ -2247,19 +2708,70 @@ function setupActions() {
     qs(selector)?.addEventListener("input", renderManifest);
     qs(selector)?.addEventListener("change", renderManifest);
   });
-  document.querySelectorAll(".answer-feedback-btn").forEach((button) => {
-    button.addEventListener("click", async () => {
-      if (!state.lastQueryLogId) {
-        toast("Hãy đặt câu hỏi trước khi gửi phản hồi");
-        return;
+  // Setup event delegation for chatHistory (delegating suggested questions, inline feedback, citation badges)
+  qs("#chatHistory")?.addEventListener("click", async (event) => {
+    // 1. Handle suggested question clicks
+    const card = event.target.closest(".suggested-question-card");
+    if (card) {
+      const query = card.dataset.query;
+      const input = qs("#queryInput");
+      if (input) {
+        input.value = query;
+        qs("#chatForm").dispatchEvent(new Event("submit"));
       }
-      await api("/api/feedback", {
-        method: "POST",
-        body: JSON.stringify({ query_log_id: Number(state.lastQueryLogId), feedback: button.dataset.feedback }),
-      });
-      toast("Đã lưu phản hồi");
-      await refreshAll();
-    });
+      return;
+    }
+
+    // 2. Handle inline feedback buttons
+    const feedbackBtn = event.target.closest(".chat-feedback-btn");
+    if (feedbackBtn) {
+      const logId = feedbackBtn.dataset.logId;
+      const feedback = feedbackBtn.dataset.feedback;
+      if (!logId) return;
+      try {
+        await api("/api/feedback", {
+          method: "POST",
+          body: JSON.stringify({ query_log_id: Number(logId), feedback }),
+        });
+        toast("Đã lưu phản hồi");
+
+        // Toggle active visual state
+        const container = feedbackBtn.closest(".chat-feedback-inline");
+        if (container) {
+          container.querySelectorAll(".chat-feedback-btn").forEach((btn) => {
+            btn.classList.remove("active");
+          });
+          feedbackBtn.classList.add("active");
+        }
+        await refreshAll();
+      } catch (err) {
+        toast(err.message || "Lỗi lưu phản hồi");
+      }
+      return;
+    }
+
+    // 3. Handle citation badge click in chat thread
+    const badge = event.target.closest(".chat-citations-badge");
+    if (badge) {
+      const msgIndex = Number(badge.dataset.messageIndex);
+      const msgData = state.chatMessagesList[msgIndex];
+      if (msgData) {
+        // Highlight this message bubble as active
+        qs("#chatHistory").querySelectorAll(".chat-message.assistant").forEach((bubble, idx) => {
+          bubble.classList.toggle("selected", idx === msgIndex);
+        });
+        renderCitationsList(msgData.citations);
+      }
+      return;
+    }
+  });
+
+  // Handle Enter key inside queryInput textarea
+  qs("#queryInput")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      qs("#chatForm").dispatchEvent(new Event("submit"));
+    }
   });
   qs("#uploadForm").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -2302,6 +2814,12 @@ function setupActions() {
   qs("#scanSourceBtn").addEventListener("click", async () => {
     await refreshUploadQueue();
     toast("Đã quét thư mục nguồn");
+  });
+  qs("#promptArchitecture")?.addEventListener("click", (event) => {
+    const header = event.target.closest(".prompt-architecture-header");
+    if (header) {
+      qs("#promptArchitecture")?.classList.toggle("collapsed");
+    }
   });
   qs("#generatePromptBtn").addEventListener("click", () => generateAgentPrompt().catch((err) => toast(err.message)));
   qs("#generateGoalPromptBtn")?.addEventListener("click", () => generateAgentGoalPrompt().catch((err) => toast(err.message)));
@@ -2380,48 +2898,140 @@ function setupActions() {
       button.textContent = "Kiểm tra LLM";
     }
   });
+function renderMarkdownText(text) {
+  if (!text) return "";
+  return text.split("\n").map((line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return "<br>";
+    if (trimmed.startsWith("- ")) {
+      return `<li class="chat-li">${markdownInline(trimmed.substring(2))}</li>`;
+    }
+    if (trimmed.startsWith("* ")) {
+      return `<li class="chat-li">${markdownInline(trimmed.substring(2))}</li>`;
+    }
+    return `<p class="chat-p">${markdownInline(line)}</p>`;
+  }).join("");
+}
+
+function renderCitationsList(citations) {
+  const citationsContainer = qs("#citations");
+  if (!citationsContainer) return;
+  citationsContainer.classList.remove("empty");
+  citationsContainer.innerHTML = citations.length
+    ? citations.map((citation, index) => `
+      <button class="item citation-card" type="button" data-citation-index="${index}">
+        <div class="item-title">${escapeHtml(citation.title || citation.doc_id || "Nguồn")}</div>
+        <div class="item-meta">
+          Mã: ${escapeHtml(citation.doc_id || "-")} | Phiên bản: ${escapeHtml(citation.version || "-")}<br>
+          ${escapeHtml(citation.anchor_id || citation.chunk_id || "")}
+        </div>
+        <div class="item-meta">${escapeHtml(citation.matched_excerpt || citation.excerpt || "")}</div>
+      </button>
+    `).join("")
+    : `<div class="empty">Không có nguồn trích dẫn trả về.</div>`;
+
+  citationsContainer.querySelectorAll(".citation-card").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const citation = citations[Number(button.dataset.citationIndex)];
+      try {
+        await openCitationInInspector(citation);
+      } catch (error) {
+        toast(error.message || "Không mở được đoạn trích Markdown");
+      }
+    });
+  });
+}
+
   qs("#chatForm").addEventListener("submit", async (event) => {
     event.preventDefault();
+    const queryInput = qs("#queryInput");
+    const query = queryInput.value.trim();
+    if (!query) return;
+
     const payload = {
-      query: qs("#queryInput").value,
+      query: query,
       user_id: qs("#userIdInput")?.value || null,
       provider: qs("#providerSelect")?.value || "auto",
       use_llm: Boolean(qs("#useLlmInput")?.checked),
     };
+
+    const chatHistory = qs("#chatHistory");
+    if (!chatHistory) return;
+
+    // Remove welcome screen if it exists
+    const welcome = chatHistory.querySelector(".chat-welcome");
+    if (welcome) {
+      welcome.remove();
+    }
+
+    // Append User message
+    const userMsg = document.createElement("div");
+    userMsg.className = "chat-message user";
+    userMsg.innerHTML = `
+      <div class="chat-bubble">
+        <p class="chat-p">${escapeHtml(query)}</p>
+      </div>
+      <div class="chat-message-meta">${new Date().toLocaleTimeString()}</div>
+    `;
+    chatHistory.appendChild(userMsg);
+
+    // Append loading Assistant bubble
+    const assistantMsg = document.createElement("div");
+    assistantMsg.className = "chat-message assistant";
+    assistantMsg.innerHTML = `
+      <div class="chat-bubble">
+        <div class="typing-indicator">
+          <span></span><span></span><span></span>
+        </div>
+      </div>
+    `;
+    chatHistory.appendChild(assistantMsg);
+    chatHistory.scrollTop = chatHistory.scrollHeight;
+
+    // Clear query input
+    queryInput.value = "";
+
     try {
       const result = await api("/api/chat", { method: "POST", body: JSON.stringify(payload) });
       state.lastQueryLogId = result.query_log_id;
-      qs("#answerBox").classList.remove("empty");
-      qs("#answerBox").textContent = result.answer;
-      qs("#answerFeedback").hidden = !result.query_log_id;
-      qs("#citations").classList.remove("empty");
-      qs("#citations").innerHTML = result.citations.length
-        ? result.citations.map((citation, index) => `
-          <button class="item citation-card" type="button" data-citation-index="${index}">
-            <div class="item-title">${escapeHtml(citation.title || citation.doc_id || "Nguồn")}</div>
-            <div class="item-meta">
-              Mã: ${escapeHtml(citation.doc_id || "-")} | Phiên bản: ${escapeHtml(citation.version || "-")}<br>
-              ${escapeHtml(citation.anchor_id || citation.chunk_id || "")}
-            </div>
-            <div class="item-meta">${escapeHtml(citation.matched_excerpt || citation.excerpt || "")}</div>
-          </button>
-        `).join("")
-        : `<div class="empty">Không có nguồn trích dẫn trả về.</div>`;
-      document.querySelectorAll(".citation-card").forEach((button) => {
-        button.addEventListener("click", async () => {
-          const citation = result.citations[Number(button.dataset.citationIndex)];
-          try {
-            await openCitationInInspector(citation);
-          } catch (error) {
-            toast(error.message || "Không mở được đoạn trích Markdown");
-          }
-        });
+
+      // Save result in messages history list
+      if (!state.chatMessagesList) state.chatMessagesList = [];
+      const msgIndex = state.chatMessagesList.length;
+      state.chatMessagesList.push(result);
+
+      // Render actual answer in assistant message
+      assistantMsg.dataset.logId = result.query_log_id;
+      assistantMsg.innerHTML = `
+        <div class="chat-bubble">
+          ${renderMarkdownText(result.answer)}
+        </div>
+        <div class="chat-message-meta">
+          <span class="chat-citations-badge" data-message-index="${msgIndex}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:12px;height:12px;margin-right:4px;vertical-align:middle;"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>${result.citations.length} nguồn trích dẫn</span>
+          <div class="chat-feedback-inline">
+            <button class="chat-feedback-btn" data-feedback="correct" data-log-id="${result.query_log_id}">👍</button>
+            <button class="chat-feedback-btn" data-feedback="wrong_source" data-log-id="${result.query_log_id}">👎</button>
+            <button class="chat-feedback-btn" data-feedback="no_answer" data-log-id="${result.query_log_id}">❓</button>
+          </div>
+        </div>
+      `;
+
+      // Highlight this message bubble as active
+      chatHistory.querySelectorAll(".chat-message.assistant").forEach((bubble, idx) => {
+        bubble.classList.toggle("selected", idx === msgIndex);
       });
+
+      // Update citations panel
+      renderCitationsList(result.citations);
+
+      chatHistory.scrollTop = chatHistory.scrollHeight;
       await refreshAll();
     } catch (err) {
-      qs("#answerBox").classList.remove("empty");
-      qs("#answerBox").textContent = err.message || "Hệ thống đang tạm thời không sẵn sàng.";
-      qs("#answerFeedback").hidden = true;
+      assistantMsg.innerHTML = `
+        <div class="chat-bubble" style="border-color: var(--danger); color: var(--danger); background: var(--danger-soft);">
+          <p class="chat-p">${escapeHtml(err.message || "Hệ thống đang tạm thời không sẵn sàng.")}</p>
+        </div>
+      `;
       renderServiceBanner({
         state: "unavailable",
         title: "Hệ thống chưa thể trả lời",
@@ -2429,6 +3039,7 @@ function setupActions() {
         can_chat: false,
       });
       toast(err.message);
+      chatHistory.scrollTop = chatHistory.scrollHeight;
     }
   });
   qs("#reviewForm").addEventListener("submit", async (event) => {
@@ -2437,14 +3048,29 @@ function setupActions() {
     const doc_id = qs("#reviewDocId").value;
     const version = qs("#reviewVersion").value;
     const reason = qs("#rejectReason").value.trim();
+    const reviewer = qs("#approvedBy").value.trim();
+    const checklist = collectReviewChecklist();
     if (!doc_id || !version) {
       toast("Chọn tài liệu chờ duyệt trước");
       return;
     }
     if (action === "approve") {
+      if (!reviewer) {
+        toast("Can nhap nguoi duyet");
+        qs("#approvedBy").focus();
+        return;
+      }
+      if (!allReviewChecksPassed(checklist)) {
+        toast("Can check day du checklist truoc khi duyet");
+        return;
+      }
+      await api("/api/human-review", {
+        method: "POST",
+        body: JSON.stringify({ doc_id, version, review_status: "approved", reviewer, checklist, notes: reason }),
+      });
       await api("/api/approve", {
         method: "POST",
-        body: JSON.stringify({ doc_id, version, approved_by: qs("#approvedBy").value || "Người duyệt" }),
+        body: JSON.stringify({ doc_id, version, approved_by: reviewer }),
       });
       toast("Đã duyệt tài liệu");
     } else {
@@ -2453,16 +3079,44 @@ function setupActions() {
         qs("#rejectReason").focus();
         return;
       }
+      await api("/api/human-review", {
+        method: "POST",
+        body: JSON.stringify({
+          doc_id,
+          version,
+          review_status: "rejected",
+          reviewer: reviewer || "human-reviewer",
+          checklist,
+          notes: reason,
+        }),
+      });
       await api("/api/reject", { method: "POST", body: JSON.stringify({ doc_id, version, reason }) });
       toast("Đã từ chối tài liệu");
     }
     state.selectedReviewRecord = null;
     state.selectedReviewDetail = null;
-    qs("#rejectReason").value = "";
-    document.querySelectorAll(".review-check").forEach((input) => {
-      input.checked = false;
-    });
+    resetReviewFormInputs();
     await refreshAll();
+  });
+
+  // Event delegation for Excel tab switching
+  document.addEventListener("click", (event) => {
+    const button = event.target.closest(".excel-tab-btn");
+    if (!button) return;
+    event.preventDefault();
+    const index = button.dataset.sheetIndex;
+    const container = button.closest(".excel-preview");
+    if (!container) return;
+    container.querySelectorAll(".excel-tab-btn").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.sheetIndex === index);
+    });
+    container.querySelectorAll(".excel-sheet-pane").forEach((pane) => {
+      if (pane.dataset.sheetIndex === index) {
+        pane.removeAttribute("hidden");
+      } else {
+        pane.setAttribute("hidden", "");
+      }
+    });
   });
 }
 
@@ -2524,25 +3178,146 @@ function initMermaid() {
   }
 }
 
+let currentArchZoom = 100;
+
+const MERMAID_DIAGRAMS = {
+  runtime: `flowchart LR
+    U["Người dùng nội bộ"] -->|Hỏi đáp quy trình| WEB["Dashboard UI<br/>(FastAPI + static HTML)"]
+    WEB -->|Gọi API| APP["poc_workflow API<br/>(FastAPI Webapp)"]
+    APP -->|Truy xuất hiệu lực| RET["Tầng truy xuất (Retrieval)"]
+    RET -->|Dự phòng cục bộ| LOCAL["Index JSONL cục bộ<br/>(ragflow_index/)"]
+    RET -->|RAG chính| RAG["RAGFlow technical_active<br/>(refs/ragflow)"]
+    APP -->|Gửi Context + Câu hỏi| LLM["OpenAI-compatible LLM"]
+    LLM -->|Cổng điều hướng| FREE["FreeLLMAPI proxy<br/>(refs/freellmapi)"]
+    FREE -->|Miễn phí / Demo| P1["Pollinations / LLM7"]
+    FREE -->|API Keys cá nhân| P2["Google / Groq / OpenRouter"]
+    APP -->|Lưu nhật ký và gap| QDB["SQLite quality.db<br/>(data/poc_quality.db)"]
+    APP -->|Trả về đáp án + nguồn| UI["Đáp án có trích dẫn nguồn"]
+    UI --> U
+
+    style U fill:#f9fafb,stroke:#d1d5db,stroke-width:2px,color:#111827
+    style WEB fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0369a1
+    style APP fill:#e6fffa,stroke:#0f766e,stroke-width:2px,color:#0b5f59
+    style RET fill:#fef9c3,stroke:#ca8a04,stroke-width:2px,color:#854d0e
+    style LOCAL fill:#f3f4f6,stroke:#9ca3af,stroke-width:2px,color:#4b5563
+    style RAG fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#166534
+    style LLM fill:#f3e8ff,stroke:#7e22ce,stroke-width:2px,color:#6b21a8
+    style FREE fill:#fae8ff,stroke:#c026d3,stroke-width:2px,color:#86198f
+    style QDB fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#991b1b
+    style UI fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0369a1`,
+
+  ingestion: `flowchart TD
+    A["Tài liệu tải lên / Drop vào inbox/"] -->|Quét thư mục| B["AI Agent chuẩn hóa (Ingest)"]
+    B -->|Tạo metadata thô| C["Lưu source/ & metadata.json"]
+    C -->|Số hóa tài liệu| D["MinerU OCR (PDF/ảnh) hoặc Native Parser"]
+    D -->|Lưu trữ văn bản| E["Thư mục normalized/ (Markdown/JSON)"]
+    E -->|Kiểm định 3 lớp| F["Validation Quality Gate (taxonomy, version, schema)"]
+    F -->|Đưa vào hàng chờ| G["Trạng thái pending_review"]
+    G -->|Đánh giá thủ công| H{"Hội đồng duyệt duyệt?"}
+    H -->|Phê duyệt| I["Trạng thái active (Hiệu lực)"]
+    H -->|Từ chối| J["Trạng thái failed_review"]
+    I -->|Cập nhật cache| K["Index JSONL cục bộ"]
+    I -->|Đồng bộ dataset RAG| L["RAGFlow dataset sync"]
+    I -->|Lưu trữ lịch sử| M["Lưu trữ phiên bản cũ (archived/retired)"]
+    J --> B
+
+    style A fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0369a1
+    style B fill:#e6fffa,stroke:#0f766e,stroke-width:2px,color:#0b5f59
+    style D fill:#f3e8ff,stroke:#7e22ce,stroke-width:2px,color:#6b21a8
+    style F fill:#fef9c3,stroke:#ca8a04,stroke-width:2px,color:#854d0e
+    style H fill:#fef08a,stroke:#eab308,stroke-width:2px,color:#854d0e
+    style I fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#166534
+    style J fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#991b1b`,
+
+  query: `sequenceDiagram
+    autonumber
+    participant User as Người dùng nội bộ
+    participant UI as Dashboard UI
+    participant Webapp as FastAPI Backend
+    participant Retrieval as Tầng Truy Xuất (RAG)
+    participant LLM as AI Brain (LLM)
+    participant DB as SQLite Quality DB
+
+    User->>UI: Đặt câu hỏi quy trình
+    UI->>Webapp: POST /api/chat (query, provider, use_llm)
+    Webapp->>Retrieval: Tìm kiếm tài liệu hiệu lực (Active Only)
+    Retrieval-->>Webapp: Trả về danh sách trích dẫn (Citations)
+    Note over Webapp, Retrieval: Lọc theo canonical_doc_id của phiên bản mới nhất
+    Webapp->>LLM: Gửi câu hỏi + Văn cảnh được trích dẫn (Context)
+    LLM-->>Webapp: Trả về câu trả lời tóm tắt đã tổng hợp
+    Webapp->>DB: Lưu nhật ký (query, citations, latency)
+    Webapp-->>UI: Response (answer, citations, query_log_id)
+    UI-->>User: Hiển thị giao diện trực quan kèm nguồn dẫn`,
+
+  security: `flowchart LR
+    subgraph PUBLIC["Lớp Công Cộng (Public Demo)"]
+        A["Trình duyệt người dùng"] -->|HTTPS / API Token| B["Vercel API Proxy"]
+    end
+    subgraph TUNNEL["Đường Truyền Bảo Mật"]
+        B -->|Secure HTTPS Tunnel| C["Localtunnel / Cloudflare Tunnel"]
+    end
+    subgraph LOCAL["Lớp Nội Bộ (Local Server Machine)"]
+        C -->|X-KB-Token Auth| D["FastAPI Backend (Port :8088)"]
+        D -->|Đọc file| E["Thư mục normalized/ & manifest/"]
+        D -->|Lưu logs| F["SQLite data/poc_quality.db"]
+    end
+
+    style A fill:#f9fafb,stroke:#d1d5db,stroke-width:2px,color:#111827
+    style B fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0369a1
+    style C fill:#fae8ff,stroke:#c026d3,stroke-width:2px,color:#86198f
+    style D fill:#e6fffa,stroke:#0f766e,stroke-width:2px,color:#0b5f59
+    style E fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#166534
+    style F fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#991b1b`
+};
+
+function renderSelectedDiagram(tabId) {
+  const container = document.getElementById("mermaid-render-area");
+  if (!container) return;
+
+  container.innerHTML = "";
+  const diagramCode = MERMAID_DIAGRAMS[tabId];
+  if (!diagramCode) return;
+
+  const pre = document.createElement("pre");
+  pre.className = "mermaid";
+  pre.id = "current-mermaid-pre";
+  pre.textContent = diagramCode;
+  container.appendChild(pre);
+
+  if (typeof mermaid !== 'undefined') {
+    mermaid.run({
+      querySelector: '#current-mermaid-pre',
+    }).then(() => {
+      applyArchZoom();
+    }).catch((err) => {
+      console.error("Mermaid run error:", err);
+    });
+  }
+}
+
+function applyArchZoom() {
+  const svg = document.querySelector("#mermaid-render-area svg");
+  const display = document.getElementById("zoomLevelDisplay");
+  if (display) {
+    display.textContent = `${currentArchZoom}%`;
+  }
+  if (svg) {
+    svg.style.setProperty("width", `${currentArchZoom}%`, "important");
+    svg.style.setProperty("max-width", "none", "important");
+    svg.style.setProperty("height", "auto", "important");
+  }
+}
+
 function setupArchitectureTabs() {
   document.querySelectorAll("[data-arch-tab]").forEach((button) => {
     button.addEventListener("click", () => {
       const activeTab = button.dataset.archTab;
-      
+
       // Update buttons
       document.querySelectorAll("[data-arch-tab]").forEach((btn) => {
         btn.classList.toggle("active", btn.dataset.archTab === activeTab);
       });
-      
-      // Update diagrams
-      document.querySelectorAll("#view-architecture .prompt-tab-pane").forEach((pane) => {
-        pane.classList.remove("active");
-      });
-      const targetPane = document.getElementById(`arch-${activeTab}-pane`);
-      if (targetPane) {
-        targetPane.classList.add("active");
-      }
-      
+
       // Update descriptions
       document.querySelectorAll(".arch-desc-pane").forEach((desc) => {
         desc.classList.remove("active-desc");
@@ -2551,18 +3326,113 @@ function setupArchitectureTabs() {
       if (targetDesc) {
         targetDesc.classList.add("active-desc");
       }
-      
-      // Re-run mermaid for the newly opened tab
-      if (typeof mermaid !== 'undefined') {
-        mermaid.run({
-          querySelector: `#arch-${activeTab}-pane .mermaid`,
-        }).catch(() => {});
-      }
+
+      currentArchZoom = 100;
+      renderSelectedDiagram(activeTab);
     });
+  });
+
+  qs("#zoomInBtn")?.addEventListener("click", () => {
+    if (currentArchZoom < 300) {
+      currentArchZoom += 20;
+      applyArchZoom();
+    }
+  });
+
+  qs("#zoomOutBtn")?.addEventListener("click", () => {
+    if (currentArchZoom > 40) {
+      currentArchZoom -= 20;
+      applyArchZoom();
+    }
+  });
+
+  qs("#zoomResetBtn")?.addEventListener("click", () => {
+    currentArchZoom = 100;
+    applyArchZoom();
+  });
+
+  qs("#copyCheckpointBtn")?.addEventListener("click", () => {
+    const promptText = qs("#checkpointPromptText")?.textContent || "";
+    navigator.clipboard.writeText(promptText)
+      .then(() => {
+        toast("Đã sao chép prompt vào bộ nhớ tạm!");
+      })
+      .catch((err) => {
+        toast("Không thể sao chép: " + err.message);
+      });
   });
 }
 
+function updateArchitectureStatus(health) {
+  if (!health) return;
+
+  // 1. Inbox
+  const inboxBadge = qs("#bento-inbox .bento-status-badge");
+  if (inboxBadge) {
+    inboxBadge.className = "bento-status-badge badge-online";
+    inboxBadge.textContent = "Hoạt động";
+  }
+
+  // 2. MinerU
+  const mineruBadge = qs("#bento-mineru .bento-status-badge");
+  if (mineruBadge) {
+    const isOnline = Boolean(health.mineru?.available);
+    mineruBadge.className = `bento-status-badge ${isOnline ? "badge-online" : "badge-warning"}`;
+    mineruBadge.textContent = isOnline ? "Hoạt động" : "Ngoại tuyến";
+  }
+
+  // 3. Governance
+  const govBadge = qs("#bento-governance .bento-status-badge");
+  if (govBadge) {
+    const critical = health.incidents?.critical || 0;
+    const openIncidents = health.incidents?.open || 0;
+    if (critical > 0) {
+      govBadge.className = "bento-status-badge badge-offline";
+      govBadge.textContent = `Sự cố: ${critical} CRIT`;
+    } else if (openIncidents > 0) {
+      govBadge.className = "bento-status-badge badge-warning";
+      govBadge.textContent = `Cảnh báo: ${openIncidents} sự cố`;
+    } else {
+      govBadge.className = "bento-status-badge badge-online";
+      govBadge.textContent = "Hoạt động";
+    }
+  }
+
+  // 4. RAG Engine
+  const ragBadge = qs("#bento-rag .bento-status-badge");
+  if (ragBadge) {
+    const isOnline = Boolean(health.ragflow?.available);
+    const localFallback = Boolean(health.providers?.local_fallback_enabled);
+    if (isOnline) {
+      ragBadge.className = "bento-status-badge badge-online";
+      ragBadge.textContent = "Đồng bộ RAGFlow";
+    } else if (localFallback) {
+      ragBadge.className = "bento-status-badge badge-warning";
+      ragBadge.textContent = "Dự phòng cục bộ";
+    } else {
+      ragBadge.className = "bento-status-badge badge-offline";
+      ragBadge.textContent = "Ngoại tuyến";
+    }
+  }
+
+  // 5. LLM
+  const llmBadge = qs("#bento-llm .bento-status-badge");
+  if (llmBadge) {
+    const isConfigured = Boolean(health.llm?.configured);
+    llmBadge.className = `bento-status-badge ${isConfigured ? "badge-online" : "badge-offline"}`;
+    llmBadge.textContent = isConfigured ? "Sẵn sàng" : "Chưa cấu hình";
+  }
+
+  // 6. Observability
+  const obsBadge = qs("#bento-observability .bento-status-badge");
+  if (obsBadge) {
+    obsBadge.className = "bento-status-badge badge-online";
+    obsBadge.textContent = "Hoạt động";
+  }
+}
+
 initMermaid();
+setupMarkdownReader();
 setupNavigation();
 setupActions();
 setupArchitectureTabs();
@@ -2580,3 +3450,286 @@ refreshAll().catch((err) => {
   });
   toast(err.message);
 });
+
+/* ==========================================================================
+   Obsidian Markdown Reader Drawer Logic
+   ========================================================================== */
+
+function setupMarkdownReader() {
+  const tabSingle = qs("#drawerTabSingle");
+  const tabSplit = qs("#drawerTabSplit");
+  const toggleWidth = qs("#drawerToggleWidthBtn");
+  const closeBtn = qs("#closeDrawerBtn");
+  const overlay = qs("#markdownReaderDrawerOverlay");
+
+  if (tabSingle) {
+    tabSingle.addEventListener("click", () => toggleReaderViewMode("single"));
+  }
+  if (tabSplit) {
+    tabSplit.addEventListener("click", () => toggleReaderViewMode("split"));
+  }
+  if (toggleWidth) {
+    toggleWidth.addEventListener("click", () => toggleReaderWidth());
+  }
+  if (closeBtn) {
+    closeBtn.addEventListener("click", () => closeMarkdownReader());
+  }
+  if (overlay) {
+    overlay.addEventListener("click", () => closeMarkdownReader());
+  }
+}
+
+function openMarkdownReader(detail) {
+  if (!detail) return;
+  state.currentReaderDetail = detail;
+
+  const overlay = qs("#markdownReaderDrawerOverlay");
+  const drawer = qs("#markdownReaderDrawer");
+  if (!overlay || !drawer) return;
+
+  // Set titles
+  const record = detail.record || {};
+  qs("#drawerTitle").textContent = record.title || "Tài liệu không có tên";
+  qs("#drawerSubtitle").textContent = record.doc_id || "-";
+  qs("#drawerDocVersion").textContent = `v${record.version || "1.0"}`;
+
+  // Update source link download button
+  const sourceFileUrl = detail.source_preview?.file_url || "#";
+  const sourceBtn = qs("#drawerOpenSourceBtn");
+  if (sourceBtn) {
+    sourceBtn.href = sourceFileUrl;
+    if (!detail.source_preview?.exists) {
+      sourceBtn.style.display = "none";
+    } else {
+      sourceBtn.style.display = "inline-flex";
+    }
+  }
+
+  // Preprocess & Compile markdown to HTML
+  const rawMarkdown = detail.markdown?.content || "*Tài liệu không chứa nội dung Markdown.*";
+  const processed = preprocessMarkdown(rawMarkdown);
+  let html = "";
+  try {
+    html = marked.parse(processed);
+  } catch (err) {
+    console.error("marked.parse error:", err);
+    html = `<div class="review-alert danger"><strong>Lỗi render Markdown:</strong><span>${escapeHtml(err.message)}</span></div><pre>${escapeHtml(rawMarkdown)}</pre>`;
+  }
+
+  // Render Single View Pane
+  const singleContent = qs("#drawerMarkdownContent");
+  if (singleContent) {
+    singleContent.innerHTML = html;
+    postprocessMarkdownDOM(singleContent);
+  }
+
+  // Render Split View Panes
+  const leftPaneContainer = qs("#drawerSourcePreviewContainer");
+  if (leftPaneContainer) {
+    leftPaneContainer.innerHTML = renderSourcePreview(detail.source_preview);
+  }
+
+  const rightPaneContent = qs("#drawerSplitMarkdownContent");
+  if (rightPaneContent) {
+    rightPaneContent.innerHTML = html;
+    postprocessMarkdownDOM(rightPaneContent);
+  }
+
+  // Reset display styles
+  toggleReaderViewMode("single");
+  drawer.classList.remove("expanded");
+  updateWidthIcon(false);
+
+  // Animate slide-in
+  overlay.hidden = false;
+  drawer.hidden = false;
+  // trigger reflow
+  overlay.offsetHeight;
+  drawer.offsetHeight;
+  overlay.classList.add("active");
+  drawer.classList.add("active");
+}
+
+function closeMarkdownReader() {
+  const overlay = qs("#markdownReaderDrawerOverlay");
+  const drawer = qs("#markdownReaderDrawer");
+  if (!overlay || !drawer) return;
+
+  overlay.classList.remove("active");
+  drawer.classList.remove("active");
+
+  window.setTimeout(() => {
+    if (!drawer.classList.contains("active")) {
+      overlay.hidden = true;
+      drawer.hidden = true;
+    }
+  }, 400);
+}
+
+function toggleReaderViewMode(mode) {
+  const tabSingle = qs("#drawerTabSingle");
+  const tabSplit = qs("#drawerTabSplit");
+  const paneSingle = qs("#drawerSinglePane");
+  const paneSplit = qs("#drawerSplitPane");
+  const drawer = qs("#markdownReaderDrawer");
+
+  if (!tabSingle || !tabSplit || !paneSingle || !paneSplit || !drawer) return;
+
+  if (mode === "single") {
+    tabSingle.classList.add("active");
+    tabSplit.classList.remove("active");
+    paneSingle.classList.add("active");
+    paneSplit.classList.remove("active");
+
+    // Restore normal width if it was expanded due to split view
+    if (state.wasExpandedBeforeSplit === false) {
+      drawer.classList.remove("expanded");
+      updateWidthIcon(false);
+    }
+  } else if (mode === "split") {
+    tabSingle.classList.remove("active");
+    tabSplit.classList.add("active");
+    paneSingle.classList.remove("active");
+    paneSplit.classList.add("active");
+
+    // Remember previous state of width before auto-expanding
+    state.wasExpandedBeforeSplit = drawer.classList.contains("expanded");
+
+    // Auto-expand drawer to 85vw to ensure readable split view layout
+    drawer.classList.add("expanded");
+    updateWidthIcon(true);
+  }
+}
+
+function toggleReaderWidth() {
+  const drawer = qs("#markdownReaderDrawer");
+  if (!drawer) return;
+
+  const isCurrentlyExpanded = drawer.classList.contains("expanded");
+  if (isCurrentlyExpanded) {
+    drawer.classList.remove("expanded");
+    updateWidthIcon(false);
+  } else {
+    drawer.classList.add("expanded");
+    updateWidthIcon(true);
+  }
+}
+
+function updateWidthIcon(isExpanded) {
+  const btn = qs("#drawerToggleWidthBtn");
+  if (!btn) return;
+
+  if (isExpanded) {
+    btn.innerHTML = `<svg id="drawerWidthIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="nav-icon" style="width: 14px; height: 14px;"><polyline points="4 14 10 14 10 20"></polyline><polyline points="20 10 14 10 14 4"></polyline><line x1="14" y1="10" x2="21" y2="3"></line><line x1="10" y1="14" x2="3" y2="21"></line></svg>`;
+    btn.title = "Thu hẹp panel (50vw)";
+  } else {
+    btn.innerHTML = `<svg id="drawerWidthIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="nav-icon" style="width: 14px; height: 14px;"><polyline points="15 3 21 3 21 9"></polyline><polyline points="9 21 3 21 3 15"></polyline><line x1="21" y1="3" x2="14" y2="10"></line><line x1="3" y1="21" x2="10" y2="14"></line></svg>`;
+    btn.title = "Mở rộng panel (85vw)";
+  }
+}
+
+function preprocessMarkdown(text) {
+  if (!text) return "";
+
+  // 1. Convert ==highlight== to <mark>highlight</mark>
+  text = text.replace(/==([^=]+)==/g, "<mark>$1</mark>");
+
+  // 2. Convert [[WikiLink]] or [[WikiLink|Custom Text]]
+  text = text.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (match, p1, p2) => {
+    const linkText = p2 ? p2 : p1;
+    return `<span class="obsidian-wikilink" title="Liên kết nội bộ: ${p1.trim()}">${linkText}</span>`;
+  });
+
+  return text;
+}
+
+function postprocessMarkdownDOM(container) {
+  if (!container) return;
+
+  // 1. Process blockquotes to Obsidian Callouts
+  const blockquotes = container.querySelectorAll("blockquote");
+  blockquotes.forEach((bq) => {
+    const firstP = bq.querySelector("p");
+    if (!firstP) return;
+
+    const htmlContent = firstP.innerHTML.trim();
+    // Regex matching [!type] or [!type]- or [!type]+ followed by title text
+    const match = htmlContent.match(/^\[!([a-zA-Z0-9_-]+)\]([-+])?(.*)$/i);
+    if (!match) return;
+
+    const type = match[1].toLowerCase();
+    const foldSymbol = match[2]; // "-" or "+" or undefined
+    const customTitle = match[3].trim();
+
+    // Clean up first paragraph text
+    firstP.innerHTML = customTitle;
+    if (!firstP.innerHTML.trim()) {
+      firstP.remove();
+    }
+
+    const titleText = customTitle || type.charAt(0).toUpperCase() + type.slice(1);
+    const isCollapsible = foldSymbol === "-" || foldSymbol === "+";
+
+    // Create callout shell
+    const calloutEl = document.createElement(isCollapsible ? "details" : "div");
+    calloutEl.className = `obsidian-callout callout-${type}`;
+    if (isCollapsible && foldSymbol === "+") {
+      calloutEl.setAttribute("open", "");
+    }
+
+    // Callout Header/Title
+    const titleHeader = document.createElement(isCollapsible ? "summary" : "div");
+    titleHeader.className = "callout-title";
+
+    // Icon
+    const iconSpan = document.createElement("span");
+    iconSpan.className = "callout-icon";
+    iconSpan.innerHTML = getCalloutIconSvg(type);
+    titleHeader.appendChild(iconSpan);
+
+    // Title Text
+    const textSpan = document.createElement("span");
+    textSpan.className = "callout-title-text";
+    textSpan.textContent = titleText;
+    titleHeader.appendChild(textSpan);
+
+    // Fold Indicator
+    if (isCollapsible) {
+      const foldSpan = document.createElement("span");
+      foldSpan.className = "callout-fold-indicator";
+      foldSpan.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width: 12px; height: 12px;"><polyline points="9 18 15 12 9 6"></polyline></svg>`;
+      titleHeader.appendChild(foldSpan);
+    }
+
+    calloutEl.appendChild(titleHeader);
+
+    // Content Pane
+    const contentDiv = document.createElement("div");
+    contentDiv.className = "callout-content";
+    while (bq.firstChild) {
+      contentDiv.appendChild(bq.firstChild);
+    }
+    calloutEl.appendChild(contentDiv);
+
+    // Swap blockquote with Callout element
+    bq.parentNode.replaceChild(calloutEl, bq);
+  });
+}
+
+function getCalloutIconSvg(type) {
+  const icons = {
+    note: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>`,
+    info: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12.01" y2="8"></line></svg>`,
+    todo: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><polyline points="9 11 12 14 22 4"></polyline></svg>`,
+    tip: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A5 5 0 0 0 8 8c0 1 .3 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"></path><line x1="9" y1="18" x2="15" y2="18"></line><line x1="10" y1="22" x2="14" y2="22"></line></svg>`,
+    success: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>`,
+    check: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`,
+    warning: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>`,
+    caution: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>`,
+    danger: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><octagon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"></octagon><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>`,
+    bug: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="14" rx="4"></rect><path d="M12 2v14M8 5h8M6 9h12M7 14h10M6 18h12"></path></svg>`,
+    quote: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21c3 0 7-9 7-14a5 5 0 0 0-5-5 5 5 0 0 0-5 5c0 5 4 14 3 14zm11 0c3 0 7-9 7-14a5 5 0 0 0-5-5 5 5 0 0 0-5 5c0 5 4 14 3 14z"></path></svg>`,
+    example: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>`,
+  };
+  return icons[type] || icons.note;
+}

@@ -80,10 +80,10 @@ def prepare_inbox(root: Path, dry_run: bool = False) -> dict[str, Any]:
     return report
 
 
-def list_inbox(root: Path) -> list[dict[str, Any]]:
+def list_inbox(root: Path, *, include_lifecycle: bool = False) -> list[dict[str, Any]]:
     inbox = root / "inbox"
     items: list[dict[str, Any]] = []
-    for path in iter_inbox_files(inbox, include_lifecycle=True):
+    for path in iter_inbox_files(inbox, include_lifecycle=include_lifecycle):
         try:
             stat = path.stat()
         except FileNotFoundError:

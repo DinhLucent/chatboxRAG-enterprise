@@ -24,8 +24,8 @@ Dung skill nay khi auditor tra `status: passed` va can tao folder/schema/citatio
 2. Chon output uu tien: `repaired` neu co, neu khong dung `converted`.
 3. Tao folder `rag_ready/<source_id>/`.
 4. Chuan hoa Markdown chunk theo heading, page/sheet boundary va chunk policy.
-5. Tao `schema_manifest.json` mo ta dataset, fields, source type, chunk policy va metadata.
-6. Tao `citation_manifest.json` mapping chunk -> page/sheet/table/row range.
+5. Tao `schema_manifest.json` mo ta dataset, fields, source type, chunk policy, MinerU artifact index va metadata.
+6. Tao `citation_manifest.json` mapping chunk -> page/sheet/table/row range; neu co MinerU sidecar thi giu `mineru_block_ids`, `content_types`, `bbox`, `source_json`, `image_refs`.
 7. Tao `index_manifest.json` liet ke file ingest, checksum, chunk ids va dependency.
 8. Handoff sang `data-skill-evolution`.
 
@@ -33,6 +33,7 @@ Dung skill nay khi auditor tra `status: passed` va can tao folder/schema/citatio
 
 - `repaired_outputs` hoac `converted_outputs` da audit pass.
 - `audit_report`: bang chung quality gates.
+- `mineru_artifact_index`: optional nhung bat buoc giu neu conversion co ZIP/folder MinerU.
 - `run_plan`: dataset target, collection name, schema policy.
 - `citation_policy`: bat buoc hay optional, dinh dang anchors.
 
@@ -78,6 +79,7 @@ Dung skill nay khi auditor tra `status: passed` va can tao folder/schema/citatio
     "audit_passed": true,
     "schema_created": true,
     "citations_complete": true,
+    "mineru_artifact_index_linked": true,
     "chunks_indexed": true
   },
   "next_skill": "data-skill-evolution"
@@ -95,6 +97,7 @@ Dung skill nay khi auditor tra `status: passed` va can tao folder/schema/citatio
 
 - Thu muc `rag_ready` co Markdown chunk va 3 manifest bat buoc.
 - Moi chunk co `chunk_id`, `source_id`, `content_path`, `citation_refs`, `checksum`.
-- Citation refs tro ve page/sheet/table/row range hop le.
+- Citation refs tro ve page/sheet/table/row range hop le; voi PDF MinerU nen co page/bbox khi `middle.json` hoac `content_list` co du lieu.
+- Schema manifest phai link `mineru_artifact_index.json` neu artifact nay ton tai de UI co the show nguon/hinh/table snapshot.
 - Schema manifest co dataset name, source type, language, chunking policy va metadata fields.
 - Index manifest chi tham chieu artifact ton tai va da audit pass.

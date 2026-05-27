@@ -572,7 +572,19 @@ def test_dashboard_tabs_are_role_scoped() -> None:
     assert 'id="documentSearchInput"' in index
     assert 'id="documentInspector"' in index
     assert 'id="reviewInspector"' in index
+    assert 'id="failedReviewList"' in index
     assert "document-inspector-panel" in index
+    assert 'data-review-key="title_correct"' in index
+    assert 'data-review-key="steps_order_correct"' in index
+    assert 'data-review-key="source_output_audit_passed"' in index
+
+
+def test_document_inspector_uses_current_quality_status() -> None:
+    app_js = (Path(__file__).parents[1] / "poc_workflow" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "function qaDisplayStatus" in app_js
+    assert "data.quality_status || data.status" in app_js
+    assert "await refreshSelectedDetails();" in app_js
 
 
 def test_web_ragflow_only_fails_closed_when_not_configured(tmp_path: Path, monkeypatch) -> None:
@@ -634,6 +646,10 @@ def test_web_upload_queue_generates_agent_prompt_and_manual_statuses(tmp_path: P
     template_body = templates.json()
     prompt_modes = {mode["id"] for mode in template_body["modes"]}
     assert template_body["default_mode"] == "process_raw"
+    assert any(packet["packet"] == "evidence_packet" for packet in template_body["prompt_architecture"])
+    assert any(packet["packet"] == "skill_contract_packet" for packet in template_body["prompt_architecture"])
+    assert template_body["orchestration_contract"]["contract_version"] == "upload-data-orchestration-v1"
+    assert any(role["role"] == "orchestrator" for role in template_body["orchestration_contract"]["roles"])
     assert {
         "process_raw",
         "classify_discuss",
@@ -656,7 +672,7 @@ def test_web_upload_queue_generates_agent_prompt_and_manual_statuses(tmp_path: P
     body = generated.json()
     prompt = body["prompt"]
     assert body["prompt_id"].startswith("agent-task-")
-    assert body["prompt_version"] == "agent-task-v2"
+    assert body["prompt_version"] == "agent-task-v3"
     assert body["prompt_mode"] == "classify_discuss"
     assert len(body["files"]) == 2
     assert "# Agent Task: Upload Data Automation Prompt" in prompt
@@ -679,7 +695,25 @@ def test_web_upload_queue_generates_agent_prompt_and_manual_statuses(tmp_path: P
     assert "khong tra ve chuoi dang `a | b | c`" in prompt
     assert "admin_request_is_context_only: `true`" in prompt
     assert "khong duoc override Project Policies" in prompt
+    assert "## Session Init Bat Buoc" in prompt
+    assert "Treat this prompt as self-contained" in prompt
+    assert "Claim exactly one queued file or one related PDF/XLSX business-document group at a time" in prompt
     assert "## Skill Workflow Bat Buoc" in prompt
+    assert "## Orchestration Contract" in prompt
+    assert "## Kien Truc Prompt Va Handoff" in prompt
+    assert "## Handoff Schema Bat Buoc" in prompt
+    assert "## Dashboard Workflow Event Bat Buoc" in prompt
+    assert "## Checkpoint Proof Matrix" in prompt
+    assert "| Checkpoint | Owner skill | Dashboard step | Required proof |" in prompt
+    assert "/api/upload-queue/workflow-event" in prompt
+    assert "Role matrix:" in prompt
+    assert '"orchestration":' in prompt
+    assert '"subagent_handoff_required": true' in prompt
+    assert "`source_packet`" in prompt
+    assert "`mineru_artifact_index`" in prompt
+    assert "`skill_contract_packet`" in prompt
+    assert "`skill_read_receipts`" in prompt
+    assert "`handoff_checker`" in prompt
     assert "Khong bat dau convert neu muc dich" in prompt
     assert "Hay tu nhan dien them moi hay cap nhat" in prompt
     assert "`mineru-source-converter`" in prompt
@@ -688,10 +722,11 @@ def test_web_upload_queue_generates_agent_prompt_and_manual_statuses(tmp_path: P
     assert "`ragflow-schema-indexer` chỉ được chạy khi" in prompt
     assert "`data-skill-evolution`" in prompt
     assert "`run_id`, `step`, `status`, `source_ids`, `artifacts`, `quality_gates`, `next_skill`" in prompt
+    assert "RAG-ready chi pass khi co artifacts" in prompt
 
     queue_after_prompt = client.get("/api/upload-queue")
     assert {item["status"] for item in queue_after_prompt.json()["items"]} == {"queue"}
-    assert {item["prompt_version"] for item in queue_after_prompt.json()["items"]} == {"agent-task-v2"}
+    assert {item["prompt_version"] for item in queue_after_prompt.json()["items"]} == {"agent-task-v3"}
     assert {item["prompt_mode"] for item in queue_after_prompt.json()["items"]} == {"classify_discuss"}
     assert {item["prompt_id"] for item in queue_after_prompt.json()["items"]} == {body["prompt_id"]}
 
@@ -708,12 +743,31 @@ def test_web_upload_queue_generates_agent_prompt_and_manual_statuses(tmp_path: P
     assert goal_generated.status_code == 200
     goal_body = goal_generated.json()
     goal_prompt = goal_body["prompt"]
-    assert goal_body["prompt_version"] == "agent-goal-v1"
+    assert goal_body["prompt_version"] == "agent-goal-v2"
     assert goal_body["prompt_mode"] == "goal_long_run"
     assert goal_body["goal_branch"] == "codex/upload-data-goal-test"
     assert goal_prompt.startswith("/goal Make demo-chatbot-engineerworkflow prove Upload GOAL prompting")
     assert "Onboard into `demo-chatbot-engineerworkflow` as the Upload Data Pipeline Super-Agent." in goal_prompt
+    assert "## Branch And Git Safety" in goal_prompt
+    assert "Work on branch `codex/upload-data-goal-test`" in goal_prompt
+    assert "Do not commit, push, or switch branches" in goal_prompt
     assert "## Target End State" in goal_prompt
+    assert "## Session Init Contract" in goal_prompt
+    assert "after one item reaches `pending_review`, `failed`, or `ocr_required`, inspect the queue again" in goal_prompt
+    assert "Phase boundary: this data-processing prompt stops at RAG-ready + human review queue" in goal_prompt
+    assert "## Orchestration Contract" in goal_prompt
+    assert "## Prompt Architecture Contract" in goal_prompt
+    assert "## Handoff Contract" in goal_prompt
+    assert "## Dashboard Workflow Event Contract" in goal_prompt
+    assert "## Checkpoint Execution Matrix" in goal_prompt
+    assert "| Checkpoint | Owner skill | Dashboard step | Required proof |" in goal_prompt
+    assert "`mineru-source-converter`" in goal_prompt
+    assert "A checkpoint cannot pass on prose alone" in goal_prompt
+    assert "## Per-File Not Done Until" in goal_prompt
+    assert "not done merely because one file completed" in goal_prompt
+    assert "## Checkpoint And Self-Check Loop" in goal_prompt
+    assert "## Resumable Execution Rule" in goal_prompt
+    assert "## Definition Of Done" in goal_prompt
     assert "## Long-Run Execution Loop" in goal_prompt
     assert "## Stop Conditions" in goal_prompt
     assert "Long-run den khi queue het file." in goal_prompt
@@ -723,7 +777,7 @@ def test_web_upload_queue_generates_agent_prompt_and_manual_statuses(tmp_path: P
     goal_item = next(
         item for item in queue_after_goal_prompt.json()["items"] if item["relative_path"] == "procedure/quy_trinh_upload_v1.0.md"
     )
-    assert goal_item["prompt_version"] == "agent-goal-v1"
+    assert goal_item["prompt_version"] == "agent-goal-v2"
     assert goal_item["prompt_mode"] == "goal_long_run"
 
     active = client.post(
@@ -741,6 +795,31 @@ def test_web_upload_queue_generates_agent_prompt_and_manual_statuses(tmp_path: P
     assert processing.json()["summary"]["processing"] == 2
     assert {item["processing_step"] for item in processing.json()["items"]} == {"prepare"}
     assert (tmp_path / ".Workplace" / "processing" / "procedure" / "quy_trinh_upload_v1.0.md").exists()
+
+    event = client.post(
+        "/api/upload-queue/workflow-event",
+        json={
+            "relative_paths": ["procedure/quy_trinh_upload_v1.0.md"],
+            "status": "processing",
+            "step": "mineru_convert",
+            "detail": "Agent started MinerU conversion",
+            "checkpoint": "convert",
+            "handoff_path": ".Workplace/artifacts/procedure/quy_trinh_upload_v1.0/workflow/handoffs.jsonl",
+            "quality_gates": {"mineru_only": True, "raw_source_immutable": True},
+            "next_skill": "source-output-quality-auditor",
+            "artifacts": [{"type": "converted", "path": "converted_raw/procedure/quy_trinh_upload_v1.0.md"}],
+        },
+    )
+    assert event.status_code == 200
+    event_item = next(
+        item for item in event.json()["items"] if item["original_relative_path"] == "procedure/quy_trinh_upload_v1.0.md"
+    )
+    assert event_item["processing_step"] == "mineru_convert"
+    assert event_item["checkpoint"] == "convert"
+    assert event_item["handoff_path"].endswith("handoffs.jsonl")
+    assert event_item["quality_gates"]["mineru_only"] is True
+    assert event_item["next_skill"] == "source-output-quality-auditor"
+    assert len(event_item["artifacts"]) == 1
 
     done = client.post(
         "/api/upload-queue/status",
@@ -761,6 +840,129 @@ def test_web_upload_queue_generates_agent_prompt_and_manual_statuses(tmp_path: P
 
     assert client.post("/api/prepare-inbox", json={}).status_code == 404
     assert client.post("/api/process-source", json={}).status_code == 404
+
+
+def test_upload_workflow_event_moves_queued_file_and_records_handoff(tmp_path: Path) -> None:
+    client = TestClient(create_app(tmp_path))
+    content = base64.b64encode(b"# Quy trinh event\n\nNoi dung can agent xu ly.").decode("ascii")
+    upload = client.post(
+        "/api/inbox/upload",
+        json={"filename": "quy_trinh_event_v1.0.md", "category": "procedure", "content_base64": content},
+    )
+    assert upload.status_code == 200
+
+    event = client.post(
+        "/api/upload-queue/workflow-event",
+        json={
+            "relative_paths": ["procedure/quy_trinh_event_v1.0.md"],
+            "status": "processing",
+            "step": "classify",
+            "detail": "Orchestrator classified one procedure file",
+            "checkpoint": "plan",
+            "handoff_path": ".Workplace/artifacts/procedure/quy_trinh_event_v1.0/workflow/handoffs.jsonl",
+            "quality_gates": {"single_file_run": True},
+            "next_skill": "mineru-source-converter",
+        },
+    )
+
+    assert event.status_code == 200
+    body = event.json()
+    assert body["summary"]["processing"] == 1
+    item = body["items"][0]
+    assert item["source"] == "workplace"
+    assert item["relative_path"] == "procedure/quy_trinh_event_v1.0.md"
+    assert item["original_relative_path"] == "procedure/quy_trinh_event_v1.0.md"
+    assert item["processing_step"] == "classify"
+    assert item["checkpoint"] == "plan"
+    assert item["quality_gates"]["single_file_run"] is True
+    assert item["next_skill"] == "mineru-source-converter"
+    assert (tmp_path / ".Workplace" / "processing" / "procedure" / "quy_trinh_event_v1.0.md").exists()
+    assert not (tmp_path / "inbox" / "procedure" / "quy_trinh_event_v1.0.md").exists()
+
+
+def test_upload_queue_reflects_manifest_approval_and_hides_done_from_inbox(tmp_path: Path) -> None:
+    from poc_workflow.manifest import ManifestStore
+    from poc_workflow.models import ManifestRecord
+
+    client = TestClient(create_app(tmp_path))
+    content = base64.b64encode(b"%PDF-1.4\nprocessed document").decode("ascii")
+    upload = client.post(
+        "/api/inbox/upload",
+        json={"filename": "quy_trinh_duyet.pdf", "category": "procedure", "content_base64": content},
+    )
+    assert upload.status_code == 200
+
+    event = client.post(
+        "/api/upload-queue/workflow-event",
+        json={
+            "relative_paths": ["procedure/quy_trinh_duyet.pdf"],
+            "status": "processing",
+            "step": "qa",
+            "metadata": {
+                "doc_id": "KT-QT-999",
+                "title": "Quy trinh duyet",
+                "version": "rev01",
+                "category": "procedure",
+            },
+        },
+    )
+    assert event.status_code == 200
+    done = client.post(
+        "/api/upload-queue/status",
+        json={"relative_paths": ["procedure/quy_trinh_duyet.pdf"], "status": "done"},
+    )
+    assert done.status_code == 200
+
+    source_path = tmp_path / "inbox" / "procedure" / "done" / "quy_trinh_duyet.pdf"
+    normalized_path = tmp_path / "normalized" / "technical" / "procedure" / "KT-QT-999_rev01.md"
+    normalized_path.parent.mkdir(parents=True)
+    normalized_path.write_text("# Quy trinh duyet\n\nNoi dung da duyet.", encoding="utf-8")
+    review_path = tmp_path / "review" / "upload" / "PD-TECH-A-999_rev01" / "human_review.json"
+    review_path.parent.mkdir(parents=True)
+    review_path.write_text(
+        json.dumps({"review_status": "approved", "reviewer": "simulation-admin", "simulated_approval": True}),
+        encoding="utf-8",
+    )
+    ManifestStore(tmp_path).save(
+        [
+            ManifestRecord(
+                doc_id="KT-QT-999",
+                title="Quy trinh duyet",
+                department="technical",
+                category="procedure",
+                source_type="internal_procedure",
+                language="vi",
+                version="rev01",
+                status="active",
+                effective_from="2026-05-27",
+                owner="Phong Ky thuat",
+                access_group="technical",
+                source_path=str(source_path),
+                normalized_path=str(normalized_path),
+                content_hash="hash",
+                approved_by="simulation-admin",
+                extra={
+                    "display_code": "PD-TECH-A-999",
+                    "human_review_path": str(review_path),
+                    "ragflow_ingestion": "not_run",
+                },
+            )
+        ]
+    )
+
+    assert client.get("/api/inbox").json() == []
+    queue = client.get("/api/upload-queue")
+    assert queue.status_code == 200
+    body = queue.json()
+    assert body["summary"]["done"] == 0
+    assert body["summary"]["approved"] == 1
+    item = body["items"][0]
+    assert item["status"] == "done"
+    assert item["display_status"] == "approved"
+    assert item["manifest_status"] == "active"
+    assert item["review_status"] == "approved"
+    assert item["display_code"] == "PD-TECH-A-999"
+    assert item["ragflow_ingestion"] == "not_run"
 
 
 def test_web_operator_auth_when_required(tmp_path: Path, monkeypatch) -> None:
@@ -821,6 +1023,24 @@ def test_web_incidents_and_diagnostics(tmp_path: Path) -> None:
     assert "LLM fallback" in prompt
     assert "Provider timed out" in prompt
     assert "python -m pytest tests\\test_webapp.py --basetemp .pytest-tmp-codex" in prompt
+
+    # Test dynamic prompt test command determination for ingestion component
+    created_ingestion = client.post(
+        "/api/incidents",
+        json={
+            "severity": "critical",
+            "component": "pipeline_ingestion",
+            "title": "Ingestion failed",
+            "detail": "Failed to parse pdf metadata.",
+            "context": {"file_path": "doc.pdf"},
+        },
+    )
+    assert created_ingestion.status_code == 200
+    ingestion_id = created_ingestion.json()["incident_id"]
+    ingestion_prompt = client.get(f"/api/incidents/{ingestion_id}/agent-prompt")
+    assert ingestion_prompt.status_code == 200
+    prompt_ingestion = ingestion_prompt.json()["prompt"]
+    assert "python -m pytest tests\\test_pipeline.py tests\\test_intake.py --basetemp .pytest-tmp-codex" in prompt_ingestion
 
     missing_prompt = client.get("/api/incidents/9999/agent-prompt")
     assert missing_prompt.status_code == 404
@@ -1010,3 +1230,29 @@ def test_chat_uses_active_dashboard_llm_config(tmp_path: Path, monkeypatch) -> N
     assert chat.status_code == 200
     assert chat.json()["llm_used"] is True
     assert chat.json()["answer"] == "runtime ollama local-test-model"
+
+
+def test_xlsx_preview_multi_sheets(tmp_path: Path) -> None:
+    from openpyxl import Workbook
+    from poc_workflow.webapp import _xlsx_preview
+
+    xlsx_path = tmp_path / "test_multi_sheets.xlsx"
+    wb = Workbook()
+    for i in range(5):
+        ws = wb.create_sheet(title=f"Sheet_{i}")
+        ws.append([f"S{i}_R1_C1", f"S{i}_R1_C2"])
+        ws.append([f"S{i}_R2_C1", f"S{i}_R2_C2"])
+
+    if "Sheet" in wb.sheetnames:
+        wb.remove(wb["Sheet"])
+
+    wb.save(xlsx_path)
+
+    preview = _xlsx_preview(xlsx_path)
+    assert preview["error"] is None
+    assert preview["sheet_count"] == 5
+    assert len(preview["sheets"]) == 5
+    assert preview["sheets"][0]["name"] == "Sheet_0"
+    assert preview["sheets"][0]["rows"][0][0] == "S0_R1_C1"
+    assert preview["sheets"][4]["name"] == "Sheet_4"
+    assert preview["sheets"][4]["rows"][0][0] == "S4_R1_C1"

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from .agent_prompt_queue import record_processing_status
 from .config import ALLOWED_CATEGORIES, ARCHIVE_DATASET, DEFAULT_DIRS, SUPPORTED_SOURCE_SUFFIXES
-from .converter import ConversionError, MinerUConverter, OcrRequiredError
+from .converter import ConversionError, MinerUConverter, OcrRequiredError, find_mineru_artifact_index
 from .data_workflow import (
     append_workflow_handoff,
     artifact_record,
@@ -261,6 +261,15 @@ def process_sources(
                 metadata=metadata,
                 mineru_profile=converter.profile_dict() if hasattr(converter, "profile_dict") else None,
             )
+            record_processing_status(
+                root,
+                queue_relative_path,
+                status="processing",
+                step="classify",
+                detail="Classifying source metadata and workflow route",
+                metadata=metadata,
+                mineru_profile=converter.profile_dict() if hasattr(converter, "profile_dict") else None,
+            )
 
             existing = store.get(doc_id, version)
             source_hash = content_hash(source_file)
@@ -284,7 +293,7 @@ def process_sources(
             normalized_path = normalized_markdown_path(root, metadata)
             run_id = workflow_run_id(doc_id, version)
             source_id = f"{doc_id}_v{version}"
-            append_workflow_handoff(
+            plan_handoff_path = append_workflow_handoff(
                 root,
                 artifact_root,
                 make_handoff(
@@ -298,6 +307,19 @@ def process_sources(
                     quality_gates={"metadata_valid": True, "single_file_run": True},
                     next_skill="mineru-source-converter",
                 ),
+            )
+            record_processing_status(
+                root,
+                queue_relative_path,
+                status="processing",
+                step="handoff_check",
+                detail="Plan handoff contract passed",
+                metadata=metadata,
+                artifact_path=str(artifact_root.resolve()),
+                handoff_path=str(plan_handoff_path.resolve()),
+                checkpoint="plan",
+                quality_gates={"metadata_valid": True, "single_file_run": True},
+                next_skill="mineru-source-converter",
             )
             convert_with_optional_status(
                 converter,
@@ -316,6 +338,9 @@ def process_sources(
                     mineru_profile=converter.profile_dict() if hasattr(converter, "profile_dict") else None,
                 ),
             )
+            mineru_artifact_index = find_mineru_artifact_index(artifact_root / "mineru_raw", normalized_path)
+            if mineru_artifact_index:
+                metadata["mineru_artifact_index_path"] = str(mineru_artifact_index)
             record_processing_status(
                 root,
                 queue_relative_path,
@@ -340,9 +365,24 @@ def process_sources(
                             artifact_id=f"converted_markdown_{source_id}",
                             artifact_type="converted",
                             source_id=source_id,
-                        )
+                        ),
+                        *(
+                            [
+                                artifact_record(
+                                    mineru_artifact_index,
+                                    artifact_id=f"mineru_artifact_index_{source_id}",
+                                    artifact_type="converted",
+                                    source_id=source_id,
+                                )
+                            ]
+                            if mineru_artifact_index
+                            else []
+                        ),
                     ],
-                    quality_gates={"converted_markdown_exists": normalized_path.exists()},
+                    quality_gates={
+                        "converted_markdown_exists": normalized_path.exists(),
+                        "mineru_artifact_index_created": bool(mineru_artifact_index),
+                    },
                     next_skill="source-output-quality-auditor",
                 ),
             )
@@ -416,6 +456,12 @@ def process_sources(
                 qa_report=qa_report.to_dict(),
             )
             metadata["rag_ready_package"] = rag_ready["package_root"]
+            metadata["metadata_json_path"] = rag_ready["metadata_json_path"]
+            metadata["section_index_path"] = rag_ready["section_index_path"]
+            metadata["chunk_plan_path"] = rag_ready["chunk_plan_path"]
+            metadata["citation_map_path"] = rag_ready["citation_map_path"]
+            metadata["quality_report_path"] = rag_ready["quality_report_path"]
+            metadata["source_locator_coverage"] = rag_ready["source_locator_coverage"]
             metadata["schema_manifest_path"] = rag_ready["schema_manifest_path"]
             metadata["citation_manifest_path"] = rag_ready["citation_manifest_path"]
             metadata["index_manifest_path"] = rag_ready["index_manifest_path"]
@@ -428,6 +474,36 @@ def process_sources(
                     status="passed",
                     source_id=source_id,
                     artifacts=[
+                        artifact_record(
+                            Path(rag_ready["metadata_json_path"]),
+                            artifact_id=f"metadata_json_{source_id}",
+                            artifact_type="rag_ready",
+                            source_id=source_id,
+                        ),
+                        artifact_record(
+                            Path(rag_ready["section_index_path"]),
+                            artifact_id=f"section_index_{source_id}",
+                            artifact_type="rag_ready",
+                            source_id=source_id,
+                        ),
+                        artifact_record(
+                            Path(rag_ready["chunk_plan_path"]),
+                            artifact_id=f"chunk_plan_{source_id}",
+                            artifact_type="rag_ready",
+                            source_id=source_id,
+                        ),
+                        artifact_record(
+                            Path(rag_ready["citation_map_path"]),
+                            artifact_id=f"citation_map_{source_id}",
+                            artifact_type="rag_ready",
+                            source_id=source_id,
+                        ),
+                        artifact_record(
+                            Path(rag_ready["quality_report_path"]),
+                            artifact_id=f"quality_report_{source_id}",
+                            artifact_type="rag_ready",
+                            source_id=source_id,
+                        ),
                         artifact_record(
                             Path(rag_ready["schema_manifest_path"]),
                             artifact_id=f"schema_manifest_{source_id}",
@@ -450,7 +526,8 @@ def process_sources(
                     quality_gates={
                         "audit_passed": True,
                         "schema_created": True,
-                        "citations_complete": True,
+                        "citations_complete": rag_ready["source_locator_coverage"] >= 1.0,
+                        "source_locator_coverage": rag_ready["source_locator_coverage"],
                         "chunks_indexed": rag_ready["chunk_count"] > 0,
                     },
                     next_skill="data-skill-evolution",
@@ -467,7 +544,7 @@ def process_sources(
                     "created_at": utc_now(),
                 },
             )
-            append_workflow_handoff(
+            evolve_handoff_path = append_workflow_handoff(
                 root,
                 artifact_root,
                 make_handoff(
@@ -486,6 +563,22 @@ def process_sources(
                     quality_gates={"evolution_recorded": True},
                     next_skill=None,
                 ),
+            )
+            record_processing_status(
+                root,
+                queue_relative_path,
+                status="processing",
+                step="review",
+                detail="Queued for human review after RAG-ready packaging",
+                metadata=metadata,
+                artifact_path=str(artifact_root.resolve()),
+                qa_report_path=qa_report.report_path,
+                qa_status=qa_report.status,
+                qa_issues=qa_report.issues,
+                handoff_path=str(evolve_handoff_path.resolve()),
+                checkpoint="evolve",
+                quality_gates={"human_review_required": True, "rag_ready_package": True, "evolution_recorded": True},
+                next_skill="human-review",
             )
             staged_path = stage_source(root, source_file, metadata)
 

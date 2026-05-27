@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import json
+import zipfile
 from pathlib import Path
 
 import pytest
 
-from poc_workflow.converter import ConversionError, MinerUConverter
+from poc_workflow.converter import (
+    ConversionError,
+    MinerUConverter,
+    collect_mineru_zip_artifacts,
+    find_mineru_artifact_index,
+)
 
 
-def test_converter_extracts_xlsx_to_markdown(tmp_path: Path) -> None:
+def test_converter_requires_mineru_for_xlsx_sources(tmp_path: Path) -> None:
     from openpyxl import Workbook
 
     source = tmp_path / "checklist.xlsx"
@@ -19,12 +26,10 @@ def test_converter_extracts_xlsx_to_markdown(tmp_path: Path) -> None:
     workbook.save(source)
 
     output = tmp_path / "checklist.md"
-    MinerUConverter(command="missing-mineru").convert(source, output)
+    with pytest.raises(ConversionError):
+        MinerUConverter(command="missing-mineru").convert(source, output)
 
-    text = output.read_text(encoding="utf-8")
-    assert "## Sheet: Checklist" in text
-    assert "| Step | Owner |" in text
-    assert "Kiem tra tem" in text
+    assert not output.exists()
 
 
 def test_converter_extracts_docx_to_markdown(tmp_path: Path) -> None:
@@ -49,7 +54,7 @@ def test_converter_extracts_docx_to_markdown(tmp_path: Path) -> None:
     assert "Doi chieu chung tu" in text
 
 
-def test_converter_falls_back_to_pdf_text_when_mineru_fails(tmp_path: Path) -> None:
+def test_converter_requires_mineru_for_pdf_sources(tmp_path: Path) -> None:
     from reportlab.pdfgen import canvas
 
     source = tmp_path / "procedure.pdf"
@@ -59,12 +64,10 @@ def test_converter_falls_back_to_pdf_text_when_mineru_fails(tmp_path: Path) -> N
     pdf.save()
 
     output = tmp_path / "procedure.md"
-    MinerUConverter(command="missing-mineru").convert(source, output)
+    with pytest.raises(ConversionError):
+        MinerUConverter(command="missing-mineru").convert(source, output)
 
-    text = output.read_text(encoding="utf-8")
-    assert "MinerU conversion was attempted first" in text
-    assert "Quy trinh kiem tra nhiet do kho" in text
-    assert "Ghi nhan nhiet do" in text
+    assert not output.exists()
 
 
 def test_convert_with_mineru_routes_xlsx_through_mineru(tmp_path: Path) -> None:
@@ -117,3 +120,47 @@ def test_converter_reads_mineru_options_from_env(monkeypatch) -> None:
     assert converter.table is True
     assert converter.image_analysis is False
     assert converter.max_pages == 300
+
+
+def test_collect_mineru_zip_artifacts_indexes_sidecars_and_images(tmp_path: Path) -> None:
+    zip_path = tmp_path / "mineru_result.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("doc/auto/doc.md", "# Doc\n\nBody\n")
+        archive.writestr(
+            "doc/auto/doc_content_list_v2.json",
+            json.dumps(
+                [
+                    [
+                        {
+                            "type": "text",
+                            "content": {"paragraph_content": [{"type": "text", "content": "Step one"}]},
+                            "bbox": [1, 2, 3, 4],
+                        }
+                    ]
+                ]
+            ),
+        )
+        archive.writestr("doc/auto/doc_middle.json", json.dumps({"pdf_info": [{"preproc_blocks": []}]}))
+        archive.writestr("doc/auto/doc_model.json", json.dumps({"layout": "test"}))
+        archive.writestr("doc/auto/images/figure.jpg", b"image-bytes")
+        archive.writestr("doc/auto/doc_origin.pdf", b"%PDF-1.4")
+
+    output_md = tmp_path / "out.md"
+    output_md.write_text("# Doc\n\nBody\n", encoding="utf-8")
+
+    index_path = collect_mineru_zip_artifacts(
+        zip_path=zip_path,
+        result_root=tmp_path / "raw",
+        output_md=output_md,
+        selected_markdown_name="doc/auto/doc.md",
+        source_path=tmp_path / "source.pdf",
+        job_id="job-1",
+    )
+
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    assert index["summary"]["has_content_list_v2"] is True
+    assert index["summary"]["has_middle_json"] is True
+    assert index["summary"]["has_model_json"] is True
+    assert index["summary"]["image_count"] == 1
+    assert any(item["type"] == "content_list_v2" and Path(item["path"]).exists() for item in index["artifacts"])
+    assert find_mineru_artifact_index(tmp_path / "raw", output_md) == index_path

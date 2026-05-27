@@ -29,9 +29,10 @@ from .pipeline import (
 )
 from .quality_gate import run_quality_gate
 from .qa_test_eval import run_qa_test
-from .pilot_pdtech_a02 import run_pdtech_a02_pilot
+from .pilot_pdtech_a02 import run_pdtech_a02_agent_sandbox, run_pdtech_a02_pilot
 from .ragflow_http import bootstrap_ragflow_resources, sync_active_to_ragflow
 from .readiness import deployment_readiness
+from .upload_processing import process_upload_queue
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -59,6 +60,21 @@ def build_parser() -> argparse.ArgumentParser:
     process.add_argument("--limit", type=int, help="Process at most this many new/changed source files.")
     process.add_argument("--source-path", action="append", help="Process only this source file path. Can be repeated.")
 
+    upload_process = sub.add_parser(
+        "process-upload-queue",
+        help=(
+            "Process raw Upload/Inbox files one business-document group at a time through MinerU, "
+            "QA/repair, RAG-ready packaging, and pending human review. Does not sync RAGFlow."
+        ),
+    )
+    upload_process.add_argument("--limit-groups", type=int, help="Process at most this many PDF/XLSX business-document groups.")
+    upload_process.add_argument(
+        "--category",
+        default="procedure",
+        choices=["procedure", "vendor_document", "form_checklist", "faq_troubleshooting", "all"],
+        help="Upload category to process. Default procedure; use all for mixed queues.",
+    )
+
     pilot = sub.add_parser(
         "pilot-pdtech-a02",
         help="Run the PD-TECH-A-02 Rev 04 single-document clean/verify pilot with MinerU-only raw conversion.",
@@ -68,6 +84,18 @@ def build_parser() -> argparse.ArgumentParser:
     pilot.add_argument("--primary-source", choices=["auto", "xlsx", "pdf"], default="auto")
     pilot.add_argument("--review-approved", action="store_true", help="Write an approved human review and activate the pilot record.")
     pilot.add_argument("--reviewer", default="human", help="Reviewer name for approved pilot runs.")
+
+    agent_sandbox = sub.add_parser(
+        "agent-sandbox-pdtech-a02",
+        help=(
+            "Run one PD-TECH-A-02 Rev 04 business document in an isolated AI-agent sandbox. "
+            "MinerU-only conversion, no RAGFlow sync, no smoke chat."
+        ),
+    )
+    agent_sandbox.add_argument("--xlsx-path", help="Original PD-TECH-A-02 Rev 04 XLSX path. Defaults to discovery under root_source.")
+    agent_sandbox.add_argument("--pdf-path", help="Original PD-TECH-A-02 Rev 04 PDF path. Defaults to discovery under root_source.")
+    agent_sandbox.add_argument("--primary-source", choices=["auto", "xlsx", "pdf"], default="auto")
+    agent_sandbox.add_argument("--stamp", help="Optional deterministic sandbox stamp for tests/repro runs.")
 
     ocr_process = sub.add_parser("process-ocr-required", help="Requeue and process a small OCR-required batch.")
     ocr_process.add_argument("--limit", type=int, default=1, help="Files to requeue and process. Default 1, maximum 5.")
@@ -229,6 +257,15 @@ def main(argv: list[str] | None = None) -> int:
             source_paths = [Path(path) for path in args.source_path] if args.source_path else None
             records = process_sources(root, limit=args.limit, source_paths=source_paths)
             result = {"processed": [record.to_dict() for record in records]}
+        elif args.command == "process-upload-queue":
+            category = None if args.category == "all" else args.category
+            result = {
+                "processed": process_upload_queue(
+                    root,
+                    limit_groups=args.limit_groups,
+                    category=category,
+                )
+            }
         elif args.command == "pilot-pdtech-a02":
             result = run_pdtech_a02_pilot(
                 root,
@@ -237,6 +274,14 @@ def main(argv: list[str] | None = None) -> int:
                 primary_source=args.primary_source,
                 approve_review=args.review_approved,
                 reviewer=args.reviewer,
+            )
+        elif args.command == "agent-sandbox-pdtech-a02":
+            result = run_pdtech_a02_agent_sandbox(
+                root,
+                xlsx_path=Path(args.xlsx_path) if args.xlsx_path else None,
+                pdf_path=Path(args.pdf_path) if args.pdf_path else None,
+                primary_source=args.primary_source,
+                stamp=args.stamp,
             )
         elif args.command == "process-ocr-required":
             init_workspace(root)

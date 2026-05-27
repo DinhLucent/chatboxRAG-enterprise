@@ -466,6 +466,7 @@ def record_to_ragflow_metadata(record: ManifestRecord) -> dict[str, str]:
         "raw_converter",
         "raw_conversion_policy",
         "raw_markdown_path",
+        "mineru_artifact_index_path",
     ]:
         if extra.get(key) is not None:
             metadata[key] = str(extra[key])

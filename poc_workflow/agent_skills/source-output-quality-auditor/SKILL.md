@@ -20,17 +20,19 @@ Dung skill nay sau conversion va sau moi repair loop de xac nhan output gan voi 
 ## Workflow
 
 1. Mo file PDF/XLSX goc va `conversion_manifest`.
-2. Lay mau theo trang/sheet, bang, heading, hinh, footnote va cac doan co so lieu.
-3. Doi chieu noi dung goc voi Markdown/output da convert.
-4. Phan loai issue: `missing_content`, `wrong_order`, `table_error`, `ocr_error`, `citation_gap`, `format_noise`, `schema_gap`.
-5. Gan severity: `blocker`, `major`, `minor`.
-6. Tao `audit_report.json` va `repair_request.json` neu co loi can sua.
-7. Neu dat nguong, handoff sang `ragflow-schema-indexer`; neu chua dat, handoff sang `rag-markdown-repairer`.
+2. Doi chieu tung candidate raw output MinerU: selected Markdown, `mineru_artifact_index.json`, `content_list_v2/content_list`, `middle.json`, `model.json`, image/table artifacts.
+3. Lay mau theo trang/sheet, bang, heading, hinh, footnote, bbox va cac doan co so lieu.
+4. Doi chieu noi dung goc voi Markdown/output da convert, bao gom coverage term, row/table signal, step signal, reading order, citation locator, MinerU block id va bbox/image ref.
+5. Phan loai issue: `missing_content`, `wrong_order`, `table_error`, `ocr_error`, `citation_gap`, `format_noise`, `schema_gap`, `low_rag_usefulness`.
+6. Gan severity: `blocker`, `major`, `minor`.
+7. Tao `audit_report.json`, `repair_request.json` va `learning_notes.md` neu co loi can sua.
+8. Neu dat nguong, handoff sang `ragflow-schema-indexer`; neu chua dat, handoff sang `rag-markdown-repairer`.
 
 ## Inputs
 
 - `raw_sources`: path PDF/XLSX goc.
 - `conversion_manifest`: mapping output tu MinerU.
+- `mineru_artifact_index`: index sidecar MinerU, selected Markdown, content_list, middle/model JSON va images.
 - `converted_outputs` hoac `repaired_outputs`.
 - `quality_thresholds`: nguong coverage, table fidelity, citation coverage.
 
@@ -60,6 +62,8 @@ Dung skill nay sau conversion va sau moi repair loop de xac nhan output gan voi 
   ],
   "quality_gates": {
     "source_compared": true,
+    "mineru_artifact_index_checked": true,
+    "content_list_or_middle_json_checked": true,
     "required_coverage_passed": false,
     "tables_passed": false,
     "citations_passed": true
@@ -74,6 +78,8 @@ Dung skill nay sau conversion va sau moi repair loop de xac nhan output gan voi 
 - Neu audit thieu bang chung cho issue blocker/major, tu ha issue thanh `needs_review` hoac lap lai sampling.
 - Neu repair da lap 3 lan ma van loi cu, tra `blocked` cho orchestrator.
 - Neu Markdown dat nhung citation thieu, khong cho qua index vi RAGFlow can truy vet nguon.
+- Neu Markdown co ve sach nhung `mineru_artifact_index` thieu `content_list/content_list_v2` va `middle.json`, khong ket luan citation giau da dat; tra `needs_repair` hoac `needs_review` tuy muc do.
+- Khong chay retrieval/chatbot smoke test trong phase nay. Retrieval quality la phase sau khi RAG-ready package da duoc human review.
 
 ## Quality Gates
 
@@ -81,4 +87,13 @@ Dung skill nay sau conversion va sau moi repair loop de xac nhan output gan voi 
 - Moi issue co `issue_id`, `source_id`, `location`, `evidence`, `expected`, `actual`, `severity`.
 - Bang quan trong trong XLSX/PDF co header, row count va numeric values duoc doi chieu.
 - Heading va reading order phai du dung de chunk RAG.
-- Tat ca noi dung RAG-ready phai co page/sheet citation hoac ly do mien tru.
+- Tat ca noi dung RAG-ready phai co page/sheet citation hoac ly do mien tru; neu MinerU co bbox/block id thi citation_map phai giu `mineru_block_ids`, `content_types`, `bbox`, `source_json`, va `image_refs` khi co.
+- Output co `retrieval_or_smoke_chat_executed: false` de admin biet phase nay chi kiem hau-convert.
+
+## Learned Rules
+
+- MinerU ZIP/raw Markdown la bang chung goc cua buoc convert; khong ghi de.
+- Markdown MinerU chi la mot view; `content_list_v2/content_list + middle.json + images` moi la bang chung chinh de tao locator RAG/UI.
+- XLSX MinerU output thuong giu bang tot hon nhung co HTML/table noise; can parse table HTML truoc khi danh gia chat luong.
+- PDF MinerU output co the sach ve encoding nhung kem ve ngu nghia/step neu OCR mat dau hoac vo bang; khong pass chi vi `mojibake_score=0`.
+- Neu mot candidate giau step/table signal hon nhung co loi nho co the repair, uu tien repair candidate do thay vi chon candidate sach gia.

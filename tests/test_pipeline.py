@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pytest
+from openpyxl import Workbook
 
 from poc_workflow.agent_prompt_queue import record_processing_status
 from poc_workflow.chatbot import NO_SOURCE_ANSWER, ask, apply_feedback
@@ -105,7 +106,8 @@ def test_missing_metadata_is_not_ingested(tmp_path: Path) -> None:
     processed = process_sources(tmp_path)
     assert processed == []
     assert ManifestStore(tmp_path).load() == []
-    runs = QualityDatabase(tmp_path).connect().execute("SELECT status FROM ingestion_runs").fetchall()
+    with QualityDatabase(tmp_path).connect() as conn:
+        runs = conn.execute("SELECT status FROM ingestion_runs").fetchall()
     assert [row[0] for row in runs] == ["failed_review"]
 
 
@@ -142,7 +144,8 @@ def test_ocr_required_error_is_classified_separately(tmp_path: Path) -> None:
 
     assert processed == []
     assert ManifestStore(tmp_path).load() == []
-    runs = QualityDatabase(tmp_path).connect().execute("SELECT status FROM ingestion_runs").fetchall()
+    with QualityDatabase(tmp_path).connect() as conn:
+        runs = conn.execute("SELECT status FROM ingestion_runs").fetchall()
     assert [row[0] for row in runs] == ["ocr_required"]
 
 
@@ -173,16 +176,128 @@ def test_processing_status_and_qa_repair_basic_mojibake(tmp_path: Path) -> None:
     assert item["processing_step"] == "done"
     assert item["qa_status"] == "repaired"
     history_steps = [event["step"] for event in item["processing_history"]]
+    assert "classify" in history_steps
+    assert "handoff_check" in history_steps
     assert "qa" in history_steps
     assert "rag_ready" in history_steps
+    assert "review" in history_steps
     assert history_steps[-1] == "done"
     rag_ready = tmp_path / "rag_ready" / "technical" / "procedure" / "KT-QT-005_v1.0"
     assert (rag_ready / "schema_manifest.json").exists()
     assert (rag_ready / "citation_manifest.json").exists()
     assert (rag_ready / "index_manifest.json").exists()
+    for artifact_name in (
+        "metadata_json_path",
+        "section_index_path",
+        "chunk_plan_path",
+        "citation_map_path",
+        "quality_report_path",
+    ):
+        assert artifact_name in processed[0].extra
+        assert Path(processed[0].extra[artifact_name]).exists()
+    citation_map = json.loads(Path(processed[0].extra["citation_map_path"]).read_text(encoding="utf-8"))
+    assert citation_map
+    assert all(item["normalized_locator"]["line_start"] >= 1 for item in citation_map)
+    assert all(item["source_locator"]["line_start"] >= 1 for item in citation_map if item["locator_status"] == "resolved")
+    schema_manifest = json.loads((rag_ready / "schema_manifest.json").read_text(encoding="utf-8"))
+    assert set(schema_manifest["canonical_artifacts"]) == {
+        "normalized_markdown",
+        "metadata_json",
+        "section_index_json",
+        "chunk_plan_json",
+        "citation_map_json",
+        "quality_report_json",
+    }
     workflow_log = tmp_path / ".Workplace" / "artifacts" / "procedure" / "KT-QT-005_v1.0" / "workflow" / "handoffs.jsonl"
     assert workflow_log.exists()
     assert '"step": "audit"' in workflow_log.read_text(encoding="utf-8")
+
+
+def test_rag_artifacts_use_xlsx_row_column_locators_without_fake_pdf_fields(tmp_path: Path) -> None:
+    init_workspace(tmp_path)
+    source = tmp_path / "source" / "technical" / "procedure" / "KT-QT-020_v1.0.xlsx"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Quy trinh"
+    sheet.append(["Buoc 1", "Tiep nhan yeu cau bao duong"])
+    sheet.append(["Buoc 2", "Kiem tra thiet bi va ghi nhan ket qua"])
+    workbook.save(source)
+    source.with_name(source.stem + ".metadata.json").write_text(
+        json.dumps(
+            {
+                "doc_id": "KT-QT-020",
+                "title": "Quy trinh bao duong",
+                "department": "technical",
+                "category": "procedure",
+                "source_type": "internal_procedure",
+                "language": "vi",
+                "version": "1.0",
+                "effective_from": "2025-01-01",
+                "review_at": "2025-12-31",
+                "owner": "Phong Ky thuat",
+                "access_group": "technical",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    class CopyingConverter:
+        def convert(self, source_path: Path, output_md: Path, language: str = "vi", artifact_root: Path | None = None) -> None:
+            output_md.parent.mkdir(parents=True, exist_ok=True)
+            output_md.write_text(
+                "# Quy trinh bao duong\n\n"
+                "Buoc 1: Tiep nhan yeu cau bao duong.\n\n"
+                "Buoc 2: Kiem tra thiet bi va ghi nhan ket qua.",
+                encoding="utf-8",
+            )
+
+        def profile_dict(self) -> dict[str, object]:
+            return {"engine": "test"}
+
+    processed = process_sources(tmp_path, converter=CopyingConverter())
+
+    assert len(processed) == 1
+    citation_map = json.loads(Path(processed[0].extra["citation_map_path"]).read_text(encoding="utf-8"))
+    resolved = [item for item in citation_map if item["locator_status"] == "resolved"]
+    assert resolved
+    for item in resolved:
+        locator = item["source_locator"]
+        assert locator["type"] == "xlsx"
+        assert locator["sheet"] == "Quy trinh"
+        assert "row_start" in locator
+        assert "columns" in locator
+        assert "page_start" not in locator
+        assert item["locator_basis"] == "xlsx_row_text_overlap"
+
+
+def test_unresolved_source_locator_is_explicitly_review_required_not_faked(tmp_path: Path) -> None:
+    init_workspace(tmp_path)
+    write_source(
+        tmp_path,
+        "KT-QT-021_v1.0.md",
+        "1.0",
+        "# Source\n\nNoi dung nguon khong giong voi ban convert.",
+        {"doc_id": "KT-QT-021", "title": "Unresolved locator"},
+    )
+
+    class DivergentConverter:
+        def convert(self, source_path: Path, output_md: Path, language: str = "vi", artifact_root: Path | None = None) -> None:
+            output_md.parent.mkdir(parents=True, exist_ok=True)
+            output_md.write_text("# Converted\n\nalpha beta gamma delta epsilon zeta", encoding="utf-8")
+
+    processed = process_sources(tmp_path, converter=DivergentConverter())
+
+    assert len(processed) == 1
+    citation_map = json.loads(Path(processed[0].extra["citation_map_path"]).read_text(encoding="utf-8"))
+    assert citation_map
+    assert any(item["locator_status"] == "unresolved" for item in citation_map)
+    for item in citation_map:
+        if item["locator_status"] == "unresolved":
+            assert item["source_locator"] is None
+            assert item["requires_human_review"] is True
+            assert item["locator_confidence"] == 0.0
 
 
 def test_processing_status_rejects_unknown_workflow_step(tmp_path: Path) -> None:
@@ -214,6 +329,10 @@ def test_workflow_handoff_enforces_order_and_repair_limit(tmp_path: Path) -> Non
         artifact_root,
         make_handoff(run_id=run_id, step="plan", status="ready", source_id=source_id, next_skill="mineru-source-converter"),
     )
+    latest = json.loads((artifact_root / "workflow" / "latest_handoff.json").read_text(encoding="utf-8"))
+    assert latest["skill_read_receipts"][0]["skill"] == "data-pipeline-orchestrator"
+    assert latest["skill_read_receipts"][0]["checksum"]
+    assert latest["handoff_checker"]["status"] == "passed"
     append_workflow_handoff(
         tmp_path,
         artifact_root,

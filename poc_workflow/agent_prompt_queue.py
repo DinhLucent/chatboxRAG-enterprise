@@ -8,6 +8,7 @@ from typing import Any
 from .config import ALLOWED_CATEGORIES, SUPPORTED_SOURCE_SUFFIXES
 from .data_workflow import load_agent_skill_registry, validate_processing_event
 from .intake import infer_version, list_inbox, unique_path
+from .manifest import ManifestStore
 from .utils import read_json, utc_now, write_json
 
 
@@ -31,13 +32,16 @@ STATUS_ORDER = [
     "queue",
     "processing",
     "done",
+    "pending_review",
+    "approved",
     "ocr_required",
     "failed",
+    "failed_review",
 ]
 
 LIFECYCLE_FOLDERS = {"done", "failed", "ocr_required"}
-PROMPT_TEMPLATE_VERSION = "agent-task-v2"
-GOAL_PROMPT_TEMPLATE_VERSION = "agent-goal-v1"
+PROMPT_TEMPLATE_VERSION = "agent-task-v3"
+GOAL_PROMPT_TEMPLATE_VERSION = "agent-goal-v2"
 DEFAULT_PROMPT_MODE = "process_raw"
 DEFAULT_GOAL_BRANCH = "codex/upload-data-long-run"
 PROMPT_MODE_ORDER = [
@@ -51,38 +55,38 @@ PROMPT_MODE_ORDER = [
 ]
 PROMPT_MODES: dict[str, dict[str, str]] = {
     "process_raw": {
-        "label": "Xu ly raw data",
-        "description": "Chay workflow MinerU -> QA -> repair loop -> RAG-ready queue cho file moi trong inbox.",
+        "label": "Xử lý dữ liệu thô (Raw data)",
+        "description": "Chạy quy trình MinerU -> Kiểm định chất lượng (QA) -> Vòng sửa lỗi -> Hàng chờ RAG-ready cho các file mới trong hộp thư (inbox).",
         "request_type": "add_new_or_auto_detect",
     },
     "classify_discuss": {
-        "label": "Phan loai / hoi admin",
-        "description": "Nhan dien muc dich them moi, cap nhat, policy hay tai lieu tong quat; hoi lai admin neu mo ho.",
+        "label": "Phân loại / Hỏi ý kiến quản trị viên",
+        "description": "Nhận diện mục đích thêm mới, cập nhật, chính sách hoặc tài liệu tổng quát; hỏi lại quản trị viên nếu chưa rõ ràng.",
         "request_type": "classification_discussion",
     },
     "update_existing": {
-        "label": "Cap nhat tai lieu",
-        "description": "Xu ly file co kha nang la revision moi, replacement hoac duplicate cua tai lieu da co.",
+        "label": "Cập nhật tài liệu",
+        "description": "Xử lý tệp tin có khả năng là phiên bản cập nhật mới, thay thế hoặc trùng lặp của tài liệu đã tồn tại.",
         "request_type": "update_existing",
     },
     "policy_change": {
-        "label": "Them policy",
-        "description": "Them/chinh chinh sach phan loai, QA gate, folder, schema hoac RAG-ready artifact.",
+        "label": "Thêm chính sách (Policy)",
+        "description": "Thêm hoặc điều chỉnh chính sách phân loại, tiêu chí QA gate, thư mục, schema hoặc tài liệu RAG-ready.",
         "request_type": "policy_change",
     },
     "run_workflow": {
-        "label": "Chay workflow/subagent",
-        "description": "Lap plan, goi dung skill/sub-agent, ghi handoff va chay loop theo quy trinh dong.",
+        "label": "Chạy quy trình / Tác nhân phụ (Subagent)",
+        "description": "Lập kế hoạch, gọi đúng kỹ năng/tác nhân phụ, ghi nhận bàn giao và thực hiện vòng lặp xử lý quy trình.",
         "request_type": "workflow_run",
     },
     "repair_from_qa": {
-        "label": "Sua theo QA handoff",
-        "description": "Doc QA report/handoff, sua Markdown/index/citation roi tra lai QA; khong approve truc tiep.",
+        "label": "Sửa theo báo cáo QA (QA handoff)",
+        "description": "Đọc báo cáo/biên bản QA, chỉnh sửa tài liệu Markdown, mục lục hoặc nguồn dẫn trích dẫn và trả lại cho QA; không phê duyệt trực tiếp.",
         "request_type": "repair",
     },
     "human_review_packet": {
-        "label": "Goi review cho admin",
-        "description": "Dong goi Markdown, source locator, issue log va checklist pass/fail cho human review.",
+        "label": "Gửi yêu cầu phê duyệt cho quản trị viên",
+        "description": "Đóng gói tài liệu Markdown, sơ đồ nguồn dẫn, lịch sử vấn đề và danh mục kiểm tra đạt/lỗi để quản trị viên phê duyệt thủ công.",
         "request_type": "human_review",
     },
 }
@@ -95,6 +99,7 @@ PROCESSING_STEP_ORDER = [
     "queue",
     "parse",
     "download",
+    "extract_artifacts",
     "build_outputs",
     "mineru_convert",
     "compare_sources",
@@ -119,6 +124,7 @@ PROCESSING_STEP_LABELS = {
     "queue": "Queue",
     "parse": "Parse",
     "download": "Download",
+    "extract_artifacts": "Extract MinerU artifacts",
     "build_outputs": "Build outputs",
     "mineru_convert": "MinerU convert",
     "compare_sources": "Compare sources",
@@ -134,15 +140,110 @@ PROCESSING_STEP_LABELS = {
     "failed": "Failed",
 }
 
+ORCHESTRATION_ROLES: list[dict[str, Any]] = [
+    {
+        "role": "orchestrator",
+        "skill": "data-pipeline-orchestrator",
+        "mission": "Own run scope, source grouping, one-document sequencing, dashboard state, and handoff order.",
+        "entry_gate": "source_packet and policy_packet are present",
+        "exit_gate": "run plan and first handoff are written",
+    },
+    {
+        "role": "miner",
+        "skill": "mineru-source-converter",
+        "mission": "Run MinerU only, preserve raw source, and build mineru_artifact_index from Markdown plus sidecars.",
+        "entry_gate": "primary/supporting candidates are known",
+        "exit_gate": "converted_raw artifacts and mineru_artifact_index exist",
+    },
+    {
+        "role": "qa",
+        "skill": "source-output-quality-auditor",
+        "mission": "Compare source, MinerU Markdown, sidecars, and normalized output for faithfulness and RAG readiness.",
+        "entry_gate": "converted artifacts or repaired artifacts exist",
+        "exit_gate": "quality_report and repair_handoff or pass decision exist",
+    },
+    {
+        "role": "repair",
+        "skill": "rag-markdown-repairer",
+        "mission": "Repair Markdown/index/citation from QA handoff without adding source-unsupported content.",
+        "entry_gate": "repair_handoff names exact issues and source evidence",
+        "exit_gate": "repaired Markdown and repair_log are ready for QA recheck",
+    },
+    {
+        "role": "schema_index",
+        "skill": "ragflow-schema-indexer",
+        "mission": "Create normalized_markdown, metadata_json, section_index, chunk_plan, citation_map, and review packet.",
+        "entry_gate": "QA pass and citation requirements are satisfied",
+        "exit_gate": "RAG-ready package is pending human review, not ingested",
+    },
+    {
+        "role": "evolution",
+        "skill": "data-skill-evolution",
+        "mission": "Write learning report and rule candidates after each run; do not auto-modify skills without approval.",
+        "entry_gate": "run report, quality report, and repair log exist",
+        "exit_gate": "evolution_report and rule candidates are written",
+    },
+]
+
+ORCHESTRATION_CHECKPOINTS: list[dict[str, str]] = [
+    {
+        "step": "plan",
+        "owner_role": "orchestrator",
+        "dashboard_step": "classify",
+        "required_output": "run_plan + workflow handoff",
+        "qa_gate": "single business document/group selected; no batch shortcut",
+    },
+    {
+        "step": "convert",
+        "owner_role": "miner",
+        "dashboard_step": "mineru_convert",
+        "required_output": "raw Markdown + MinerU sidecars + mineru_artifact_index",
+        "qa_gate": "MinerU-only conversion; raw source unchanged",
+    },
+    {
+        "step": "audit",
+        "owner_role": "qa",
+        "dashboard_step": "qa",
+        "required_output": "quality_report + issue list",
+        "qa_gate": "source-output comparison includes Markdown, model/middle/content JSON, images, and locator coverage",
+    },
+    {
+        "step": "repair",
+        "owner_role": "repair",
+        "dashboard_step": "repair_loop",
+        "required_output": "repaired Markdown/index/citation + repair_log",
+        "qa_gate": "repair loop <= registry limit and every change maps to source evidence",
+    },
+    {
+        "step": "index",
+        "owner_role": "schema_index",
+        "dashboard_step": "rag_ready",
+        "required_output": "RAG-ready package + review packet",
+        "qa_gate": "strict RAG readiness pass; no RAGFlow sync before approval",
+    },
+    {
+        "step": "evolve",
+        "owner_role": "evolution",
+        "dashboard_step": "review",
+        "required_output": "evolution_report + rule candidates",
+        "qa_gate": "lessons are evidence-based and safe for human review",
+    },
+]
+
 
 def list_upload_queue(root: Path) -> dict[str, Any]:
     state = _load_state(root)
-    items = [_inbox_item(file_item, state) for file_item in list_inbox(root)]
+    items = [_inbox_item(file_item, state) for file_item in list_inbox(root, include_lifecycle=True)]
     items.extend(_processing_item(root, path, state) for path in _iter_processing_files(root))
+    _enrich_items_with_manifest(root, items)
     return {
         "items": sorted(
             items,
-            key=lambda item: (STATUS_ORDER.index(item["status"]), item["file_name"], item["relative_path"]),
+            key=lambda item: (
+                STATUS_ORDER.index(item["status"]) if item["status"] in STATUS_ORDER else len(STATUS_ORDER),
+                item["file_name"],
+                item["relative_path"],
+            ),
         ),
         "summary": _summary(items),
     }
@@ -154,6 +255,8 @@ def list_agent_prompt_templates() -> dict[str, Any]:
         "prompt_version": PROMPT_TEMPLATE_VERSION,
         "goal_prompt_version": GOAL_PROMPT_TEMPLATE_VERSION,
         "default_goal_branch": DEFAULT_GOAL_BRANCH,
+        "prompt_architecture": _agent_prompt_architecture_packets(),
+        "orchestration_contract": _agent_orchestration_contract(),
         "modes": [
             {
                 "id": mode,
@@ -217,7 +320,7 @@ def generate_agent_goal_prompt(
         "prompt_version": GOAL_PROMPT_TEMPLATE_VERSION,
         "prompt_mode": "goal_long_run",
         "prompt_mode_label": "GOAL long-run",
-        "prompt_mode_description": "Prompt /goal cho Codex CLI long-run xu ly Upload/Inbox den target.",
+        "prompt_mode_description": "Prompt lệnh /goal dành cho tác nhân Codex chạy tự động dài hạn để xử lý tài liệu Nạp/Hòm thư đến trạng thái đích.",
         "goal_branch": selected_branch,
         "goal_target": target,
         "admin_request": request_text,
@@ -344,6 +447,11 @@ def record_processing_status(
     qa_status: str | None = None,
     qa_issues: list[str] | None = None,
     mineru_profile: dict[str, Any] | None = None,
+    handoff_path: str | None = None,
+    checkpoint: str | None = None,
+    artifacts: list[dict[str, Any]] | None = None,
+    quality_gates: dict[str, Any] | None = None,
+    next_skill: str | None = None,
 ) -> None:
     validate_processing_event(status=status, step=step)
     normalized = _normalize_relative_paths([relative_path])
@@ -396,8 +504,79 @@ def record_processing_status(
         item["qa_issues"] = qa_issues
     if mineru_profile:
         item["mineru_profile"] = mineru_profile
+    if handoff_path:
+        item["handoff_path"] = handoff_path
+    if checkpoint:
+        item["checkpoint"] = checkpoint
+    if artifacts is not None:
+        item["artifacts"] = artifacts
+    if quality_gates is not None:
+        item["quality_gates"] = quality_gates
+    if next_skill is not None:
+        item["next_skill"] = next_skill
     state["items"][original_relative_path] = item
     _save_state(root, state)
+
+
+def record_upload_workflow_event(
+    root: Path,
+    relative_paths: list[str],
+    *,
+    status: str,
+    step: str,
+    detail: str | None = None,
+    error: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    artifact_path: str | None = None,
+    qa_report_path: str | None = None,
+    qa_status: str | None = None,
+    qa_issues: list[str] | None = None,
+    mineru_profile: dict[str, Any] | None = None,
+    handoff_path: str | None = None,
+    checkpoint: str | None = None,
+    artifacts: list[dict[str, Any]] | None = None,
+    quality_gates: dict[str, Any] | None = None,
+    next_skill: str | None = None,
+) -> dict[str, Any]:
+    selected_paths = _normalize_relative_paths(relative_paths)
+    if not selected_paths:
+        raise ValueError("relative_paths is required")
+    validate_processing_event(status=status, step=step)
+
+    queue = list_upload_queue(root)
+    lookup: dict[str, dict[str, Any]] = {}
+    for item in queue["items"]:
+        lookup[item["relative_path"]] = item
+        lookup[item["original_relative_path"]] = item
+    missing = [path for path in selected_paths if path not in lookup]
+    if missing:
+        raise ValueError(f"Files are not in the upload queue: {', '.join(missing)}")
+
+    for path in selected_paths:
+        item = lookup[path]
+        moved = item
+        if item["status"] != status or (status == "processing" and item.get("source") != "workplace"):
+            moved = _move_for_status(root, item, status)
+        record_processing_status(
+            root,
+            moved["relative_path"],
+            status=status,
+            step=step,
+            detail=detail,
+            error=error,
+            metadata=metadata,
+            artifact_path=artifact_path,
+            qa_report_path=qa_report_path,
+            qa_status=qa_status,
+            qa_issues=qa_issues,
+            mineru_profile=mineru_profile,
+            handoff_path=handoff_path,
+            checkpoint=checkpoint,
+            artifacts=artifacts,
+            quality_gates=quality_gates,
+            next_skill=next_skill,
+        )
+    return list_upload_queue(root)
 
 
 def _state_path(root: Path) -> Path:
@@ -470,7 +649,7 @@ def _normalize_goal_target(goal_target: str | None, branch: str) -> str:
         return value[:1200]
     return (
         "Make demo-chatbot-engineerworkflow process Upload/Inbox raw data continuously through MinerU "
-        "conversion, source-output QA, repair loops, RAG-ready packaging, and human review queue "
+        "conversion, artifact indexing, source-output QA, repair loops, RAG-ready packaging, and human review queue "
         f"on branch {branch}, with sequential one-file-at-a-time handling, PDF/XLSX primary-source "
         "dedupe, source-faithful normalized Markdown, citation anchors, dashboard progress visibility, "
         "and no RAGFlow sync until human approval, verified by pytest, compile checks, dashboard API "
@@ -518,6 +697,11 @@ def _inbox_item(file_item: dict[str, Any], state: dict[str, Any]) -> dict[str, A
         "qa_status": saved.get("qa_status"),
         "qa_issues": saved.get("qa_issues") or [],
         "mineru_profile": saved.get("mineru_profile"),
+        "handoff_path": saved.get("handoff_path"),
+        "checkpoint": saved.get("checkpoint"),
+        "artifacts": saved.get("artifacts") or [],
+        "quality_gates": saved.get("quality_gates") or {},
+        "next_skill": saved.get("next_skill"),
         "doc_id": saved.get("doc_id"),
         "title": saved.get("title"),
     }
@@ -557,9 +741,70 @@ def _processing_item(root: Path, path: Path, state: dict[str, Any]) -> dict[str,
         "qa_status": saved.get("qa_status"),
         "qa_issues": saved.get("qa_issues") or [],
         "mineru_profile": saved.get("mineru_profile"),
+        "handoff_path": saved.get("handoff_path"),
+        "checkpoint": saved.get("checkpoint"),
+        "artifacts": saved.get("artifacts") or [],
+        "quality_gates": saved.get("quality_gates") or {},
+        "next_skill": saved.get("next_skill"),
         "doc_id": saved.get("doc_id"),
         "title": saved.get("title"),
     }
+
+
+def _enrich_items_with_manifest(root: Path, items: list[dict[str, Any]]) -> None:
+    records = ManifestStore(root).load()
+    by_doc_version = {(record.doc_id, record.version): record for record in records}
+    for item in items:
+        record = by_doc_version.get((item.get("doc_id"), item.get("version")))
+        if not record:
+            item["display_status"] = item.get("status") or "queue"
+            continue
+        extra = record.extra or {}
+        review = _read_review_status(root, extra.get("human_review_path") or extra.get("review_report_path"))
+        display_status = _manifest_display_status(record.status)
+        item.update(
+            {
+                "manifest_status": record.status,
+                "display_status": display_status,
+                "display_code": extra.get("display_code") or item.get("display_code"),
+                "canonical_business_code": extra.get("canonical_business_code"),
+                "approved_by": record.approved_by,
+                "review_status": review.get("review_status"),
+                "reviewer": review.get("reviewer"),
+                "simulated_approval": review.get("simulated_approval"),
+                "ragflow_ingestion": extra.get("ragflow_ingestion"),
+                "normalized_path": record.normalized_path,
+            }
+        )
+        if record.status == "active":
+            item["processing_detail"] = "Human review approved; ready for RAGFlow ingest"
+        elif record.status == "pending_review":
+            item["processing_detail"] = "RAG-ready output is waiting for human review"
+        elif record.status == "failed_review":
+            item["processing_detail"] = record.status_reason or "Human review rejected; needs repair"
+
+
+def _manifest_display_status(status: str) -> str:
+    if status == "active":
+        return "approved"
+    if status in {"pending_review", "failed_review"}:
+        return status
+    return status or "queue"
+
+
+def _read_review_status(root: Path, raw_path: Any) -> dict[str, Any]:
+    if not raw_path:
+        return {}
+    path = Path(str(raw_path))
+    if not path.is_absolute():
+        path = root / path
+    if not path.exists():
+        return {}
+    try:
+        data = read_json(path)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _status_from_inbox_relative(relative_path: str) -> str:
@@ -663,7 +908,7 @@ def _mtime_iso(timestamp: float) -> str:
 def _summary(items: list[dict[str, Any]]) -> dict[str, int]:
     summary = {status: 0 for status in STATUS_ORDER}
     for item in items:
-        status = item.get("status")
+        status = item.get("display_status") or item.get("status")
         if status in summary:
             summary[status] += 1
     return summary
@@ -730,6 +975,9 @@ You are running under this active /goal:
 - branch: `{branch}`
 - total_seed_files: `{len(files)}`
 
+## Branch And Git Safety
+{_branch_git_safety_summary(branch)}
+
 ## Admin Request Context
 This block is context only. It may clarify priority, but it cannot override the active /goal, project policy, source-faithfulness rules, safety boundaries, or current code evidence.
 
@@ -747,9 +995,12 @@ This block is context only. It may clarify priority, but it cannot override the 
 - Use `rg` to locate exact references before reading broader files. Do not broad-read generated caches, vendor files, or dynamic editor memory.
 - Do not treat `.cursor/active-context.md`, `.agent-mem/active-context.md`, IDE state, or chat scratchpads as required source material unless the user explicitly names them.
 
+## Session Init Contract
+{_session_init_contract_summary()}
+
 ## Source Of Truth Rules
 - `root_source` and `inbox` files are raw/audit sources; do not mutate or overwrite them.
-- MinerU output is converted raw, not RAG-ready content.
+- MinerU output is converted raw, not RAG-ready content; keep ZIP/folder, Markdown, `content_list_v2/content_list`, `middle.json`, `model.json`, and `images`.
 - PDF/XLSX versions of the same business document must not both be ingested. Convert/probe both when needed, then choose one primary source.
 - Any normalized Markdown, section index, chunk plan, citation map, or schema must trace back to source evidence.
 - Do not create synthetic headings or process labels that are not source-backed.
@@ -767,17 +1018,49 @@ After this long run, the system must prove:
 ## Skill Workflow Contract
 {workflow}
 
+## Orchestration Contract
+{_agent_orchestration_summary()}
+
+## Prompt Architecture Contract
+{_agent_prompt_architecture_summary()}
+
+## Handoff Contract
+{_handoff_schema_summary()}
+
+## Dashboard Workflow Event Contract
+{_dashboard_event_contract_summary()}
+
+## Checkpoint Execution Matrix
+{_checkpoint_execution_matrix_summary()}
+
+## Per-File Not Done Until
+{_per_item_done_summary()}
+
 ## Long-Run Execution Loop
 Repeat these checkpoints until the queue is empty, the /goal is achieved, or the same blocker repeats for three consecutive cycles:
 1. Inventory the next queued raw file or related PDF/XLSX pair. Classify whether it is add-new, update-existing, policy change, repair, or needs-admin.
 2. Create or update the processing plan. Keep scope to the next file/group unless the code change is shared workflow infrastructure.
-3. Run MinerU/source conversion or inspect existing converted output. Preserve raw files.
-4. Audit source vs converted Markdown for structure, meaning, mojibake, empty/noise content, lost content, table/flowchart/form issues, synthetic headings, and citation coverage.
+3. Run MinerU conversion or inspect existing MinerU output. Preserve raw files and build/check `mineru_artifact_index.json`.
+4. Audit source vs converted Markdown plus MinerU sidecars for structure, meaning, mojibake, empty/noise content, lost content, table/flowchart/form issues, synthetic headings, block/page/bbox/image refs, and citation coverage.
 5. If QA fails, hand off to the repair step with exact issues and source locators. Repair at most the configured loop limit, then return to QA.
 6. If QA passes, build normalized Markdown, metadata/schema, section index, chunk plan, citation map, and review packet.
 7. Update dashboard/runtime status and handoff artifacts so admins can see where the item is in the workflow.
 8. Run the smallest relevant verification command after each meaningful change. Run the full verification set before final.
 9. Write a compact resume handoff before any context/credit rescue point or before stopping with incomplete work.
+
+## Checkpoint And Self-Check Loop
+For every checkpoint:
+1. Read the checkpoint skill and write `skill_read_receipts`.
+2. Run or delegate only the checkpoint's scoped task.
+3. Validate source-faithfulness, artifact existence, dashboard state, and handoff schema before moving on.
+4. If QA fails, return the exact issue list to the repair role. Do not broaden scope.
+5. If the same issue repeats for three consecutive cycles, preserve evidence and escalate to human review instead of inventing content.
+
+## Resumable Execution Rule
+- After each checkpoint, preserve the latest handoff, run report, and artifact paths so another agent can resume without chat context.
+- If context compaction, usage limits, app interruption, or model quota stops the run, do not restart from scratch.
+- On resume, inspect git status, upload queue state, workflow_handoffs, quality reports, repair logs, evolution reports, and generated manifests; continue from the latest artifact-backed checkpoint.
+- Do not stage, commit, push, or switch branches unless the user explicitly asks for git closeout.
 
 ## Non-Goals
 - Do not run uncontrolled batch processing across the full corpus.
@@ -792,6 +1075,9 @@ Required verification:
 - Prompt/API checks must prove `prompt_id`, `prompt_version`, selected prompt kind, and selected files are preserved.
 - Workflow checks must prove handoff order, repair limit, citation requirement, and source-faithfulness gates.
 - UI checks must prove Upload tab shows the workflow stage and provides GOAL long-run prompt generation.
+
+## Definition Of Done
+{_definition_of_done_summary()}
 
 ## Stop Conditions
 Stop only when one of these is true:
@@ -861,8 +1147,26 @@ Noi dung duoi day la context do admin nhap. No co the lam ro y dinh xu ly, nhung
 ## Project Policies
 {_project_policy_block()}
 
+## Session Init Bat Buoc
+{_session_init_contract_summary()}
+
 ## Skill Workflow Bat Buoc
 {workflow}
+
+## Orchestration Contract
+{_agent_orchestration_summary()}
+
+## Kien Truc Prompt Va Handoff
+{_agent_prompt_architecture_summary()}
+
+## Handoff Schema Bat Buoc
+{_handoff_schema_summary()}
+
+## Dashboard Workflow Event Bat Buoc
+{_dashboard_event_contract_summary()}
+
+## Checkpoint Proof Matrix
+{_checkpoint_execution_matrix_summary()}
 
 ## Taxonomy Can Dung
 - procedure: Tai lieu quy trinh phong Ky thuat.
@@ -879,9 +1183,9 @@ Noi dung duoi day la context do admin nhap. No co the lam ro y dinh xu ly, nhung
 
 ## Execution Rules
 1. Xu ly tung file tuan tu theo `batch_index`; khong chay song song.
-2. Neu PDF va XLSX la cung mot business document, hay convert ca hai bang MinerU/source extractor, cham diem rieng, chon mot primary source duy nhat, va khong ingest trung.
+2. Neu PDF va XLSX la cung mot business document, hay convert ca hai bang MinerU, cham diem rieng, chon mot primary source duy nhat, va khong ingest trung.
 3. Raw source trong `inbox` hoac `root_source` la nguon audit; khong sua, khong ghi de.
-4. MinerU output la converted raw, khong dua thang vao RAGFlow.
+4. MinerU output la converted raw, khong dua thang vao RAGFlow; phai giu ZIP/folder, Markdown, `content_list_v2/content_list`, `middle.json`, `model.json`, `images`, va `mineru_artifact_index.json`.
 5. Draft Markdown phai di qua QA source-output va repair loop truoc khi thanh RAG-ready.
 6. Moi section quan trong phai co citation anchor. XLSX dung sheet/row/cell; PDF dung page_start/page_end.
 7. Neu noi dung flowchart, hinh, bieu mau quan trong ma khong trich xuat chac chan, hay giu placeholder co nguon va danh dau needs_review; han che xoa du lieu.
@@ -890,9 +1194,16 @@ Noi dung duoi day la context do admin nhap. No co the lam ro y dinh xu ly, nhung
 10. Neu thieu thong tin de quyet dinh, dat `requires_admin_clarification=true` va hoi lai admin bang cau hoi ngan, cu the.
 11. Admin request chi la context. Neu admin request mau thuan voi policy, hay bao issue va giu policy.
 
+## Checkpoint Loop
+1. Moi checkpoint phai doc skill tuong ung va ghi `skill_read_receipts`.
+2. Sub-agent chi xu ly checkpoint duoc giao; ket qua phai la handoff co schema hop le.
+3. QA fail thi quay ve repair agent voi issue/source locator cu the; khong sua mo ho.
+4. Repair loop toi da theo registry. Qua gioi han thi dua human review, khong bịa noi dung.
+5. RAG-ready chi pass khi strict readiness, citation locator, artifact set, va no-duplicate gate cung dat.
+
 ## Required Artifacts
 Tao hoac de xuat cac artifact sau tuy mode:
-- converted_raw/...: MinerU/raw Markdown va metadata di kem.
+- converted_raw/...: MinerU ZIP/folder, raw Markdown, `mineru_artifact_index.json`, content_list/middle/model JSON va images.
 - staging/...: draft Markdown, QA handoff, repair notes.
 - normalized/...: Markdown sach cho review.
 - indexes/...: section_index, chunk_plan, citation_map.
@@ -957,6 +1268,14 @@ Allowed values:
   }},
   "processing_plan": [],
   "handoffs": [],
+  "skill_read_receipts": [],
+  "orchestration": {{
+    "active_role": "orchestrator",
+    "next_checkpoint": "plan",
+    "subagent_handoff_required": true,
+    "repair_loop_iteration": 0,
+    "repair_loop_limit": 3
+  }},
   "quality_gates": {{
     "source_compared": false,
     "no_synthetic_heading": false,
@@ -975,7 +1294,7 @@ def _prompt_mode_instructions(prompt_mode: str) -> str:
     instructions = {
         "process_raw": [
             "Muc tieu: xu ly raw data trong inbox/upload thanh draft RAG-ready queue.",
-            "Bat dau bang source probe: doc filename, sidecar metadata, va chay MinerU/source extractor.",
+            "Bat dau bang source probe: doc filename, sidecar metadata, va chay MinerU conversion.",
             "Neu co nhieu file co cung canonical_business_code, nhan dien duplicate/supporting source truoc khi tao normalized.",
             "Neu chat luong convert khong dat, tao QA issue va dua vao repair loop toi da theo registry.",
         ],
@@ -1012,7 +1331,7 @@ def _prompt_mode_instructions(prompt_mode: str) -> str:
         "human_review_packet": [
             "Muc tieu: tao goi doi chieu de admin review nhanh va chinh xac.",
             "Bao gom source locator, normalized Markdown path, summary thay doi, issue log, citation coverage va checklist pass/fail.",
-            "Checklist toi thieu: title, revision, source-based headings, step order, no synthetic content, citations, smoke chat.",
+            "Checklist toi thieu: title, revision, source-based headings, step order, no synthetic content, citations, source-output audit. Khong chay smoke chat/retrieval test trong phase hau-convert.",
             "Neu chua du evidence, dat review_status=needs_fix thay vi approved.",
         ],
     }
@@ -1034,6 +1353,263 @@ def _project_policy_block() -> str:
     )
 
 
+def _agent_orchestration_contract() -> dict[str, Any]:
+    registry = _load_agent_skill_registry()
+    loop = (registry.get("loop_policy") or {}).get("repair_loop") or {}
+    return {
+        "contract_version": "upload-data-orchestration-v1",
+        "prompt_versions": {
+            "task": PROMPT_TEMPLATE_VERSION,
+            "goal": GOAL_PROMPT_TEMPLATE_VERSION,
+        },
+        "roles": ORCHESTRATION_ROLES,
+        "checkpoints": ORCHESTRATION_CHECKPOINTS,
+        "loop_policy": {
+            "repair_loop_max_iterations": int(loop.get("max_iterations") or 3),
+            "exit_when": loop.get("exit_when") or "all_required_quality_gates_pass",
+            "escalate_when": loop.get("escalate_when") or "same_issue_repeats_or_source_is_ambiguous",
+        },
+        "handoff_required_fields": [
+            "run_id",
+            "step",
+            "status",
+            "source_ids",
+            "artifacts",
+            "quality_gates",
+            "next_skill",
+            "skill_read_receipts",
+            "handoff_checker",
+        ],
+    }
+
+
+def _agent_orchestration_summary() -> str:
+    contract = _agent_orchestration_contract()
+    lines = [
+        f"- contract_version: `{contract['contract_version']}`",
+        "- Prompt-driven agent routing is allowed, but every spawned sub-agent must receive the same source, policy, workflow, skill, evidence, handoff, and output packets.",
+        "- The orchestrator owns sequencing. Domain sub-agents own one checkpoint only and must return a handoff, not a final approval.",
+        "- A checkpoint is complete only when its dashboard step, required output, QA gate, skill receipt, and handoff checker pass.",
+        "- Repair loops continue until strict RAG readiness passes, the registry repair limit is reached, or the same blocker repeats and is escalated to human review.",
+        "- Skill evolution writes rule candidates after every run. It must not auto-edit SKILL.md without explicit human approval.",
+        "",
+        "Role matrix:",
+    ]
+    for role in ORCHESTRATION_ROLES:
+        lines.append(
+            f"- `{role['role']}` -> `{role['skill']}`: {role['mission']} "
+            f"Entry: {role['entry_gate']}. Exit: {role['exit_gate']}."
+        )
+    lines.extend(["", "Checkpoint gates:"])
+    for checkpoint in ORCHESTRATION_CHECKPOINTS:
+        lines.append(
+            f"- `{checkpoint['step']}` / dashboard `{checkpoint['dashboard_step']}` / owner `{checkpoint['owner_role']}`: "
+            f"output `{checkpoint['required_output']}`; gate `{checkpoint['qa_gate']}`."
+        )
+    return "\n".join(lines)
+
+
+def _handoff_schema_summary() -> str:
+    contract = _agent_orchestration_contract()
+    keys = ", ".join(f"`{key}`" for key in contract["handoff_required_fields"])
+    return "\n".join(
+        [
+            f"- Required keys: {keys}.",
+            "- `skill_read_receipts[]` must contain `skill`, `path`, `checksum`, `read_at`, and `applies_to_step`.",
+            "- `handoff_checker.status` must be `passed` before the next agent starts.",
+            "- `quality_gates` must include checkpoint-specific booleans, not vague prose.",
+            "- `next_skill` must be the next registry skill or null only at terminal states.",
+        ]
+    )
+
+
+def _dashboard_event_contract_summary() -> str:
+    return "\n".join(
+        [
+            "- After every checkpoint, update the Upload Dashboard with `POST /api/upload-queue/workflow-event`.",
+            "- Required JSON keys: `relative_paths`, `status`, `step`, and `detail`.",
+            "- Include evidence keys when available: `checkpoint`, `handoff_path`, `artifact_path`, `artifacts`, `quality_gates`, `next_skill`, `qa_report_path`, `qa_status`, `qa_issues`, and `mineru_profile`.",
+            "- Use runtime status values only: `processing`, `done`, `failed`, or `ocr_required`; do not set `active` from Upload.",
+            "- Use dashboard workflow steps only: `classify`, `mineru_convert`, `extract_artifacts`, `compare_sources`, `preclean`, `domain_agent`, `handoff_check`, `qa`, `repair_loop`, `rag_ready`, `review`, terminal `done/failed/ocr_required`.",
+            "- If the dashboard event cannot be posted because the web server is not running, write the same payload into the run report and continue only when local artifacts are still consistent.",
+        ]
+    )
+
+
+def _session_init_contract_summary() -> str:
+    return "\n".join(
+        [
+            "- Treat this prompt as self-contained. Do not rely on prior chat history, hidden memory, or assumptions from another agent session.",
+            "- First inspect the workspace root, `git status --short`, Upload queue state, `poc_workflow/agent_skills/registry.json`, and `poc_workflow/agent_skills/README.md`.",
+            "- Load only the SKILL.md files needed for the current checkpoint, then write `skill_read_receipts` into the handoff.",
+            "- Create a stable `run_id` for the current file or business-document group and keep it through handoffs, reports, repair loops, and dashboard events.",
+            "- Claim exactly one queued file or one related PDF/XLSX business-document group at a time. Never process unrelated files in parallel.",
+            "- If the selected item is still in inbox, the first workflow event should move it to `processing` with dashboard step `classify` or `prepare`.",
+            "- For GOAL long-run mode, after one item reaches `pending_review`, `failed`, or `ocr_required`, inspect the queue again and continue with the next eligible item until the queue is empty or a stop condition is met.",
+            "- Phase boundary: this data-processing prompt stops at RAG-ready + human review queue. Human approval and RAGFlow ingestion are separate phases unless the user explicitly asks for them.",
+        ]
+    )
+
+
+def _branch_git_safety_summary(branch: str) -> str:
+    return "\n".join(
+        [
+            f"- Work on branch `{branch}` for this long-run. If the current branch differs, inspect `git status --short --branch` before switching.",
+            "- If unrelated dirty work exists, do not overwrite or revert it. Preserve it and continue only when the data workflow can be scoped around it.",
+            "- Do not run destructive git commands such as `git reset --hard` or `git checkout --` unless the user explicitly asks.",
+            "- Do not commit, push, or switch branches as part of data processing unless the user explicitly asks for git closeout.",
+            "- Treat raw data, MinerU outputs, QA reports, review packets, and RAG-ready artifacts as runtime evidence; do not hide or delete them to make the worktree look clean.",
+        ]
+    )
+
+
+def _checkpoint_execution_matrix_summary() -> str:
+    role_to_skill = {role["role"]: role["skill"] for role in ORCHESTRATION_ROLES}
+    proof_by_step = {
+        "plan": "run_plan, source grouping, primary/supporting candidates, first handoff, dashboard classify event",
+        "convert": "MinerU Markdown, content_list/content_list_v2, middle.json, model.json, images, mineru_artifact_index",
+        "audit": "quality_report, source-output comparison, issue list, locator coverage, repair_handoff when needed",
+        "repair": "repaired Markdown/index/citation, repair_log, no source-unsupported additions, QA return handoff",
+        "index": "normalized Markdown, metadata_json, section_index, chunk_plan, citation_map, quality_report, review packet",
+        "evolve": "evolution_report, rule candidates or no-op rationale, pending_review or blocked final state",
+    }
+    lines = [
+        "| Checkpoint | Owner skill | Dashboard step | Required proof |",
+        "| --- | --- | --- | --- |",
+    ]
+    for checkpoint in ORCHESTRATION_CHECKPOINTS:
+        step = checkpoint["step"]
+        owner_skill = role_to_skill.get(checkpoint["owner_role"], checkpoint["owner_role"])
+        lines.append(
+            f"| `{step}` | `{owner_skill}` | "
+            f"`{checkpoint['dashboard_step']}` | {proof_by_step.get(step, checkpoint['required_output'])} |"
+        )
+    lines.extend(
+        [
+            "",
+            "- Each checkpoint must produce a handoff before the next checkpoint starts.",
+            "- Each checkpoint must update the dashboard event contract or write the same payload into the run report if the dashboard is offline.",
+            "- A checkpoint cannot pass on prose alone; required proof must be backed by files, metrics, or command output.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _per_item_done_summary() -> str:
+    return "\n".join(
+        [
+            "- A file or business-document group is not done until exactly one primary source decision is recorded for duplicate PDF/XLSX pairs.",
+            "- Not done until MinerU rich artifacts are preserved and indexed: Markdown, content_list/content_list_v2, middle.json, model.json, images, and mineru_artifact_index when available.",
+            "- Not done until QA compared original source, converted Markdown, and MinerU sidecars for missing content, mojibake/noise, synthetic headings, table/form/flowchart loss, and citation locator quality.",
+            "- Not done until repair loops either pass QA or stop with a precise blocked/human-review reason after the configured limit.",
+            "- Not done until the six canonical RAG-ready artifacts exist and point back to source evidence.",
+            "- Not done until the item is placed in human review queue or a terminal blocked state with run_report/evolution_report evidence.",
+            "- The long-run is not done merely because one file completed; after each terminal item, inspect the queue and continue with the next eligible item until the queue is empty or a stop condition is met.",
+        ]
+    )
+
+
+def _definition_of_done_summary() -> str:
+    return "\n".join(
+        [
+            "- Not done until the selected document/group reaches `pending_review` or a blocked state with exact evidence.",
+            "- Not done until all six canonical artifacts exist: normalized_markdown, metadata_json, section_index_json, chunk_plan_json, citation_map_json, quality_report_json.",
+            "- Not done until citation_map can drive UI source display with source-type locators and MinerU refs where available.",
+            "- Not done until synthetic headings, prompt/debug leaks, weak locators, empty/noise Markdown, and duplicate PDF/XLSX retrieval are blocked.",
+            "- Not done until the Upload Dashboard state or run report contains the latest checkpoint, handoff, quality gates, and next skill.",
+            "- Not done until the long-run queue has no eligible raw items left, unless a documented blocker or human stop condition applies.",
+            "- Not done until verification commands pass or the blocker is written into run_report/evolution_report with a precise resume step.",
+        ]
+    )
+
+
+def _agent_prompt_architecture_packets() -> list[dict[str, Any]]:
+    return [
+        {
+            "packet": "source_packet",
+            "purpose": "Thong tin file/gom nhom dau vao de agent khong can hoi lai cac duong dan co san.",
+            "fields": ["relative_path", "absolute_path", "source_type", "source_role", "business_document_group"],
+        },
+        {
+            "packet": "policy_packet",
+            "purpose": "Rang buoc bat buoc truoc khi thao tac.",
+            "fields": ["raw_source_immutable", "mineru_only_conversion", "primary_source_only", "no_unapproved_ragflow_sync"],
+        },
+        {
+            "packet": "workflow_packet",
+            "purpose": "Thu tu skill va dashboard step ma agent phai cap nhat.",
+            "fields": [
+                "data-pipeline-orchestrator",
+                "mineru-source-converter",
+                "source-output-quality-auditor",
+                "rag-markdown-repairer",
+                "ragflow-schema-indexer",
+                "data-skill-evolution",
+            ],
+        },
+        {
+            "packet": "skill_contract_packet",
+            "purpose": "Bang chung moi agent/sub-agent da doc dung SKILL.md truoc khi xu ly hoac ban giao.",
+            "fields": [
+                "skill_read_receipts",
+                "subagent_prompt_contract",
+                "handoff_checker",
+                "skill_evolution_policy",
+                "rag_readiness_contract",
+            ],
+        },
+        {
+            "packet": "evidence_packet",
+            "purpose": "Bang chung de doi chieu source-output va dung citation UI.",
+            "fields": ["raw_markdown", "mineru_artifact_index", "content_list_v2", "middle_json", "model_json", "images"],
+        },
+        {
+            "packet": "handoff_packet",
+            "purpose": "Hop dong ban giao giua cac sub-agent.",
+            "fields": [
+                "run_id",
+                "step",
+                "status",
+                "source_ids",
+                "artifacts",
+                "quality_gates",
+                "next_skill",
+                "skill_read_receipts",
+                "handoff_checker",
+            ],
+        },
+        {
+            "packet": "output_packet",
+            "purpose": "Thanh pham sau QA/repair truoc review.",
+            "fields": [
+                "normalized_markdown",
+                "metadata_json",
+                "section_index_json",
+                "chunk_plan_json",
+                "citation_map_json",
+                "quality_report_json",
+            ],
+        },
+    ]
+
+
+def _agent_prompt_architecture_summary() -> str:
+    lines: list[str] = []
+    for packet in _agent_prompt_architecture_packets():
+        fields = ", ".join(f"`{field}`" for field in packet["fields"])
+        lines.append(f"- `{packet['packet']}`: {packet['purpose']} Fields: {fields}.")
+    lines.extend(
+        [
+            "- Agent phai doc packet theo thu tu: source -> policy -> workflow -> skill_contract -> evidence -> handoff -> output.",
+            "- Moi agent/sub-agent phai doc SKILL.md cua skill dang chay va ghi `skill_read_receipts` gom skill, path, checksum, read_at, applies_to_step.",
+            "- Khi spawn sub-agent, prompt ban giao phai kem source/policy/workflow/skill_contract/evidence/handoff/output packets; sub-agent khong duoc chay bang context mo ho.",
+            "- Moi output co gia tri cho RAG/UI citation phai link ve `source_packet` va `evidence_packet`.",
+            "- Neu thieu `mineru_artifact_index` sau convert, dung workflow tai audit/repair; khong day tiep nhu du lieu sach.",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _agent_skill_workflow_summary() -> str:
     registry = _load_agent_skill_registry()
     if not registry:
@@ -1044,6 +1620,9 @@ def _agent_skill_workflow_summary() -> str:
     loop = (registry.get("loop_policy") or {}).get("repair_loop") or {}
     handoff = registry.get("handoff_contract") or {}
     required_keys = handoff.get("required_keys") or []
+    execution = registry.get("agent_execution_contract") or {}
+    rag_contract = registry.get("rag_readiness_contract") or {}
+    required_outputs = rag_contract.get("required_outputs") or []
     workflow_lines = [
         "- Chỉ xử lý tuần tự từng file; không batch song song trong worker data.",
         "- Gọi skill theo thứ tự: " + " -> ".join(f"`{name}`" for name in order),
@@ -1051,7 +1630,10 @@ def _agent_skill_workflow_summary() -> str:
         "- `ragflow-schema-indexer` chỉ được chạy khi `source-output-quality-auditor` pass.",
         "- Sau mỗi loop/run phải gọi `data-skill-evolution` để ghi rule candidate hoặc no-op rationale.",
         "- Mỗi handoff JSON phải có keys ASCII: " + ", ".join(f"`{key}`" for key in required_keys),
-        "- Dashboard step cần cập nhật qua queue state: classify, mineru_convert, compare_sources, preclean, domain_agent, handoff_check, qa, repair_loop, rag_ready, review.",
+        "- Moi handoff phai kem `skill_read_receipts` va `handoff_checker`; sub-agent phai ke thua contract: "
+        + ("`true`" if execution.get("subagent_inherits_contract") else "`false`"),
+        "- RAG-ready chi pass khi co artifacts: " + ", ".join(f"`{key}`" for key in required_outputs),
+        "- Dashboard step cần cập nhật qua queue state: classify, mineru_convert, extract_artifacts, compare_sources, preclean, domain_agent, handoff_check, qa, repair_loop, rag_ready, review.",
     ]
     return "\n".join(workflow_lines)
 

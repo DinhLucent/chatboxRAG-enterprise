@@ -202,37 +202,64 @@ def build_incident_agent_prompt(root: Path, incident_id: int) -> str:
     if len(context) > 18_000:
         context = context[:18_000].rstrip() + "\n... [context truncated]"
 
-    return f"""Bạn là AI coding agent đang làm việc trong repo local.
+    # Determine recommended test command based on the affected component dynamically
+    comp = (incident.get("component") or "").lower()
+    if any(k in comp for k in ("intake", "ingestion", "pipeline")):
+        test_cmd = "python -m pytest tests\\test_pipeline.py tests\\test_intake.py --basetemp .pytest-tmp-codex"
+    elif any(k in comp for k in ("converter", "miner", "pdf")):
+        test_cmd = "python -m pytest tests\\test_converter.py --basetemp .pytest-tmp-codex"
+    elif any(k in comp for k in ("evaluation", "quality", "gate")):
+        test_cmd = "python -m pytest tests\\test_quality_gate.py tests\\test_answer_quality.py --basetemp .pytest-tmp-codex"
+    elif "database" in comp or "db" in comp:
+        test_cmd = "python -m pytest tests\\test_data_maintenance.py --basetemp .pytest-tmp-codex"
+    else:
+        test_cmd = "python -m pytest tests\\test_webapp.py --basetemp .pytest-tmp-codex"
 
-Mục tiêu: sửa sự cố liên quan đến incident #{incident_id} trong dashboard chatbot nội bộ.
+    return f"""Bạn là một AI coding agent chuyên nghiệp và kỹ sư hệ thống làm việc trực tiếp trong repository cục bộ (Local Repo) của dự án.
 
-Yêu cầu bắt buộc:
-- Đọc code và log trước khi sửa, không đoán nguyên nhân.
-- Khoanh vùng nguyên nhân gốc, sửa đúng phạm vi liên quan đến incident.
-- Không reset git, không xoá dữ liệu runtime, không làm mất thay đổi người dùng.
-- Nếu cần chỉnh UI, giữ tiếng Việt, phong cách teal hiện tại và không làm tràn layout.
-- Sau khi sửa, chạy test liên quan. Ưu tiên `python -m pytest tests\\test_webapp.py --basetemp .pytest-tmp-codex`.
-- Nếu incident do cấu hình/dịch vụ ngoài code, hãy nêu rõ biến môi trường, port, process hoặc startup script cần kiểm tra.
-- Chỉ đánh dấu incident đã xử lý sau khi có bằng chứng test/verification.
+Mục tiêu: phân tích, định vị và khắc phục triệt để lỗi liên quan đến incident #{incident_id} đang xảy ra trong hệ thống chatbot nội bộ.
 
-Thông tin incident:
-- Severity: {incident.get("severity")}
-- Component: {incident.get("component")}
-- Title: {incident.get("title")}
-- Detail: {incident.get("detail")}
-- Status: {incident.get("status")}
-- Created at: {incident.get("created_at")}
+Thông tin sự cố (Incident Info):
+- Mức độ nghiêm trọng (Severity): {incident.get("severity")}
+- Thành phần ảnh hưởng (Component): {incident.get("component")}
+- Tiêu đề (Title): {incident.get("title")}
+- Mô tả chi tiết (Detail): {incident.get("detail")}
+- Trạng thái (Status): {incident.get("status")}
+- Thời gian phát sinh (Created at): {incident.get("created_at")}
 
-Context chẩn đoán dạng JSON:
+Bối cảnh hệ thống dạng JSON (System Context):
 ```json
 {context}
 ```
 
-Kết quả mong muốn từ agent:
-1. Tóm tắt nguyên nhân gốc.
-2. Danh sách file đã sửa.
-3. Lệnh kiểm tra đã chạy và kết quả.
-4. Rủi ro còn lại hoặc việc cần người vận hành làm thủ công, nếu có.
+Quy tắc và Ràng buộc bắt buộc (Constraints & Rules):
+1. **Kiểm tra trước khi sửa**: Luôn đọc kỹ tệp mã nguồn và các file log liên quan trong `runtime_logs` trước khi tiến hành sửa đổi. KHÔNG ĐƯỢC đoán mò nguyên nhân.
+2. **Khắc phục đúng phạm vi**: Chỉ chỉnh sửa các dòng code trực tiếp gây ra lỗi. Tránh viết thêm các cấu trúc trừu tượng (abstraction) không cần thiết hoặc sửa đổi các logic/file không liên quan.
+3. **Bảo toàn dữ liệu**: KHÔNG ĐƯỢC chạy lệnh reset git (tránh làm mất các thay đổi chưa commit của user), không xóa dữ liệu runtime trong thư mục `data/` hay làm mất thay đổi hiện hành.
+4. **Quy tắc UI/UX**: Nếu sửa đổi giao diện, phải giữ nguyên ngôn ngữ tiếng Việt, sử dụng bảng màu Teal/HSL chủ đạo của hệ thống thiết kế và đảm bảo layout co giãn responsive (không bị tràn khung).
+5. **Giữ nguyên tài liệu**: Bảo toàn toàn bộ ghi chú (comments) và docstrings cũ không liên quan.
+6. **Xác minh trước khi kết thúc**: Sau khi sửa xong, bắt buộc chạy kiểm thử để xác nhận. Lệnh kiểm thử khuyến nghị: `{test_cmd}`.
+
+Hướng dẫn thực hiện từng bước (Chain-of-Thought):
+- Bước 1: Trích xuất thông tin lỗi từ phần `Detail` và đối chiếu với danh sách log lỗi trong `runtime_logs`.
+- Bước 2: Tìm các file mã nguồn liên quan đến `Component` bị ảnh hưởng trong thư mục `poc_workflow/`.
+- Bước 3: Đọc hiểu và phân tích luồng code để xác định nguyên nhân gốc (root cause).
+- Bước 4: Đề xuất phương án sửa tối giản, an toàn và tiến hành chỉnh sửa file.
+- Bước 5: Chạy unit test tương ứng để kiểm tra tính đúng đắn.
+
+Yêu cầu định dạng báo cáo kết quả (Output Format):
+Hãy phản hồi theo cấu trúc Markdown sau (không thêm văn bản ngoài lề):
+### 1. Nguyên nhân gốc (Root Cause)
+[Mô tả chi tiết nguyên nhân gây ra sự cố]
+
+### 2. Các file đã chỉnh sửa (Modified Files)
+- `[đường dẫn_file_1]` (dòng [bắt đầu]-[kết thúc]): [Tóm tắt thay đổi ngắn gọn]
+
+### 3. Kết quả kiểm thử (Verification & Test Results)
+[Lệnh test đã chạy và log kết quả test]
+
+### 4. Khuyến nghị hoặc Thao tác thủ công (nếu có)
+[Mô tả các biến môi trường, cổng port hoặc dịch vụ ngoài cần khởi động lại, nếu có]
 """
 
 

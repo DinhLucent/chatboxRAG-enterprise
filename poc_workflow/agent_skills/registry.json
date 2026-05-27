@@ -23,34 +23,34 @@
       "step": "convert",
       "skill": "mineru-source-converter",
       "input_artifacts": ["batch_manifest", "raw_sources"],
-      "output_artifacts": ["conversion_manifest", "converted_outputs", "conversion_log"],
+      "output_artifacts": ["conversion_manifest", "converted_outputs", "mineru_artifact_index", "content_list_v2", "middle_json", "model_json", "images", "conversion_log"],
       "next": "audit"
     },
     {
       "step": "audit",
       "skill": "source-output-quality-auditor",
-      "input_artifacts": ["raw_sources", "conversion_manifest", "converted_outputs"],
+      "input_artifacts": ["raw_sources", "conversion_manifest", "converted_outputs", "mineru_artifact_index", "content_list_v2", "middle_json", "images"],
       "output_artifacts": ["audit_report", "issue_list", "repair_request"],
       "next": "repair_or_index"
     },
     {
       "step": "repair",
       "skill": "rag-markdown-repairer",
-      "input_artifacts": ["repair_request", "converted_outputs", "audit_report"],
+      "input_artifacts": ["repair_request", "converted_outputs", "mineru_artifact_index", "audit_report"],
       "output_artifacts": ["repair_manifest", "repaired_outputs", "repair_log"],
       "next": "audit"
     },
     {
       "step": "index",
       "skill": "ragflow-schema-indexer",
-      "input_artifacts": ["repaired_outputs", "audit_report", "run_plan"],
+      "input_artifacts": ["repaired_outputs", "mineru_artifact_index", "audit_report", "run_plan"],
       "output_artifacts": ["rag_ready_folder", "schema_manifest", "citation_manifest", "index_manifest"],
       "next": "evolve"
     },
     {
       "step": "evolve",
       "skill": "data-skill-evolution",
-      "input_artifacts": ["run_plan", "conversion_log", "audit_report", "repair_log", "index_manifest"],
+      "input_artifacts": ["run_plan", "conversion_log", "mineru_artifact_index", "audit_report", "repair_log", "index_manifest"],
       "output_artifacts": ["evolution_report", "rule_candidates", "registry_patch_request"],
       "next": "done"
     }
@@ -75,10 +75,63 @@
       "checksum": "string|null"
     }
   },
+  "agent_execution_contract": {
+    "skill_read_required": true,
+    "subagent_inherits_contract": true,
+    "handoff_checker_required": true,
+    "skill_read_receipt_required_fields": ["skill", "path", "checksum", "read_at", "applies_to_step"],
+    "subagent_prompt_must_include_packets": [
+      "source_packet",
+      "policy_packet",
+      "workflow_packet",
+      "skill_contract_packet",
+      "evidence_packet",
+      "handoff_packet",
+      "output_packet"
+    ],
+    "skill_evolution_policy": {
+      "write_evolution_report_every_run": true,
+      "auto_modify_skills": false,
+      "promote_rule_candidates_only_after_human_review": true
+    }
+  },
+  "rag_readiness_contract": {
+    "required_outputs": [
+      "normalized_markdown",
+      "metadata_json",
+      "section_index_json",
+      "chunk_plan_json",
+      "citation_map_json",
+      "quality_report_json"
+    ],
+    "required_quality_gates": [
+      "no_synthetic_heading",
+      "no_prompt_or_status_leak",
+      "no_raw_html_table",
+      "required_sections_present",
+      "no_core_heading_duplicates",
+      "procedure_steps_present",
+      "source_locator_precision",
+      "mineru_rich_metadata_available",
+      "supporting_source_not_ingested"
+    ],
+    "minimum_metrics": {
+      "source_locator_precision": 0.8,
+      "procedure_step_count": 1,
+      "duplicate_core_heading_count": 0,
+      "procedure_noise_count": 0
+    },
+    "required_sections": [
+      "Mục đích",
+      "Trách nhiệm",
+      "Quy trình thực hiện"
+    ]
+  },
   "quality_gate_summary": [
     "Source files are processed sequentially and every output links back to source_id.",
-    "QA compares converted output against original PDF/Excel, not only against derived text.",
-    "Markdown repairs preserve citations, tables, headings, and page/sheet references.",
+    "MinerU ZIP sidecars are indexed: content_list_v2/content_list, middle.json, model.json, images, and selected Markdown.",
+    "QA compares converted output and MinerU sidecars against original PDF/Excel, not only against derived text.",
+    "Markdown repairs preserve citations, tables, headings, page/sheet references, MinerU block ids, bbox, and image refs.",
     "RAG-ready folder contains schema_manifest.json, citation_manifest.json, index_manifest.json, and normalized Markdown chunks.",
     "Evolution report is written after each loop with concrete rule changes or no-op rationale."
   ]

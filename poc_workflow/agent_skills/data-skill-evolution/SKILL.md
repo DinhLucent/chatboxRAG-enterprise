@@ -20,8 +20,8 @@ Dung skill nay sau moi vong pipeline hoac khi co loi lap lai trong MinerU conver
 
 ## Workflow
 
-1. Thu thap `run_plan`, `conversion_log`, `audit_report`, `repair_log`, `index_manifest`.
-2. Rut ra pattern: file type gay loi, rule QA thieu, repair lap lai, citation gap, schema gap.
+1. Thu thap `run_plan`, `conversion_log`, `mineru_artifact_index`, `audit_report`, `repair_log`, `index_manifest`.
+2. Rut ra pattern: file type gay loi, MinerU sidecar thieu/sai, rule QA thieu, repair lap lai, citation gap, schema gap.
 3. Phan loai de xuat: `rule_update`, `quality_gate_update`, `registry_update`, `skill_update`, `source_requirement`.
 4. Ghi `evolution_report.json` vao thu muc evolution cua run.
 5. Neu can sua skill/registry, tao `registry_patch_request` hoac `skill_patch_request`; khong tu y sua neu parent chua giao.
@@ -31,6 +31,7 @@ Dung skill nay sau moi vong pipeline hoac khi co loi lap lai trong MinerU conver
 
 - `run_plan`: ke hoach ban dau va config.
 - `conversion_log`: MinerU command/options/warning.
+- `mineru_artifact_index`: summary content_list/middle/model/images de hoc rule ve locator va media.
 - `audit_report`: issue va quality gate.
 - `repair_log`: patch da ap dung va loi lap lai.
 - `index_manifest`: artifact RAG-ready.

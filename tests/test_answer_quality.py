@@ -181,6 +181,43 @@ def test_retrieval_prefers_business_content_over_aggregate_document_list(tmp_pat
     assert "Tong hop danh sach" not in hits[0].text
 
 
+def test_retrieval_prefers_structured_procedure_sections_for_reviewed_upload_summary(tmp_path: Path) -> None:
+    write_rank_source(
+        tmp_path,
+        doc_id="KT-QT-002",
+        title="PD-TECH-A-02 Rev 04 - Quy trinh bao duong",
+        category="procedure",
+        filename="KT-QT-002_vrev04.md",
+        body=(
+            "# PD-TECH-A-02 Rev 04 - Quy trinh bao duong\n\n"
+            "## Tom tat cau truc phuc vu RAG\n\n"
+            "> Noi dung duoi day duoc trich xuat de uu tien truy xuat theo buoc, trach nhiem va ho so.\n\n"
+            "### Trach nhiem\n"
+            "- 5.1. Phong Ky thuat\n"
+            "- 5.2. Phong Dich vu khach hang\n\n"
+            "### Ho so / bieu mau lien quan\n"
+            "- PD-TECH-A-02/BM-05\n"
+            "- PD-TECH-A-02/BM-06\n\n"
+            "### Quy trinh thuc hien\n"
+            "1. Buoc 1: Lap ke hoach bao duong.\n"
+            "2. Buoc 2: Lap lich bao duong dinh ky.\n"
+            "3. Buoc 3: Tao phieu giao viec.\n"
+        ),
+    )
+    process_sources(tmp_path)
+    approve_record(tmp_path, "KT-QT-002", "1.0", "Lead")
+    index = LocalRagIndex(tmp_path)
+
+    step_hits = index.search("Quy trinh bao duong gom nhung buoc nao?", category="procedure", limit=3)
+    responsibility_hits = index.search("Bo phan nao phu trach quy trinh bao duong?", category="procedure", limit=3)
+
+    assert step_hits
+    assert "Buoc 1" in step_hits[0].text
+    assert "Quy trinh thuc hien" in step_hits[0].text
+    assert responsibility_hits
+    assert "Phong Ky thuat" in responsibility_hits[0].text
+
+
 def test_cli_ask_infers_step_format_for_how_to_questions(tmp_path: Path) -> None:
     write_dirty_procedure(tmp_path)
     process_sources(tmp_path)

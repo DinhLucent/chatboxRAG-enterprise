@@ -157,19 +157,24 @@ def test_frontend_static_gate_checks_upload_workflow_and_encoding(tmp_path: Path
     result = frontend_static_gate(tmp_path)
 
     assert result["status"] == "pass"
-    assert result["metrics"]["upload_status_order"] == ["queue", "processing", "done", "ocr_required", "failed"]
+    assert result["metrics"]["upload_status_order"] == ["queue", "processing", "done", "pending_review", "approved", "ocr_required", "failed", "failed_review"]
     assert result["metrics"]["text_files_scanned"] > 0
     static_root = Path(__file__).parents[1] / "poc_workflow" / "static"
     index = (static_root / "index.html").read_text(encoding="utf-8")
     app_js = (static_root / "app.js").read_text(encoding="utf-8")
     styles = (static_root / "styles.css").read_text(encoding="utf-8")
     assert 'id="uploadWorkflowOverview"' in index
+    assert 'id="agentWorkflowMap"' in index
+    assert 'id="promptArchitecture"' in index
     assert 'id="promptModeSelect"' in index
     assert 'id="promptRequestInput"' in index
     assert 'id="goalPromptTab"' in index
     assert 'id="goalPromptPane"' in index
     assert 'id="generateGoalPromptBtn"' in index
     assert "const UPLOAD_WORKFLOW_STEPS" in app_js
+    assert "const AGENT_WORKFLOW_BLUEPRINT" in app_js
+    assert "function renderAgentWorkflowMap" in app_js
+    assert "function renderPromptArchitecture" in app_js
     assert "/api/agent-prompts/templates" in app_js
     assert "/api/agent-prompts/generate-goal" in app_js
     assert "function generateAgentGoalPrompt" in app_js
@@ -177,6 +182,8 @@ def test_frontend_static_gate_checks_upload_workflow_and_encoding(tmp_path: Path
     assert "function renderWorkflowTimeline" in app_js
     assert "function renderSourceCompare" in app_js
     assert ".workflow-step.active" in styles
+    assert ".workflow-map-node.active" in styles
+    assert ".prompt-architecture" in styles
     assert ".prompt-controls" in styles
     assert ".prompt-tabs" in styles
     assert ".goal-prompt-grid" in styles
@@ -213,6 +220,16 @@ def test_text_quality_scan_detects_mojibake(tmp_path: Path) -> None:
 
     assert result["scanned"] == 1
     assert result["violations"]
+
+
+def test_text_quality_scan_allows_valid_vietnamese_uppercase_accents(tmp_path: Path) -> None:
+    good_file = tmp_path / "good.md"
+    good_file.write_text("THIẾT BỊ ĐI KÈM\nNHẬN XÉT CHUNG\nMÃ KHÁCH HÀNG\n", encoding="utf-8")
+
+    result = scan_text_quality([good_file])
+
+    assert result["scanned"] == 1
+    assert result["violations"] == []
 
 
 def test_data_audit_warns_on_suspicious_taxonomy(tmp_path: Path) -> None:

@@ -25,15 +25,12 @@ COMMON_MOJIBAKE_MARKERS = tuple(
         (0x00C5,),
         (0x00C6,),
         (0x00C7,),
-        (0x00C8,),
-        (0x00C9,),
         (0x00E1, 0x00BA),
         (0x00E1, 0x00BB),
         (0x00EF, 0x00BC),
         (0x00E2, 0x20AC),
     )
 )
-A_TILDE_MARKER = chr(0x00C3)
 
 
 @dataclass
@@ -245,9 +242,6 @@ def mojibake_score(text: str) -> int:
     score = text.count("\ufffd") + text.count("\u00ef\u00bf\u00bd")
     score += sum(len(pattern.findall(text)) for pattern in MOJIBAKE_PATTERNS)
     score += sum(text.count(marker) for marker in COMMON_MOJIBAKE_MARKERS)
-    suspicious_a_tilde = text.count(A_TILDE_MARKER)
-    if suspicious_a_tilde >= 2:
-        score += suspicious_a_tilde
     return score
 
 
