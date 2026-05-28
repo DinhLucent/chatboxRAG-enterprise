@@ -4,6 +4,7 @@ const state = {
   templateLabel: null,
   sessionId: getOrCreateStoredId("kbUserChatSessionId", "session"),
   deviceId: getOrCreateStoredId("kbUserChatDeviceId", "device"),
+  sessionHasTurns: false,
   lastResponse: null,
   drawerHidden: isCompactLayout(),
   heartbeatTimer: null,
@@ -1065,6 +1066,7 @@ async function submitChat(event) {
       state.sessionId = result.session.session_id;
       localStorage.setItem("kbUserChatSessionId", state.sessionId);
     }
+    state.sessionHasTurns = true;
     const structuredAnswer = structuredAnswerForResult(result);
     pending.querySelector(".message-body").innerHTML = structuredAnswer
       ? renderStructuredAnswer(structuredAnswer, result.format_plan, result.citations || [])
@@ -1808,6 +1810,7 @@ function ensureDrawerVisible() {
 function resetChat() {
   state.sessionId = createId("session");
   localStorage.setItem("kbUserChatSessionId", state.sessionId);
+  state.sessionHasTurns = false;
   state.templateId = null;
   state.templateLabel = null;
   state.lastResponse = null;
@@ -1830,10 +1833,12 @@ function resetChat() {
   renderSources([]);
   renderTrace([]);
   switchDrawerTab("sources");
-  sendHeartbeat().catch(() => {});
+  // Lazy: không gửi heartbeat cho session chưa có tin nhắn
 }
 
 async function sendHeartbeat() {
+  // Chỉ gửi heartbeat cho session đã có ít nhất 1 tin nhắn
+  if (!state.sessionHasTurns) return {};
   const result = await api("/api/user/session/heartbeat", {
     method: "POST",
     body: JSON.stringify({
@@ -1857,6 +1862,7 @@ function startHeartbeat() {
     sendHeartbeat().catch(() => {});
   }, 30000);
   window.addEventListener("beforeunload", () => {
+    if (!state.sessionHasTurns) return;
     const payload = JSON.stringify({ session_id: state.sessionId, device_id: state.deviceId });
     navigator.sendBeacon?.("/api/user/session/heartbeat", new Blob([payload], { type: "application/json" }));
   });
@@ -1940,6 +1946,7 @@ async function restoreSession(sessionId) {
     const turns = await api(`/api/user/sessions/${encodeURIComponent(sessionId)}/turns`);
     state.sessionId = sessionId;
     localStorage.setItem("kbUserChatSessionId", sessionId);
+    state.sessionHasTurns = turns && turns.length > 0;
     
     document.querySelectorAll(".history-card").forEach(card => {
       card.classList.toggle("active", card.dataset.sessionId === sessionId);
@@ -2024,6 +2031,13 @@ async function init() {
   try {
     state.bootstrap = await api("/api/user/bootstrap");
     renderBootstrap();
+    // Kiểm tra session hiện tại đã có nội dung chưa để quyết định heartbeat
+    try {
+      const existingTurns = await api(`/api/user/sessions/${encodeURIComponent(state.sessionId)}/turns`);
+      state.sessionHasTurns = existingTurns && existingTurns.length > 0;
+    } catch (_) {
+      state.sessionHasTurns = false;
+    }
     startHeartbeat();
   } catch (error) {
     qs("#statusText").textContent = "Lỗi";

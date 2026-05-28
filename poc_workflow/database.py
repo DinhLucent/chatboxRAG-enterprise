@@ -570,6 +570,22 @@ class QualityDatabase:
         self.init()
         current = now or utc_now()
         with self.connect() as conn:
+            # Phase 1: Delete empty (0-turn) expired sessions silently
+            empty_ids = [
+                str(row["session_id"])
+                for row in conn.execute(
+                    """
+                    SELECT s.session_id FROM user_chat_sessions s
+                    WHERE s.expires_at <= ?
+                      AND NOT EXISTS (SELECT 1 FROM user_chat_turns t WHERE t.session_id = s.session_id)
+                    """,
+                    (current,),
+                ).fetchall()
+            ]
+            for sid in empty_ids:
+                conn.execute("DELETE FROM user_chat_sessions WHERE session_id = ?", (sid,))
+
+            # Phase 2: Delete expired sessions that have turns
             session_ids = [
                 str(row["session_id"])
                 for row in conn.execute(
@@ -588,9 +604,9 @@ class QualityDatabase:
                 conn.execute("DELETE FROM user_chat_turns WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM user_chat_sessions WHERE session_id = ?", (session_id,))
             return {
-                "deleted_sessions": len(session_ids),
+                "deleted_sessions": len(session_ids) + len(empty_ids),
                 "deleted_turns": turn_count,
-                "session_ids": session_ids,
+                "session_ids": session_ids + empty_ids,
             }
 
     def set_feedback(self, log_id: int, feedback: str) -> dict[str, Any]:
@@ -758,6 +774,7 @@ class QualityDatabase:
                        (SELECT t.query FROM user_chat_turns t WHERE t.session_id = s.session_id ORDER BY t.id ASC LIMIT 1) as title
                 FROM user_chat_sessions s
                 WHERE s.device_id = ?
+                  AND EXISTS (SELECT 1 FROM user_chat_turns t2 WHERE t2.session_id = s.session_id)
                 ORDER BY s.last_seen_at DESC
                 """,
                 (device_id,),
