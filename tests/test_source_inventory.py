@@ -27,6 +27,19 @@ def test_inventory_phuong_dong_excludes_technical_and_maps_departments(tmp_path:
     assert (tmp_path / "manifest" / "all_departments_source_inventory.json").exists()
 
 
+def test_inventory_uses_business_code_department_when_folder_prefix_missing(tmp_path: Path) -> None:
+    source_root = tmp_path / "root_source" / "Quy TrÃ¬nh PhÆ°Æ¡ng ÄÃ´ng"
+    loose = source_root / "LOOSE_UPLOADS"
+    loose.mkdir(parents=True)
+    (loose / "PD-ACC-A-09. Rev 02. Quy trinh thanh toan.pdf").write_bytes(b"pdf")
+
+    report = inventory_phuong_dong_procedures(tmp_path)
+
+    assert report["discovered_count"] == 1
+    assert report["items"][0]["department"] == "accounting"
+    assert report["by_department"] == {"accounting": 1}
+
+
 def test_enqueue_phuong_dong_copies_to_department_inbox_with_sidecar(tmp_path: Path) -> None:
     source_root = tmp_path / "root_source" / "Quy Trình Phương Đông"
     hr = source_root / "04. QUY TRÌNH PHÒNG NHÂN SỰ"

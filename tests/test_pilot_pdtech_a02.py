@@ -504,8 +504,11 @@ def test_ragflow_sync_uploads_only_passed_primary_source_record(tmp_path: Path, 
     pilot_md.write_text("# Quy trnh bo dng\n\nNi dung sch.", encoding="utf-8")
     support_md.write_text("# Quy trnh bo dng\n\nBn trng.", encoding="utf-8")
     citation_map = tmp_path / "indexes" / f"{PILOT_ARTIFACT_STEM}_citation_map.json"
+    mineru_index = tmp_path / "converted_raw" / "pilot" / "PD-TECH-A-02" / "mineru_artifact_index.json"
     citation_map.parent.mkdir(parents=True, exist_ok=True)
+    mineru_index.parent.mkdir(parents=True, exist_ok=True)
     citation_map.write_text("[{}]", encoding="utf-8")
+    mineru_index.write_text("{}", encoding="utf-8")
     ManifestStore(tmp_path).save(
         [
             ManifestRecord(
@@ -535,6 +538,7 @@ def test_ragflow_sync_uploads_only_passed_primary_source_record(tmp_path: Path, 
                     "raw_converter": "mineru",
                     "raw_conversion_policy": "mineru_only_no_fallback",
                     "raw_markdown_path": "/converted_raw/pilot/PD-TECH-A-02/KT-QT-002_rev04_raw.md",
+                    "mineru_artifact_index_path": str(mineru_index),
                     "mineru_profile": {"command": "mineru", "method": "auto"},
                     "primary_source_decision": {"selected": "xlsx", "reason": "test"},
                 },

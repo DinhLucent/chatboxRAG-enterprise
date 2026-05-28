@@ -29,11 +29,19 @@ Dung skill nay khi auditor tra `status: passed` va can tao folder/schema/citatio
 7. Tao `index_manifest.json` liet ke file ingest, checksum, chunk ids va dependency.
 8. Handoff sang `data-skill-evolution`.
 
+## Citation Evidence Policy
+
+- Citation khong duoc chi ghi `source_path` chung chung neu MinerU sidecar ton tai.
+- Voi MinerU evidence, moi citation nen giu cac truong co san: `source_json`, `mineru_block_id`, `content_type`, `page_start/page_end`, `bbox`, `image_ref`, `locator_confidence`, `locator_basis`.
+- `schema_manifest.json` phai co `mineru_source_block_summary` de admin biet pipeline da parse sidecar nao: content_list, middle, model, bbox, image refs.
+- Neu XLSX/PDF cung mot business document, chi package mot primary retrieval record; supporting source chi de display/print.
+
 ## Inputs
 
 - `repaired_outputs` hoac `converted_outputs` da audit pass.
 - `audit_report`: bang chung quality gates.
 - `mineru_artifact_index`: optional nhung bat buoc giu neu conversion co ZIP/folder MinerU.
+- `rich_sidecar_evidence_map`: evidence map da hop nhat tu content_list/middle/model/images.
 - `run_plan`: dataset target, collection name, schema policy.
 - `citation_policy`: bat buoc hay optional, dinh dang anchors.
 

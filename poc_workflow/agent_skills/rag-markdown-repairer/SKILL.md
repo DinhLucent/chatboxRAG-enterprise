@@ -28,11 +28,20 @@ Dung skill nay khi `source-output-quality-auditor` tra `status: needs_repair` ho
 6. Ghi output vao `repaired/<source_id>/content.md` va tao `repair_manifest.json`.
 7. Handoff lai `source-output-quality-auditor` de audit lai tren file goc.
 
+## MinerU Sidecar Repair Rules
+
+- Khi Markdown thieu cau truc, dung `content_list_v2/content_list` de khoi phuc heading, paragraph, table text va step order.
+- Khi can locator UI, dung `middle.json` de lay page, bbox, layout block va image/figure relationship; khong chi copy text tu Markdown.
+- Khi `content_list` va `middle.json` khong du thong tin, dung `model.json` lam evidence bo sung cho table/image/text block.
+- Flowchart/hinh/so do khong bi xoa. Neu doc duoc thi chuyen thanh Mermaid hoac danh sach buoc co citation; neu chua doc chac thi giu placeholder kem `image_ref`, `source_json`, page/bbox va `needs_review`.
+- `repair_manifest.json` phai ghi ro moi action dung evidence nao: `source_json`, `mineru_block_id`, `bbox`, `image_ref`, hoac source sheet/row/page.
+
 ## Inputs
 
 - `repair_request`: danh sach issue can sua.
 - `converted_outputs`: Markdown va artifact tu MinerU.
 - `mineru_artifact_index`: sidecar MinerU de lay content_list/middle/images khi Markdown thieu locator.
+- `rich_sidecar_evidence_map`: map evidence tu content_list/middle/model/images do auditor tao.
 - `audit_report`: bang chung tu QA.
 - `source_snippets`: trich xuat goc neu auditor cung cap.
 

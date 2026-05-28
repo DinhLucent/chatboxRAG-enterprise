@@ -42,6 +42,19 @@ TITLE_CATEGORY_HINTS = (
 )
 
 
+RAG_ARTIFACT_EXTRA_KEYS = {
+    "rag_ready_package",
+    "metadata_json_path",
+    "section_index_path",
+    "chunk_plan_path",
+    "citation_map_path",
+    "quality_report_path",
+    "schema_manifest_path",
+    "citation_manifest_path",
+    "index_manifest_path",
+}
+
+
 def scope_active_set(
     root: Path,
     active_root: Path,
@@ -425,6 +438,8 @@ def audit_manifest_taxonomy(
             continue
         scanned += 1
         issues.extend(taxonomy_issues_for_record(record))
+    issues.extend(upload_queue_alignment_issues(root, records))
+    issues.extend(index_metadata_alignment_issues(root, records, statuses))
 
     report = {
         "generated_at": utc_now(),
@@ -441,6 +456,43 @@ def audit_manifest_taxonomy(
 
 def taxonomy_issues_for_record(record: Any) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
+    display_code = str(record.extra.get("display_code") or record.extra.get("canonical_business_code") or "")
+    if display_code.startswith(("BM-", "PL-", "MS-")) and str(record.doc_id).startswith("KT-QT-"):
+        issues.append(
+            taxonomy_issue(
+                record,
+                rule="business_form_code_mapped_to_procedure_doc_id",
+                severity="blocker",
+                suggested_category=record.category,
+                summary=(
+                    f"{record.key} uses {record.doc_id} for business code {display_code}; "
+                    "this can collide with a real technical procedure."
+                ),
+                recommended_action="fix_doc_id_generation_reprocess_record_and_rebuild_index",
+            )
+        )
+    if display_code.startswith("PD-TECH-") and record.department != "technical":
+        issues.append(
+            taxonomy_issue(
+                record,
+                rule="technical_code_wrong_department",
+                severity="blocker",
+                suggested_category=record.category,
+                summary=f"{record.key} is {display_code} but department is {record.department}",
+                recommended_action="review_department_classification_before_rebuild_index",
+            )
+        )
+    if display_code.startswith("PD-TECH-") and record.category != "procedure":
+        issues.append(
+            taxonomy_issue(
+                record,
+                rule="technical_code_wrong_category",
+                severity="blocker",
+                suggested_category="procedure",
+                summary=f"{record.key} is {display_code} but category is {record.category}",
+                recommended_action="review_category_classification_before_rebuild_index",
+            )
+        )
     expected_prefix = CATEGORY_DOC_ID_PREFIXES.get(record.category)
     managed_prefix_category = managed_doc_id_prefix_category(str(record.doc_id))
     if expected_prefix and managed_prefix_category and managed_prefix_category != record.category:
@@ -476,6 +528,218 @@ def taxonomy_issues_for_record(record: Any) -> list[dict[str, Any]]:
     return issues
 
 
+def upload_queue_alignment_issues(root: Path, records: list[Any]) -> list[dict[str, Any]]:
+    try:
+        from .agent_prompt_queue import list_upload_queue
+        from .upload_processing import business_document_identity, department_from_queue_item, internal_doc_id
+    except Exception:
+        return []
+
+    records_by_key = {record.key: record for record in records}
+    grouped: dict[tuple[str, str, str, str, str], list[dict[str, Any]]] = {}
+    try:
+        items = list_upload_queue(root).get("items") or []
+    except Exception:
+        return []
+
+    for item in items:
+        if item.get("status") != "done":
+            continue
+        file_name = str(item.get("file_name") or "")
+        if not file_name:
+            continue
+        identity = business_document_identity(file_name)
+        if not identity.get("code_detected"):
+            continue
+        category = str(item.get("suggested_type") or "procedure")
+        department = department_from_queue_item(item, category)
+        expected_doc_id = internal_doc_id(str(identity["code"]), department, category)
+        key = (
+            expected_doc_id,
+            str(identity["revision_slug"]),
+            str(identity["code"]),
+            department,
+            category,
+        )
+        grouped.setdefault(key, []).append(item)
+
+    issues: list[dict[str, Any]] = []
+    for (expected_doc_id, version, display_code, department, category), items_for_doc in sorted(grouped.items()):
+        record_key = f"{expected_doc_id}::{version}"
+        record = records_by_key.get(record_key)
+        queue_doc_ids = sorted({str(item.get("doc_id") or "") for item in items_for_doc if item.get("doc_id")})
+        source_paths = [str(item.get("original_relative_path") or item.get("relative_path") or "") for item in items_for_doc]
+        if queue_doc_ids and expected_doc_id not in queue_doc_ids:
+            issues.append(
+                metadata_issue(
+                    record_key=record_key,
+                    doc_id=expected_doc_id,
+                    version=version,
+                    status="done",
+                    title=str(items_for_doc[0].get("title") or ""),
+                    current_category=category,
+                    suggested_category=category,
+                    rule="upload_queue_doc_id_mismatch",
+                    severity="blocker",
+                    summary=(
+                        f"Processed upload {display_code} now resolves to {expected_doc_id}, "
+                        f"but queue has doc_id(s): {', '.join(queue_doc_ids)}"
+                    ),
+                    recommended_action="reprocess_upload_after_doc_id_rule_fix",
+                    source_path="; ".join(source_paths),
+                    normalized_path="",
+                    display_code=display_code,
+                    department=department,
+                )
+            )
+        if record is None:
+            issues.append(
+                metadata_issue(
+                    record_key=record_key,
+                    doc_id=expected_doc_id,
+                    version=version,
+                    status="done",
+                    title=str(items_for_doc[0].get("title") or ""),
+                    current_category=category,
+                    suggested_category=category,
+                    rule="processed_upload_missing_manifest_record",
+                    severity="blocker",
+                    summary=(
+                        f"Processed upload {display_code} {version} is done but manifest record "
+                        f"{record_key} is missing."
+                    ),
+                    recommended_action="restore_or_reprocess_manifest_record_before_serving",
+                    source_path="; ".join(source_paths),
+                    normalized_path="",
+                    display_code=display_code,
+                    department=department,
+                )
+            )
+            continue
+        record_display = str(record.extra.get("display_code") or record.extra.get("canonical_business_code") or "")
+        if record_display and record_display != display_code:
+            issues.append(
+                metadata_issue(
+                    record_key=record_key,
+                    doc_id=expected_doc_id,
+                    version=version,
+                    status=record.status,
+                    title=record.title,
+                    current_category=record.category,
+                    suggested_category=category,
+                    rule="manifest_display_code_mismatch",
+                    severity="blocker",
+                    summary=(
+                        f"Manifest record {record_key} display code is {record_display}, "
+                        f"but processed upload expects {display_code}."
+                    ),
+                    recommended_action="inspect_collision_then_reprocess_affected_documents",
+                    source_path=record.source_path,
+                    normalized_path=record.normalized_path,
+                    display_code=display_code,
+                    department=department,
+                )
+            )
+    return issues
+
+
+def index_metadata_alignment_issues(root: Path, records: list[Any], statuses: set[str]) -> list[dict[str, Any]]:
+    records_by_key = {record.key: record for record in records}
+    issues: list[dict[str, Any]] = []
+    indexes_root = root / "indexes"
+    if not indexes_root.exists():
+        return issues
+
+    for metadata_path in sorted(indexes_root.glob("*_metadata.json")):
+        try:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            issues.append(
+                metadata_issue(
+                    record_key=metadata_path.stem,
+                    doc_id="",
+                    version="",
+                    status="unknown",
+                    title=metadata_path.name,
+                    current_category="unknown",
+                    suggested_category="unknown",
+                    rule="metadata_json_unreadable",
+                    severity="warning",
+                    summary=f"Metadata sidecar is not valid JSON: {exc}",
+                    recommended_action="repair_or_remove_invalid_metadata_sidecar",
+                    source_path=str(metadata_path),
+                    normalized_path="",
+                )
+            )
+            continue
+
+        document = payload.get("document") if isinstance(payload, dict) else None
+        if not isinstance(document, dict):
+            continue
+        doc_id = str(document.get("doc_id") or "")
+        version = str(document.get("version") or "")
+        if not doc_id or not version:
+            continue
+        status = str(document.get("status") or "")
+        if status and status not in statuses:
+            continue
+        record_key = f"{doc_id}::{version}"
+        record = records_by_key.get(record_key)
+        display_code = str(document.get("display_code") or "")
+        category = str(document.get("category") or "unknown")
+        source_path = str(document.get("primary_source_path") or payload.get("source", {}).get("path") or metadata_path)
+        normalized_path = str(payload.get("normalized", {}).get("path") or "")
+        if record is None:
+            issues.append(
+                metadata_issue(
+                    record_key=record_key,
+                    doc_id=doc_id,
+                    version=version,
+                    status=status or "unknown",
+                    title=str(document.get("title") or metadata_path.name),
+                    current_category=category,
+                    suggested_category=category,
+                    rule="orphan_index_metadata",
+                    severity="blocker" if doc_id.startswith("KT-QT-") else "warning",
+                    summary=(
+                        f"Index metadata {metadata_path.name} points to {record_key} "
+                        "but no manifest record exists."
+                    ),
+                    recommended_action="restore_manifest_record_or_archive_stale_artifacts",
+                    source_path=source_path,
+                    normalized_path=normalized_path,
+                    display_code=display_code,
+                    department=str(document.get("department") or ""),
+                )
+            )
+            continue
+        record_display = str(record.extra.get("display_code") or record.extra.get("canonical_business_code") or "")
+        if display_code and record_display and display_code != record_display:
+            issues.append(
+                metadata_issue(
+                    record_key=record_key,
+                    doc_id=doc_id,
+                    version=version,
+                    status=record.status,
+                    title=record.title,
+                    current_category=record.category,
+                    suggested_category=category,
+                    rule="index_metadata_display_code_mismatch",
+                    severity="blocker",
+                    summary=(
+                        f"Index metadata {metadata_path.name} display code is {display_code}, "
+                        f"but manifest has {record_display}."
+                    ),
+                    recommended_action="inspect_collision_then_rebuild_artifacts",
+                    source_path=source_path,
+                    normalized_path=normalized_path,
+                    display_code=display_code,
+                    department=str(document.get("department") or ""),
+                )
+            )
+    return issues
+
+
 def managed_doc_id_prefix_category(doc_id: str) -> str | None:
     for prefix, category in MANAGED_DOC_ID_PREFIX_CATEGORIES.items():
         if doc_id.startswith(prefix):
@@ -506,6 +770,43 @@ def taxonomy_issue(
         "recommended_action": recommended_action,
         "source_path": record.source_path,
         "normalized_path": record.normalized_path,
+    }
+
+
+def metadata_issue(
+    *,
+    record_key: str,
+    doc_id: str,
+    version: str,
+    status: str,
+    title: str,
+    current_category: str,
+    suggested_category: str,
+    rule: str,
+    severity: str,
+    summary: str,
+    recommended_action: str,
+    source_path: str,
+    normalized_path: str,
+    display_code: str = "",
+    department: str = "",
+) -> dict[str, Any]:
+    return {
+        "record_key": record_key,
+        "doc_id": doc_id,
+        "version": version,
+        "status": status,
+        "title": title,
+        "current_category": current_category,
+        "suggested_category": suggested_category,
+        "rule": rule,
+        "severity": severity,
+        "summary": summary,
+        "recommended_action": recommended_action,
+        "source_path": source_path,
+        "normalized_path": normalized_path,
+        "display_code": display_code,
+        "department": department,
     }
 
 
@@ -583,9 +884,14 @@ def plan_taxonomy_remediation(
         if not record:
             continue
         target_category = str(issue["suggested_category"])
-        target_doc_id = next_doc_id(records, target_category, reserved_doc_ids)
+        target_doc_id = target_doc_id_for_remediation(records, record, target_category, reserved_doc_ids)
         reserved_doc_ids.add(target_doc_id)
-        actions.append(remediation_action(root, record, target_category, target_doc_id, str(issue["summary"])))
+        action = remediation_action(root, record, target_category, target_doc_id, str(issue["summary"]))
+        if doc_version_conflict(records, record, target_doc_id):
+            action["conflicts"].append(f"manifest record already exists: {target_doc_id}::{record.version}")
+            action["auto_apply_safe"] = False
+            action["requires_review"] = True
+        actions.append(action)
 
     report = {
         "generated_at": utc_now(),
@@ -596,6 +902,42 @@ def plan_taxonomy_remediation(
     if write_report:
         write_taxonomy_remediation_reports(root, report)
     return report
+
+
+def target_doc_id_for_remediation(
+    records: list[Any],
+    record: Any,
+    target_category: str,
+    reserved_doc_ids: set[str],
+) -> str:
+    display_code = record_business_code(record)
+    if display_code:
+        from .upload_processing import internal_doc_id
+
+        return internal_doc_id(display_code, str(record.department), target_category)
+    if record.department != "technical":
+        return safe_filename(str(record.doc_id))
+    return next_doc_id(records, target_category, reserved_doc_ids)
+
+
+def record_business_code(record: Any) -> str:
+    for key in ("display_code", "canonical_business_code", "canonical_doc_id", "document_family_id"):
+        value = record.extra.get(key)
+        if value:
+            return str(value).strip()
+    doc_id = str(record.doc_id)
+    if not managed_doc_id_prefix_category(doc_id):
+        return doc_id
+    return ""
+
+
+def doc_version_conflict(records: list[Any], record: Any, candidate_doc_id: str) -> bool:
+    for existing in records:
+        if existing is record:
+            continue
+        if str(existing.doc_id) == candidate_doc_id and str(existing.version) == str(record.version):
+            return True
+    return False
 
 
 def next_doc_id(records: list[Any], category: str, reserved_doc_ids: set[str]) -> str:
@@ -617,12 +959,15 @@ def next_doc_id(records: list[Any], category: str, reserved_doc_ids: set[str]) -
 
 
 def remediation_action(root: Path, record: Any, target_category: str, target_doc_id: str, reason: str) -> dict[str, Any]:
-    source_path = Path(record.source_path)
-    normalized_path = Path(record.normalized_path)
-    target_source = root / "source" / "technical" / target_category / f"{target_doc_id}_v{record.version}{source_path.suffix}"
+    source_path = workspace_record_path(root, record.source_path)
+    normalized_path = workspace_record_path(root, record.normalized_path)
+    target_source = root / "source" / str(record.department) / target_category / f"{target_doc_id}_v{record.version}{source_path.suffix}"
     target_metadata = target_source.with_name(target_source.stem + ".metadata.json")
-    target_normalized = root / "normalized" / "technical" / target_category / f"{target_doc_id}_v{record.version}.md"
-    target_artifact = root / ".Workplace" / "artifacts" / target_category / safe_filename(f"{target_doc_id}_v{record.version}")
+    target_normalized = root / "normalized" / str(record.department) / target_category / f"{target_doc_id}_v{record.version}.md"
+    artifact_parts = [".Workplace", "artifacts"]
+    if record.department != "technical":
+        artifact_parts.append(str(record.department))
+    target_artifact = root.joinpath(*artifact_parts) / target_category / safe_filename(f"{target_doc_id}_v{record.version}")
     qa_path = qa_report_path(root, record)
     target_qa = target_artifact / "qa_report.json"
     conflicts = [
@@ -630,12 +975,17 @@ def remediation_action(root: Path, record: Any, target_category: str, target_doc
         for path in [target_source, target_metadata, target_normalized, target_qa]
         if path.exists()
     ]
+    if not source_path.exists():
+        conflicts.append(f"missing current source: {source_path}")
+    if not normalized_path.exists():
+        conflicts.append(f"missing current normalized: {normalized_path}")
     return {
         "record_key": record.key,
         "status": record.status,
         "reason": reason,
         "current": {
             "doc_id": record.doc_id,
+            "department": record.department,
             "category": record.category,
             "source_type": record.source_type,
             "source_path": str(source_path),
@@ -645,6 +995,7 @@ def remediation_action(root: Path, record: Any, target_category: str, target_doc
         },
         "target": {
             "doc_id": target_doc_id,
+            "department": record.department,
             "category": target_category,
             "source_type": SOURCE_TYPE_BY_CATEGORY[target_category],
             "source_path": str(target_source),
@@ -656,6 +1007,11 @@ def remediation_action(root: Path, record: Any, target_category: str, target_doc
         "auto_apply_safe": not conflicts and record.status == "pending_review",
         "requires_review": record.status == "active" or bool(conflicts),
     }
+
+
+def workspace_record_path(root: Path, value: object) -> Path:
+    path = Path(str(value))
+    return path if path.is_absolute() else root / path
 
 
 def write_taxonomy_remediation_reports(root: Path, report: dict[str, Any]) -> None:
@@ -769,6 +1125,7 @@ def apply_single_taxonomy_action(root: Path, record: Any, action: dict[str, Any]
     move_if_exists(current_source, target_source)
     move_if_exists(current_normalized, target_normalized)
     move_if_exists(current_qa, target_qa)
+    remove_stale_rag_artifacts(root, record)
 
     metadata = metadata_payload_for_record(record)
     if current_metadata.exists():
@@ -798,6 +1155,20 @@ def apply_single_taxonomy_action(root: Path, record: Any, action: dict[str, Any]
     record.extra["original_category"] = original_category
     record.extra["taxonomy_remediation_reason"] = action["reason"]
     record.extra["taxonomy_remediated_at"] = record.updated_at
+
+
+def remove_stale_rag_artifacts(root: Path, record: Any) -> None:
+    for key in RAG_ARTIFACT_EXTRA_KEYS:
+        value = record.extra.pop(key, None)
+        if not value:
+            continue
+        path = assert_workspace_path(root, Path(str(value)))
+        if not path.exists():
+            continue
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
 
 
 def metadata_payload_for_record(record: Any) -> dict[str, Any]:

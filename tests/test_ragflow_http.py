@@ -10,6 +10,8 @@ from poc_workflow.ragflow_http import (
     bootstrap_ragflow_resources,
     extract_reference_citations,
     record_to_ragflow_metadata,
+    ragflow_sync_preflight,
+    ragflow_uploadable_records,
     sync_active_to_ragflow,
 )
 
@@ -197,6 +199,135 @@ def test_sync_active_to_ragflow_uploads_only_latest_active_version(tmp_path: Pat
     assert ("upload", "KT-QT-009_v1.0_procedure.md") not in calls
     metadata_calls = [payload for name, payload in calls if name == "metadata"]
     assert metadata_calls[0]["version"] == "1.2"
+
+
+def test_ragflow_uploadable_records_accepts_docx_primary_source(tmp_path: Path) -> None:
+    md = tmp_path / "normalized" / "tender_legal" / "procedure" / "PL-092.01_rev04.md"
+    md.parent.mkdir(parents=True)
+    md.write_text("# Quy trinh\n\nNoi dung.", encoding="utf-8")
+    record = ManifestRecord(
+        doc_id="PL-092.01",
+        title="Quy trinh doi tac",
+        department="tender_legal",
+        category="procedure",
+        source_type="internal_procedure",
+        language="vi",
+        version="rev04",
+        status="active",
+        effective_from="2025-01-01",
+        owner="Phong Thau Phap che",
+        access_group="tender_legal",
+        source_path="/source/PL-092.01.docx",
+        normalized_path=str(md),
+        content_hash="hash",
+        extra={
+            "ingest_policy": "primary_source_only",
+            "quality_status": "passed",
+            "citation_map_path": "/indexes/PL-092.01_rev04_citation_map.json",
+            "primary_source_decision": {"selected": "docx"},
+        },
+    )
+
+    assert ragflow_uploadable_records([record]) == [record]
+
+
+def test_ragflow_sync_preflight_writes_upload_plan_without_network(tmp_path: Path) -> None:
+    md = tmp_path / "normalized" / "tender_legal" / "procedure" / "PL-092.01_rev04.md"
+    citation_map = tmp_path / "indexes" / "PL-092.01_rev04_citation_map.json"
+    mineru_index = tmp_path / "converted_raw" / "PL-092.01" / "mineru_artifact_index.json"
+    md.parent.mkdir(parents=True)
+    citation_map.parent.mkdir(parents=True)
+    mineru_index.parent.mkdir(parents=True)
+    md.write_text("# Quy trinh\n\nNoi dung.", encoding="utf-8")
+    citation_map.write_text("[]", encoding="utf-8")
+    mineru_index.write_text("{}", encoding="utf-8")
+    ManifestStore(tmp_path).save(
+        [
+            ManifestRecord(
+                doc_id="PL-092.01",
+                title="Quy trinh doi tac",
+                department="tender_legal",
+                category="procedure",
+                source_type="internal_procedure",
+                language="vi",
+                version="rev04",
+                status="active",
+                effective_from="2025-01-01",
+                owner="Phong Thau Phap che",
+                access_group="tender_legal",
+                source_path="/source/PL-092.01.docx",
+                normalized_path=str(md),
+                content_hash="hash",
+                extra={
+                    "ingest_policy": "primary_source_only",
+                    "quality_status": "passed",
+                    "citation_map_path": str(citation_map),
+                    "mineru_artifact_index_path": str(mineru_index),
+                    "primary_source_decision": {"selected": "docx"},
+                },
+            )
+        ]
+    )
+
+    result = ragflow_sync_preflight(tmp_path)
+
+    assert result["ready_for_sync"] is False
+    assert result["missing_config"] == [
+        "RAGFLOW_BASE_URL",
+        "RAGFLOW_API_KEY",
+        "RAGFLOW_TECHNICAL_ACTIVE_DATASET_ID",
+    ]
+    assert result["policy_uploadable_count"] == 1
+    assert result["blocking_record_count"] == 0
+    report = Path(result["report_path"])
+    assert report.exists()
+    assert "PL-092.01" in report.read_text(encoding="utf-8")
+    assert result["upload_sample"][0]["quality_status"] == "passed"
+    assert result["upload_sample"][0]["primary_source_selected"] == "docx"
+
+
+def test_ragflow_sync_preflight_blocks_missing_citation_artifact(tmp_path: Path) -> None:
+    md = tmp_path / "normalized" / "technical" / "procedure" / "KT-QT-002_rev04.md"
+    mineru_index = tmp_path / "converted_raw" / "KT-QT-002" / "mineru_artifact_index.json"
+    md.parent.mkdir(parents=True)
+    mineru_index.parent.mkdir(parents=True)
+    md.write_text("# Quy trinh\n\nNoi dung.", encoding="utf-8")
+    mineru_index.write_text("{}", encoding="utf-8")
+    missing_citation = tmp_path / "indexes" / "KT-QT-002_rev04_citation_map.json"
+    ManifestStore(tmp_path).save(
+        [
+            ManifestRecord(
+                doc_id="KT-QT-002",
+                title="Quy trinh bao duong",
+                department="technical",
+                category="procedure",
+                source_type="internal_procedure",
+                language="vi",
+                version="rev04",
+                status="active",
+                effective_from="2025-01-01",
+                owner="Phong Ky thuat",
+                access_group="technical",
+                source_path="/source/KT-QT-002.xlsx",
+                normalized_path=str(md),
+                content_hash="hash",
+                extra={
+                    "ingest_policy": "primary_source_only",
+                    "quality_status": "passed",
+                    "citation_map_path": str(missing_citation),
+                    "mineru_artifact_index_path": str(mineru_index),
+                    "primary_source_decision": {"selected": "xlsx"},
+                },
+            )
+        ]
+    )
+
+    result = ragflow_sync_preflight(tmp_path, base_url="http://ragflow", api_key="key", dataset_id="dataset")
+
+    assert result["ready_for_sync"] is False
+    assert result["missing_config"] == []
+    assert result["blocking_record_count"] == 1
+    assert result["blocked_sample"][0]["issues"][0]["type"] == "citation_map_file_missing"
 
 
 def _record(version: str, normalized_path: Path, content_hash: str) -> ManifestRecord:

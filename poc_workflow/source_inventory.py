@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .intake import unique_path
-from .upload_processing import business_document_identity
+from .upload_processing import business_document_identity, department_from_business_code
 from .utils import content_hash, copy_file, utc_now, write_json
 
 
@@ -65,7 +65,8 @@ def inventory_phuong_dong_procedures(
         parts = relative.parts
         top_folder = parts[0] if parts else ""
         folder_prefix = _folder_prefix(top_folder)
-        department = DEPARTMENT_BY_FOLDER_PREFIX.get(folder_prefix or "", "general")
+        identity = business_document_identity(path.name)
+        department = DEPARTMENT_BY_FOLDER_PREFIX.get(folder_prefix or "") or department_from_business_code(identity["code"]) or "general"
         if not include_technical and folder_prefix == TECHNICAL_FOLDER_PREFIX:
             skipped.append(
                 {
@@ -76,7 +77,6 @@ def inventory_phuong_dong_procedures(
                 }
             )
             continue
-        identity = business_document_identity(path.name)
         items.append(
             {
                 "source_path": str(_normal_path(path)),

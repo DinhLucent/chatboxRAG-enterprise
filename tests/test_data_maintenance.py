@@ -117,6 +117,54 @@ def test_audit_manifest_taxonomy_reports_suspicious_category(tmp_path: Path) -> 
     assert (tmp_path / "docs" / "taxonomy-audit-latest.md").exists()
 
 
+def test_audit_manifest_taxonomy_reports_done_upload_missing_manifest(tmp_path: Path) -> None:
+    init_workspace(tmp_path)
+    done = tmp_path / "inbox" / "procedure" / "done"
+    done.mkdir(parents=True)
+    (done / "PD-TECH-A-02. Rev 04. Quy trinh bao duong.pdf").write_bytes(b"pdf")
+
+    report = audit_manifest_taxonomy(tmp_path)
+
+    assert any(issue["rule"] == "processed_upload_missing_manifest_record" for issue in report["issues"])
+    issue = next(issue for issue in report["issues"] if issue["rule"] == "processed_upload_missing_manifest_record")
+    assert issue["record_key"] == "KT-QT-002::rev04"
+    assert issue["display_code"] == "PD-TECH-A-02"
+    assert issue["severity"] == "blocker"
+
+
+def test_audit_manifest_taxonomy_reports_orphan_index_metadata(tmp_path: Path) -> None:
+    init_workspace(tmp_path)
+    metadata_path = tmp_path / "indexes" / "KT-QT-002_rev04_metadata.json"
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "artifact_schema_version": "upload_rag_metadata_v1",
+                "document": {
+                    "doc_id": "KT-QT-002",
+                    "version": "rev04",
+                    "display_code": "BM-046.02",
+                    "title": "Bao cao giai trinh su co",
+                    "department": "technical",
+                    "category": "faq_troubleshooting",
+                    "status": "pending_review",
+                    "primary_source_path": str(tmp_path / "staging" / "BM-046.02.xlsx"),
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    report = audit_manifest_taxonomy(tmp_path)
+
+    assert any(issue["rule"] == "orphan_index_metadata" for issue in report["issues"])
+    issue = next(issue for issue in report["issues"] if issue["rule"] == "orphan_index_metadata")
+    assert issue["record_key"] == "KT-QT-002::rev04"
+    assert issue["display_code"] == "BM-046.02"
+    assert issue["severity"] == "blocker"
+
+
 def test_audit_manifest_taxonomy_allows_native_business_doc_ids(tmp_path: Path) -> None:
     init_workspace(tmp_path)
     source = tmp_path / "source" / "technical" / "procedure" / "PD-HR-051_v1.0.md"
@@ -186,6 +234,119 @@ def test_plan_taxonomy_remediation_proposes_new_safe_doc_id(tmp_path: Path) -> N
     assert action["target"]["category"] == "procedure"
     assert action["auto_apply_safe"] is True
     assert (tmp_path / "docs" / "taxonomy-remediation-plan.md").exists()
+
+
+def test_plan_taxonomy_remediation_preserves_department_and_business_doc_id(tmp_path: Path) -> None:
+    init_workspace(tmp_path)
+    source = tmp_path / "source" / "app" / "faq_troubleshooting" / "PD-APP-A-02_vrev01.md"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("# Quy trinh khac phuc su co\n\nNoi dung du de tao record.", encoding="utf-8")
+    source.with_name(source.stem + ".metadata.json").write_text(
+        json.dumps(
+            {
+                "doc_id": "PD-APP-A-02",
+                "title": "Quy trinh khac phuc su co",
+                "department": "app",
+                "category": "faq_troubleshooting",
+                "source_type": "faq",
+                "language": "vi",
+                "version": "rev01",
+                "effective_from": "2026-01-01",
+                "owner": "Quality",
+                "access_group": "app",
+                "display_code": "PD-APP-A-02",
+                "canonical_business_code": "PD-APP-A-02",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    process_sources(tmp_path)
+
+    report = plan_taxonomy_remediation(tmp_path)
+
+    assert report["action_count"] == 1
+    action = report["actions"][0]
+    assert action["target"]["doc_id"] == "PD-APP-A-02"
+    assert action["target"]["department"] == "app"
+    assert action["target"]["category"] == "procedure"
+    assert Path(action["target"]["source_path"]).parts[-4:-1] == ("source", "app", "procedure")
+    assert Path(action["target"]["normalized_path"]).parts[-4:-1] == ("normalized", "app", "procedure")
+    assert "source\\technical" not in action["target"]["source_path"]
+
+
+def test_plan_taxonomy_remediation_keeps_form_code_native_for_department(tmp_path: Path) -> None:
+    init_workspace(tmp_path)
+    source = tmp_path / "source" / "warehouse_gdp" / "procedure" / "BM-001_vrev01.md"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("# Phieu truy tim nguon goc\n\nNoi dung du de tao record.", encoding="utf-8")
+    source.with_name(source.stem + ".metadata.json").write_text(
+        json.dumps(
+            {
+                "doc_id": "BM-001",
+                "title": "Phieu truy tim nguon goc",
+                "department": "warehouse_gdp",
+                "category": "procedure",
+                "source_type": "internal_procedure",
+                "language": "vi",
+                "version": "rev01",
+                "effective_from": "2026-01-01",
+                "owner": "Quality",
+                "access_group": "warehouse_gdp",
+                "display_code": "BM-001",
+                "canonical_business_code": "BM-001",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    process_sources(tmp_path)
+
+    report = plan_taxonomy_remediation(tmp_path)
+
+    assert report["action_count"] == 1
+    action = report["actions"][0]
+    assert action["target"]["doc_id"] == "BM-001"
+    assert action["target"]["department"] == "warehouse_gdp"
+    assert action["target"]["category"] == "form_checklist"
+    assert Path(action["target"]["source_path"]).parts[-4:-1] == ("source", "warehouse_gdp", "form_checklist")
+    assert "KT-BM-" not in action["target"]["doc_id"]
+
+
+def test_plan_taxonomy_remediation_requires_review_when_current_source_missing(tmp_path: Path) -> None:
+    init_workspace(tmp_path)
+    source = tmp_path / "source" / "app" / "faq_troubleshooting" / "PD-APP-A-02_vrev01.md"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("# Quy trinh khac phuc su co\n\nNoi dung du de tao record.", encoding="utf-8")
+    source.with_name(source.stem + ".metadata.json").write_text(
+        json.dumps(
+            {
+                "doc_id": "PD-APP-A-02",
+                "title": "Quy trinh khac phuc su co",
+                "department": "app",
+                "category": "faq_troubleshooting",
+                "source_type": "faq",
+                "language": "vi",
+                "version": "rev01",
+                "effective_from": "2026-01-01",
+                "owner": "Quality",
+                "access_group": "app",
+                "display_code": "PD-APP-A-02",
+                "canonical_business_code": "PD-APP-A-02",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    process_sources(tmp_path)
+    source.unlink()
+
+    report = plan_taxonomy_remediation(tmp_path)
+
+    action = report["actions"][0]
+    assert action["auto_apply_safe"] is False
+    assert action["requires_review"] is True
+    assert any("missing current source" in conflict for conflict in action["conflicts"])
 
 
 def test_apply_taxonomy_remediation_moves_pending_review_assets(tmp_path: Path) -> None:

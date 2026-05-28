@@ -544,18 +544,18 @@ def build_catalog_answer(root: Path, query: str, answer_style: str = "brief") ->
     scoped_records = active_scope_records(root)
     if scoped_records:
         return build_active_scope_catalog_answer(scoped_records, answer_style)
+    active_records = active_technical_procedure_records(root)
     record = active_catalog_record(root)
     if not record:
-        active_records = active_technical_procedure_records(root)
         if active_records:
             return build_active_scope_catalog_answer(active_records, answer_style)
         return None
     path = Path(record.normalized_path)
     if not path.exists():
-        return None
+        return build_active_scope_catalog_answer(active_records, answer_style) if active_records else None
     rows = extract_department_procedure_rows(path.read_text(encoding="utf-8", errors="ignore"), "ky thuat")
     if not rows:
-        return None
+        return build_active_scope_catalog_answer(active_records, answer_style) if active_records else None
     body_lines = [f"{title} ({status})" if status else title for title, status in rows]
     if answer_style == "checklist":
         body = "\n".join(f"- [ ] {line}" for line in body_lines)

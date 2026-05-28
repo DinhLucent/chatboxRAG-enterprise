@@ -4,8 +4,10 @@ import json
 import mimetypes
 import os
 import uuid
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 from urllib import parse
 from urllib import error, request
 
@@ -338,6 +340,18 @@ def sync_active_to_ragflow(
     client = RAGFlowHTTPClient(base_url, api_key)
     db = QualityDatabase(root)
     store = ManifestStore(root)
+    preflight = ragflow_sync_preflight(
+        root,
+        base_url=base_url,
+        api_key=api_key,
+        dataset_id=dataset_id,
+        include_records=False,
+    )
+    if preflight["blocking_record_count"]:
+        raise RAGFlowHTTPError(
+            f"RAGFlow preflight failed for {preflight['blocking_record_count']} active record(s). "
+            f"See {preflight['report_path']}"
+        )
     active_records = ragflow_uploadable_records(latest_active_records(store.load()))
     uploaded: list[dict] = []
 
@@ -368,6 +382,148 @@ def sync_active_to_ragflow(
     }
     write_json(root / "manifest" / "ragflow_sync.json", summary)
     return summary
+
+
+def ragflow_sync_preflight(
+    root: Path,
+    *,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    dataset_id: str | None = None,
+    include_records: bool = False,
+) -> dict[str, Any]:
+    """Build an auditable upload plan without calling RAGFlow.
+
+    The full plan is written to manifest/ragflow_sync_preflight.json. The return
+    value is intentionally compact unless include_records=True is requested.
+    """
+
+    records = latest_active_records(ManifestStore(root).load())
+    policy_uploadable = ragflow_uploadable_records(records)
+    plan_records = [ragflow_upload_plan_record(record) for record in policy_uploadable]
+    blocked_records = [
+        {
+            "doc_id": record.doc_id,
+            "version": record.version,
+            "title": record.title,
+            "department": record.department,
+            "category": record.category,
+            "issues": issues,
+        }
+        for record in records
+        if (issues := ragflow_record_preflight_issues(record))
+    ]
+    missing_config = [
+        key
+        for key, value in {
+            "RAGFLOW_BASE_URL": base_url,
+            "RAGFLOW_API_KEY": api_key,
+            "RAGFLOW_TECHNICAL_ACTIVE_DATASET_ID": dataset_id,
+        }.items()
+        if not value
+    ]
+    counts_by_department = Counter(record.department for record in policy_uploadable)
+    counts_by_category = Counter(record.category for record in policy_uploadable)
+    counts_by_primary_source = Counter(
+        str((record.extra.get("primary_source_decision") or {}).get("selected") or record.extra.get("primary_source_type") or record.source_type)
+        for record in policy_uploadable
+    )
+    report_path = root / "manifest" / "ragflow_sync_preflight.json"
+    full_report = {
+        "schema_version": "ragflow_sync_preflight_v1",
+        "ready_for_sync": not missing_config and not blocked_records and bool(policy_uploadable),
+        "missing_config": missing_config,
+        "config": {
+            "base_url_configured": bool(base_url),
+            "api_key_configured": bool(api_key),
+            "dataset_id_configured": bool(dataset_id),
+            "dataset_id": dataset_id or "",
+        },
+        "active_latest_count": len(records),
+        "policy_uploadable_count": len(policy_uploadable),
+        "blocking_record_count": len(blocked_records),
+        "counts_by_department": dict(sorted(counts_by_department.items())),
+        "counts_by_category": dict(sorted(counts_by_category.items())),
+        "counts_by_primary_source": dict(sorted(counts_by_primary_source.items())),
+        "upload_records": plan_records,
+        "blocked_records": blocked_records,
+    }
+    write_json(report_path, full_report)
+    result = {
+        **{key: value for key, value in full_report.items() if key not in {"upload_records", "blocked_records"}},
+        "report_path": str(report_path),
+        "upload_sample": [compact_ragflow_upload_plan_record(record) for record in policy_uploadable[:20]],
+        "blocked_sample": blocked_records[:20],
+    }
+    if include_records:
+        result["upload_records"] = plan_records
+        result["blocked_records"] = blocked_records
+    return result
+
+
+def compact_ragflow_upload_plan_record(record: ManifestRecord) -> dict[str, Any]:
+    normalized = Path(record.normalized_path)
+    extra = record.extra or {}
+    return {
+        "doc_id": record.doc_id,
+        "version": record.version,
+        "display_code": extra.get("display_code") or record.doc_id,
+        "display_version": extra.get("display_version") or extra.get("source_revision") or record.version,
+        "title": record.title,
+        "department": record.department,
+        "category": record.category,
+        "quality_status": extra.get("quality_status"),
+        "primary_source_selected": (extra.get("primary_source_decision") or {}).get("selected"),
+        "normalized_path": record.normalized_path,
+        "normalized_bytes": normalized.stat().st_size if normalized.exists() else 0,
+    }
+
+
+def ragflow_upload_plan_record(record: ManifestRecord) -> dict[str, Any]:
+    normalized = Path(record.normalized_path)
+    extra = record.extra or {}
+    return {
+        "doc_id": record.doc_id,
+        "version": record.version,
+        "display_code": extra.get("display_code") or record.doc_id,
+        "display_version": extra.get("display_version") or extra.get("source_revision") or record.version,
+        "title": record.title,
+        "department": record.department,
+        "category": record.category,
+        "normalized_path": record.normalized_path,
+        "normalized_exists": normalized.exists(),
+        "normalized_bytes": normalized.stat().st_size if normalized.exists() else 0,
+        "content_hash": record.content_hash,
+        "metadata": record_to_ragflow_metadata(record),
+    }
+
+
+def ragflow_record_preflight_issues(record: ManifestRecord) -> list[dict[str, str]]:
+    issues: list[dict[str, str]] = []
+    extra = record.extra or {}
+    if extra.get("used_for_retrieval") is False:
+        return issues
+    if record.status != "active":
+        issues.append({"type": "record_not_active", "detail": record.status})
+    if not Path(record.normalized_path).exists():
+        issues.append({"type": "missing_normalized_markdown", "detail": record.normalized_path})
+    if extra.get("ingest_policy") == "primary_source_only":
+        if extra.get("quality_status") != "passed":
+            issues.append({"type": "quality_status_not_passed", "detail": str(extra.get("quality_status"))})
+        citation_map_path = str(extra.get("citation_map_path") or "")
+        if not citation_map_path:
+            issues.append({"type": "missing_citation_map_path", "detail": ""})
+        elif not Path(citation_map_path).exists():
+            issues.append({"type": "citation_map_file_missing", "detail": citation_map_path})
+        decision = extra.get("primary_source_decision")
+        if not isinstance(decision, dict) or decision.get("selected") not in {"xlsx", "xls", "pdf", "docx", "doc"}:
+            issues.append({"type": "invalid_primary_source_decision", "detail": str(decision)})
+        mineru_artifact_index_path = str(extra.get("mineru_artifact_index_path") or "")
+        if not mineru_artifact_index_path:
+            issues.append({"type": "missing_mineru_artifact_index_path", "detail": ""})
+        elif not Path(mineru_artifact_index_path).exists():
+            issues.append({"type": "mineru_artifact_index_file_missing", "detail": mineru_artifact_index_path})
+    return issues
 
 
 def bootstrap_ragflow_resources(
@@ -449,7 +605,7 @@ def ragflow_uploadable_records(records: list[ManifestRecord]) -> list[ManifestRe
             if not extra.get("citation_map_path"):
                 continue
             decision = extra.get("primary_source_decision")
-            if not isinstance(decision, dict) or decision.get("selected") not in {"xlsx", "pdf"}:
+            if not isinstance(decision, dict) or decision.get("selected") not in {"xlsx", "xls", "pdf", "docx", "doc"}:
                 continue
         uploadable.append(record)
     return uploadable

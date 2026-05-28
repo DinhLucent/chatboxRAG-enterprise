@@ -17,12 +17,13 @@ from .data_workflow import (
     build_citation_record,
     build_section_index,
     mineru_source_blocks,
+    mineru_source_block_summary,
     source_evidence_blocks,
     workflow_run_id,
     make_handoff,
 )
 from .database import QualityDatabase
-from .document_qa import mojibake_score, qa_source_output
+from .document_qa import mojibake_score, qa_source_output, repair_mojibake
 from .manifest import ManifestStore
 from .models import ManifestRecord
 from .pipeline import init_workspace, rebuild_indexes
@@ -33,6 +34,24 @@ from .utils import content_hash, copy_file, safe_filename, utc_now, write_json
 UPLOAD_RUN_SCHEMA_VERSION = "upload_agent_run_v1"
 SOURCE_PRIORITY = ("xlsx", "xls", "pdf", "docx", "doc")
 SUPPORTED_GROUP_SUFFIXES = {f".{source_type}" for source_type in SOURCE_PRIORITY}
+DEPARTMENT_CODE_PREFIXES = {
+    "PD-ACC": "accounting",
+    "PD-ADM": "administration",
+    "PD-APP": "app",
+    "PD-CS": "customer_service",
+    "PD-HR": "human_resources",
+    "PD-IC": "internal_control",
+    "PD-IT": "it",
+    "PD-MKT": "marketing",
+    "PD-PUR": "procurement_import_export",
+    "PD-RA": "regulatory_affairs",
+    "PD-SALES": "sales",
+    "PD-TECH": "technical",
+    "PD-BID": "tender_legal",
+    "PD-LEGAL": "tender_legal",
+    "PL": "tender_legal",
+    "MS": "tender_legal",
+}
 SYNTHETIC_HEADINGS = {
     "fixing metadata",
     "incident response",
@@ -187,7 +206,7 @@ def list_upload_document_groups(root: Path, *, category: str | None = "procedure
         item_category = str(items[0].get("suggested_type") or "procedure")
         department = department_from_queue_item(items[0], item_category)
         document_business_key = document_business_key_for_department(department, identity["business_key"])
-        doc_id = internal_doc_id(identity["code"], department)
+        doc_id = internal_doc_id(identity["code"], department, item_category)
         groups.append(
             UploadDocumentGroup(
                 business_key=document_business_key,
@@ -659,11 +678,25 @@ def _canonical_code_number(raw_number: str) -> str:
 def department_from_queue_item(item: dict[str, Any], category: str) -> str:
     relative_path = str(item.get("original_relative_path") or item.get("relative_path") or "")
     parts = Path(relative_path).parts
-    if len(parts) >= 3 and parts[0] == category:
+    if len(parts) >= 3:
         candidate = safe_filename(parts[1]).replace("-", "_").lower()
         if candidate in ALLOWED_DEPARTMENTS:
             return candidate
+    identity = business_document_identity(str(item.get("file_name") or Path(relative_path).name))
+    department = department_from_business_code(str(identity.get("code") or ""))
+    if department:
+        return department
     return "technical"
+
+
+def department_from_business_code(display_code: str) -> str | None:
+    code = display_code.upper().replace("_", "-")
+    for prefix in sorted(DEPARTMENT_CODE_PREFIXES, key=len, reverse=True):
+        if code == prefix or code.startswith(f"{prefix}-"):
+            department = DEPARTMENT_CODE_PREFIXES[prefix]
+            if department in ALLOWED_DEPARTMENTS:
+                return department
+    return None
 
 
 def department_display_name(department: str) -> str:
@@ -678,12 +711,13 @@ def document_business_key_for_department(department: str, business_key: str) -> 
     return business_key if department == "technical" else f"{department}_{business_key}"
 
 
-def internal_doc_id(display_code: str, department: str = "technical") -> str:
-    if department != "technical":
-        return safe_filename(display_code.upper())
-    match = re.search(r"(\d{1,4})$", display_code)
+def internal_doc_id(display_code: str, department: str = "technical", category: str = "procedure") -> str:
+    code = display_code.upper()
+    if department != "technical" or category != "procedure" or not code.startswith("PD-TECH-"):
+        return safe_filename(code)
+    match = re.search(r"(\d{1,4})$", code)
     if not match:
-        return safe_filename(display_code).upper()
+        return safe_filename(code)
     return f"KT-QT-{int(match.group(1)):03d}"
 
 
@@ -1439,6 +1473,7 @@ def build_upload_rag_ready_artifacts(
     sections = build_section_index(text, paths.normalized, group.doc_id, group.revision_slug)
     chunks = chunk_markdown_with_metadata(text)
     mineru_blocks = mineru_source_blocks(primary.mineru_artifact_index_path)
+    mineru_block_summary = mineru_source_block_summary(mineru_blocks)
     source_blocks = mineru_blocks + source_evidence_blocks(primary.staged_source_path)
     chunk_records: list[dict[str, Any]] = []
     citation_records: list[dict[str, Any]] = []
@@ -1492,6 +1527,7 @@ def build_upload_rag_ready_artifacts(
             }
         )
         citation_records.append(citation)
+    fill_unresolved_citation_locators(citation_records)
 
     metadata_artifact = {
         "artifact_schema_version": "upload_rag_metadata_v1",
@@ -1509,6 +1545,7 @@ def build_upload_rag_ready_artifacts(
             "raw_conversion_policy": "mineru_only_no_fallback",
             "raw_markdown_path": str(primary.raw_markdown_path),
             "mineru_artifact_index_path": str(primary.mineru_artifact_index_path) if primary.mineru_artifact_index_path else None,
+            "mineru_source_block_summary": mineru_block_summary,
             "mineru_profile": converter.profile_dict() if hasattr(converter, "profile_dict") else {},
         },
         "source": {"path": str(primary.staged_source_path), "type": selected, "checksum": content_hash(primary.staged_source_path)},
@@ -1540,6 +1577,7 @@ def build_upload_rag_ready_artifacts(
             "quality_report_json": str(paths.quality_report),
             "mineru_artifact_index_json": str(primary.mineru_artifact_index_path) if primary.mineru_artifact_index_path else None,
         },
+        "mineru_source_block_summary": mineru_block_summary,
         "created_at": utc_now(),
     }
     write_json(paths.schema_manifest, schema_manifest)
@@ -1550,6 +1588,7 @@ def build_upload_rag_ready_artifacts(
         "chunks": chunk_records,
         "citations": citation_records,
         "source_locator_coverage": source_locator_coverage(citation_records),
+        "mineru_source_block_summary": mineru_block_summary,
         "schema_manifest": schema_manifest,
     }
 
@@ -1593,6 +1632,18 @@ def verify_upload_rag_readiness(
     if not citations:
         issues.append({"type": "missing_citation_anchor", "severity": "high"})
     locator_coverage = source_locator_coverage(citations)
+    mineru_source_jsons = sorted(
+        {
+            str(value)
+            for citation in citations
+            for value in (citation.get("source_json"), citation.get("mineru_source_json"))
+            if value
+        }
+    )
+    mineru_block_summary = rag_ready.get("mineru_source_block_summary") or {}
+    sidecars_parsed_for_citation = bool(mineru_source_jsons) or int(mineru_block_summary.get("block_count") or 0) > 0
+    mineru_bbox_citation_count = sum(1 for citation in citations if citation_has_mineru_bbox(citation))
+    mineru_image_citation_count = sum(1 for citation in citations if citation_has_mineru_image_ref(citation))
     if locator_coverage < 0.8:
         issues.append({"type": "low_source_locator_coverage", "severity": "high", "coverage": locator_coverage})
     weak_citation_count = sum(
@@ -1602,8 +1653,11 @@ def verify_upload_rag_readiness(
     )
     if weak_citation_count:
         issues.append({"type": "citation_locator_needs_review", "severity": "low", "count": weak_citation_count})
-    if not (rich_summary.get("has_content_list") or rich_summary.get("has_content_list_v2") or rich_summary.get("has_middle_json")):
+    rich_metadata_available = bool(rich_summary.get("has_content_list") or rich_summary.get("has_content_list_v2") or rich_summary.get("has_middle_json") or rich_summary.get("has_model_json"))
+    if not rich_metadata_available:
         issues.append({"type": "mineru_rich_metadata_missing", "severity": "high"})
+    if rich_metadata_available and not sidecars_parsed_for_citation:
+        issues.append({"type": "mineru_sidecars_not_parsed_for_citation", "severity": "high"})
     canonical_paths = {
         "normalized_markdown": paths.normalized,
         "metadata_json": paths.metadata_json,
@@ -1634,7 +1688,12 @@ def verify_upload_rag_readiness(
             "citation_anchors_present": bool(citations),
             "source_locator_coverage": locator_coverage,
             "citation_locator_review_required_count": weak_citation_count,
-            "mineru_rich_metadata_available": bool(rich_summary),
+            "mineru_rich_metadata_available": rich_metadata_available,
+            "mineru_sidecars_parsed_for_citation": sidecars_parsed_for_citation,
+            "mineru_source_jsons_used": mineru_source_jsons,
+            "mineru_bbox_citation_count": mineru_bbox_citation_count,
+            "mineru_image_citation_count": mineru_image_citation_count,
+            "mineru_source_block_summary": mineru_block_summary,
             "supporting_source_not_ingested": True,
             "ragflow_ingestion_not_run": True,
         },
@@ -1673,6 +1732,7 @@ def upsert_upload_manifest_record(
         "raw_conversion_policy": "mineru_only_no_fallback",
         "raw_markdown_path": str(primary.raw_markdown_path),
         "mineru_artifact_index_path": str(primary.mineru_artifact_index_path) if primary.mineru_artifact_index_path else None,
+        "mineru_source_block_summary": final_quality.get("quality_gates", {}).get("mineru_source_block_summary") or {},
         "mineru_profile": converter.profile_dict() if hasattr(converter, "profile_dict") else {},
         "metadata_json_path": str(paths.metadata_json),
         "section_index_path": str(paths.section_index),
@@ -1726,6 +1786,24 @@ def source_text_unavailable_but_mineru_ocr_evidence_is_rich(
     if not rich_summary.get("has_middle_json"):
         return False
     return source_locator_coverage(citations) >= 0.8
+
+
+def citation_has_mineru_bbox(citation: dict[str, Any]) -> bool:
+    for key in ("source_locator", "mineru_locator"):
+        locator = citation.get(key)
+        if isinstance(locator, dict) and locator.get("bbox") is not None:
+            return True
+    return False
+
+
+def citation_has_mineru_image_ref(citation: dict[str, Any]) -> bool:
+    if citation.get("image_ref"):
+        return True
+    for key in ("source_locator", "mineru_locator"):
+        locator = citation.get(key)
+        if isinstance(locator, dict) and locator.get("image_ref"):
+            return True
+    return False
 
 
 def build_human_review_packet(group: UploadDocumentGroup, paths: UploadRunPaths, quality: dict[str, Any]) -> dict[str, Any]:
@@ -1826,7 +1904,27 @@ def terminal_upload_failure(
         "candidate_conversions": {source_type: candidate_summary(candidate) for source_type, candidate in conversions.items()},
         "checked_at": utc_now(),
     }
+    repair_handoff = {
+        "schema_version": UPLOAD_RUN_SCHEMA_VERSION,
+        "run_id": run_id,
+        "doc_id": group.doc_id,
+        "display_code": group.display_code,
+        "source_revision": group.source_revision,
+        "task": "blocked_after_mineru_conversion",
+        "reason": reason,
+        "candidate_conversions": quality["candidate_conversions"],
+        "required_next_action": (
+            "Review MinerU conversion logs and source format. Requeue only after MinerU can produce usable "
+            "Markdown and rich sidecars; do not use a fallback converter."
+        ),
+        "hard_rules": [
+            "MinerU-only conversion remains required.",
+            "Do not synthesize normalized Markdown when MinerU produced no usable raw Markdown.",
+            "Keep source in failed/needs_human_input until conversion evidence is available.",
+        ],
+    }
     write_json(paths.quality_report, quality)
+    write_json(paths.repair_handoff, repair_handoff)
     append_workflow_handoff(
         root,
         paths.artifact_root,
@@ -1835,9 +1933,13 @@ def terminal_upload_failure(
             step="convert",
             status="blocked",
             source_id=source_id,
-            artifacts=conversion_artifact_records(conversions, source_id),
+            artifacts=[
+                *conversion_artifact_records(conversions, source_id),
+                artifact_record(paths.quality_report, artifact_id=f"quality_report_{source_id}", artifact_type="audit", source_id=source_id),
+                artifact_record(paths.repair_handoff, artifact_id=f"repair_handoff_{source_id}", artifact_type="audit", source_id=source_id),
+            ],
             quality_gates={"any_candidate_converted": False, "mineru_only": True},
-            next_skill=None,
+            next_skill="human-review",
         ),
     )
     write_terminal_reports(paths, group, run_id, "none", {"reason": reason}, quality, status="blocked")
@@ -1992,8 +2094,36 @@ def supporting_source_role(source_type: str) -> str:
 def source_locator_coverage(citations: list[dict[str, Any]]) -> float:
     if not citations:
         return 0.0
-    resolved = sum(1 for item in citations if item.get("locator_status") == "resolved")
+    resolved = sum(
+        1
+        for item in citations
+        if item.get("source_locator") or item.get("locator_status") in {"resolved", "resolved_fallback"}
+    )
     return round(resolved / len(citations), 4)
+
+
+def fill_unresolved_citation_locators(citations: list[dict[str, Any]]) -> None:
+    """Attach a conservative document-level source fallback to heading-only chunks."""
+    fallback = next((citation for citation in citations if citation.get("source_locator")), None)
+    if not fallback:
+        return
+    fallback_locator = json.loads(json.dumps(fallback.get("source_locator"), ensure_ascii=False))
+    fallback_display = str(fallback.get("display_locator") or "First resolved source locator")
+    fallback_source_json = fallback.get("source_json")
+    fallback_image_ref = fallback.get("image_ref")
+    for citation in citations:
+        if citation.get("source_locator"):
+            continue
+        citation["source_locator"] = fallback_locator
+        citation["display_locator"] = f"{fallback_display} (document-level fallback)"
+        citation["locator_status"] = "resolved_fallback"
+        citation["locator_confidence"] = 0.2
+        citation["locator_basis"] = "document_first_resolved_locator_fallback"
+        citation["requires_human_review"] = True
+        if fallback_source_json and not citation.get("source_json"):
+            citation["source_json"] = fallback_source_json
+        if fallback_image_ref and not citation.get("image_ref"):
+            citation["image_ref"] = fallback_image_ref
 
 
 def normalized_title_quality_issues(group: UploadDocumentGroup, text: str) -> list[dict[str, Any]]:
@@ -2053,6 +2183,11 @@ def stable_text_hash(text: str) -> str:
 
 
 def preclean_markdown(text: str) -> str:
+    original_mojibake_score = mojibake_score(text)
+    if original_mojibake_score:
+        repaired = repair_mojibake(text)
+        if repaired and mojibake_score(repaired) < original_mojibake_score:
+            text = repaired
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"</p\s*>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", " ", text)

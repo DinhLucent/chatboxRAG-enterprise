@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .chatbot import apply_feedback, ask
+from .ai_review import ai_review_pending_records, refill_quality_for_ai_review
 from .data_maintenance import (
     apply_taxonomy_remediation,
     audit_manifest_taxonomy,
@@ -31,7 +32,7 @@ from .quality_gate import run_quality_gate
 from .qa_agent_eval import run_qa_agent_eval
 from .qa_test_eval import run_qa_test
 from .pilot_pdtech_a02 import run_pdtech_a02_agent_sandbox, run_pdtech_a02_pilot
-from .ragflow_http import bootstrap_ragflow_resources, sync_active_to_ragflow
+from .ragflow_http import bootstrap_ragflow_resources, ragflow_sync_preflight, sync_active_to_ragflow
 from .readiness import deployment_readiness
 from .source_inventory import enqueue_phuong_dong_procedures, inventory_phuong_dong_procedures
 from .upload_processing import process_upload_queue
@@ -132,6 +133,18 @@ def build_parser() -> argparse.ArgumentParser:
     approve.add_argument("version")
     approve.add_argument("--approved-by", required=True)
 
+    ai_review = sub.add_parser("ai-review-approve", help="AI-review quality-passed pending records and optionally activate them.")
+    ai_review.add_argument("--apply", action="store_true", help="Write AI review packets and activate eligible records. Defaults to dry run.")
+    ai_review.add_argument("--limit", type=int, help="Review at most this many eligible records.")
+    ai_review.add_argument("--reviewer", default="ai-agent-reviewer")
+
+    ai_refill_quality = sub.add_parser(
+        "ai-refill-quality",
+        help="Recompute stale pending QA reports from current normalized Markdown, citation maps, and MinerU sidecars.",
+    )
+    ai_refill_quality.add_argument("--apply", action="store_true", help="Write repaired quality reports and manifest quality flags. Defaults to dry run.")
+    ai_refill_quality.add_argument("--limit", type=int, help="Refill at most this many eligible records.")
+
     retire = sub.add_parser("retire", help="Retire an existing manifest record.")
     retire.add_argument("doc_id")
     retire.add_argument("version")
@@ -146,6 +159,7 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--dataset-id", default=os.getenv("RAGFLOW_TECHNICAL_ACTIVE_DATASET_ID"))
     sync.add_argument("--delete-all", action="store_true", help="Delete all dataset documents before upload.")
     sync.add_argument("--no-parse", action="store_true", help="Upload documents but do not request parsing.")
+    sync.add_argument("--dry-run", action="store_true", help="Write and print a RAGFlow upload preflight plan without network calls.")
 
     bootstrap = sub.add_parser("bootstrap-ragflow", help="Create or find the RAGFlow dataset and chat assistant.")
     bootstrap.add_argument("--base-url", default=os.getenv("RAGFLOW_BASE_URL"))
@@ -347,6 +361,19 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "approve":
             record = approve_record(root, args.doc_id, args.version, args.approved_by)
             result = record.to_dict()
+        elif args.command == "ai-review-approve":
+            result = ai_review_pending_records(
+                root,
+                apply=args.apply,
+                limit=args.limit,
+                reviewer=args.reviewer,
+            )
+        elif args.command == "ai-refill-quality":
+            result = refill_quality_for_ai_review(
+                root,
+                apply=args.apply,
+                limit=args.limit,
+            )
         elif args.command == "retire":
             record = retire_record(root, args.doc_id, args.version, args.reason)
             result = record.to_dict()
@@ -354,6 +381,15 @@ def main(argv: list[str] | None = None) -> int:
             rebuild_indexes(root)
             result = {"ok": True}
         elif args.command == "sync-ragflow":
+            if args.dry_run:
+                result = ragflow_sync_preflight(
+                    root,
+                    base_url=args.base_url,
+                    api_key=args.api_key,
+                    dataset_id=args.dataset_id,
+                )
+                write_json_output(result)
+                return 0 if result.get("blocking_record_count") == 0 else 1
             if not args.base_url or not args.api_key or not args.dataset_id:
                 raise ValueError(
                     "sync-ragflow requires --base-url, --api-key, and --dataset-id "

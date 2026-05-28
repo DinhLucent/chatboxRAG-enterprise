@@ -5,6 +5,7 @@ import re
 import shutil
 import xml.etree.ElementTree as ET
 import zipfile
+from html import unescape
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,33 @@ PROCESSING_RUNTIME_STEPS = {
     "ocr_required",
     "failed",
 }
+
+MINERU_JSON_SOURCE_PRIORITY = ("content_list_v2", "content_list", "middle_json", "model_json")
+MINERU_CONTAINER_KEYS = (
+    "pdf_info",
+    "para_blocks",
+    "preproc_blocks",
+    "discarded_blocks",
+    "blocks",
+    "layout_blocks",
+    "layout_dets",
+    "tables",
+    "images",
+    "figures",
+)
+MINERU_TEXT_KEYS = (
+    "text",
+    "table_body",
+    "table_html",
+    "html",
+    "content",
+    "text_content",
+    "title_content",
+    "paragraph_content",
+    "caption",
+)
+MINERU_IMAGE_KEYS = ("img_path", "image_path", "image", "src", "path")
+MINERU_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 
 
 def agent_skills_root() -> Path:
@@ -635,7 +663,7 @@ def best_source_match(chunk_text: str, source_blocks: list[dict[str, Any]]) -> d
         recall = len(matched) / max(1, len(chunk_terms))
         precision = len(matched) / max(1, len(block_terms))
         score = round((recall * 0.75) + (precision * 0.25), 4)
-        if score > best_score:
+        if score > best_score or (score == best_score and source_block_richness(block) > source_block_richness(best)):
             best = block
             best_score = score
             best_terms = matched
@@ -652,6 +680,22 @@ def best_source_match(chunk_text: str, source_blocks: list[dict[str, Any]]) -> d
         "source_json": best.get("source_json"),
         "image_ref": best.get("image_ref"),
     }
+
+
+def source_block_richness(block: dict[str, Any] | None) -> int:
+    if not block:
+        return 0
+    locator = block.get("locator") if isinstance(block.get("locator"), dict) else {}
+    score = 0
+    if locator.get("bbox") is not None:
+        score += 4
+    if block.get("image_ref") or locator.get("image_ref"):
+        score += 3
+    if locator.get("page_start") is not None:
+        score += 2
+    if block.get("source_json") in {"middle_json", "model_json"}:
+        score += 1
+    return score
 
 
 def source_evidence_blocks(source_path: Path) -> list[dict[str, Any]]:
@@ -680,34 +724,100 @@ def mineru_source_blocks(index_path_value: object) -> list[dict[str, Any]]:
         artifact_index = json.loads(index_path.read_text(encoding="utf-8"))
     except Exception:
         return []
-    content_artifact = None
     artifacts = artifact_index.get("artifacts") or []
-    if isinstance(artifacts, list):
-        for artifact_type in ("content_list_v2", "content_list"):
-            content_artifact = next(
-                (item for item in artifacts if isinstance(item, dict) and item.get("type") == artifact_type),
-                None,
-            )
-            if content_artifact:
-                break
-    if not content_artifact or not content_artifact.get("path"):
-        return []
-    content_path = Path(str(content_artifact["path"]))
-    if not content_path.exists():
-        return []
-    try:
-        payload = json.loads(content_path.read_text(encoding="utf-8", errors="replace"))
-    except Exception:
-        return []
     blocks: list[dict[str, Any]] = []
-    if isinstance(payload, list) and payload and all(isinstance(item, list) for item in payload):
-        for page_index, page_blocks in enumerate(payload):
-            for block in page_blocks:
-                append_mineru_source_block(blocks, block, page_index, content_artifact, content_path)
-    elif isinstance(payload, list):
-        for block in payload:
-            append_mineru_source_block(blocks, block, None, content_artifact, content_path)
-    return blocks
+    if not isinstance(artifacts, list):
+        return blocks
+    for artifact_type in MINERU_JSON_SOURCE_PRIORITY:
+        for content_artifact in artifacts:
+            if not isinstance(content_artifact, dict) or content_artifact.get("type") != artifact_type:
+                continue
+            content_path_value = content_artifact.get("path")
+            if not content_path_value:
+                continue
+            content_path = Path(str(content_path_value))
+            if not content_path.exists():
+                continue
+            try:
+                payload = json.loads(content_path.read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                continue
+            append_mineru_payload_blocks(blocks, payload, content_artifact, content_path)
+    return dedupe_mineru_source_blocks(blocks)
+
+
+def append_mineru_payload_blocks(
+    blocks: list[dict[str, Any]],
+    payload: Any,
+    content_artifact: dict[str, Any],
+    content_path: Path,
+) -> None:
+    artifact_type = str(content_artifact.get("type") or "")
+    if artifact_type in {"content_list_v2", "content_list"}:
+        if isinstance(payload, list) and payload and all(isinstance(item, list) for item in payload):
+            for page_index, page_blocks in enumerate(payload):
+                append_mineru_block_collection(blocks, page_blocks, page_index, content_artifact, content_path)
+            return
+        append_mineru_block_collection(blocks, payload, None, content_artifact, content_path)
+        return
+
+    if artifact_type == "middle_json" and isinstance(payload, dict) and isinstance(payload.get("pdf_info"), list):
+        for page_index, page in enumerate(payload["pdf_info"]):
+            inherited_page = mineru_page_index(page, page_index)
+            appended = False
+            if isinstance(page, dict):
+                for key in MINERU_CONTAINER_KEYS:
+                    if key == "pdf_info":
+                        continue
+                    if key in page:
+                        appended = append_mineru_block_collection(blocks, page.get(key), inherited_page, content_artifact, content_path) or appended
+            if not appended:
+                append_mineru_source_block(blocks, page, inherited_page, content_artifact, content_path)
+        return
+
+    append_mineru_block_collection(blocks, payload, None, content_artifact, content_path)
+
+
+def append_mineru_block_collection(
+    blocks: list[dict[str, Any]],
+    value: Any,
+    page_index: int | None,
+    content_artifact: dict[str, Any],
+    content_path: Path,
+) -> bool:
+    before = len(blocks)
+    if isinstance(value, list):
+        page_like_collection = value and all(isinstance(item, list) for item in value)
+        for index, item in enumerate(value):
+            child_page = index if page_like_collection and page_index is None else page_index
+            append_mineru_block_collection(blocks, item, child_page, content_artifact, content_path)
+    elif isinstance(value, dict):
+        inherited_page = mineru_page_index(value, page_index)
+        child_appended = False
+        for key in MINERU_CONTAINER_KEYS:
+            if key in value:
+                child_appended = append_mineru_block_collection(blocks, value.get(key), inherited_page, content_artifact, content_path) or child_appended
+        if not child_appended:
+            append_mineru_source_block(blocks, value, inherited_page, content_artifact, content_path)
+    return len(blocks) > before
+
+
+def dedupe_mineru_source_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for block in blocks:
+        locator = block.get("locator") if isinstance(block.get("locator"), dict) else {}
+        key = (
+            str(block.get("source_json") or locator.get("source_json") or ""),
+            str(locator.get("page_start") or ""),
+            json.dumps(locator.get("bbox"), ensure_ascii=False, sort_keys=True) if locator.get("bbox") is not None else "",
+            str(block.get("text") or "")[:500],
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(block)
+    return deduped
 
 
 def append_mineru_source_block(
@@ -723,35 +833,34 @@ def append_mineru_source_block(
     if not text:
         return
     block_type = str(block.get("type") or "unknown")
-    page_idx = block.get("page_idx")
-    if not isinstance(page_idx, int):
-        page_idx = page_index
-    bbox = block.get("bbox")
+    page_idx = mineru_page_index(block, page_index)
+    bbox = mineru_block_bbox(block)
+    source_json = content_artifact.get("type")
     locator: dict[str, Any] = {
         "type": "mineru",
         "content_type": block_type,
-        "mineru_block_id": str(block.get("id") or f"mineru-{len(blocks) + 1:04d}"),
-        "source_json": content_artifact.get("type"),
+        "mineru_block_id": str(block.get("id") or block.get("block_id") or f"{source_json or 'mineru'}-{len(blocks) + 1:04d}"),
+        "source_json": source_json,
     }
-    display_locator = "MinerU content block"
+    display_locator = f"MinerU {source_json or 'artifact'} block"
     if isinstance(page_idx, int):
         locator["page_start"] = page_idx + 1
         locator["page_end"] = page_idx + 1
-        display_locator = f"MinerU page {page_idx + 1}"
+        display_locator = f"MinerU {source_json or 'artifact'} page {page_idx + 1}"
     if bbox:
         locator["bbox"] = bbox
     image_path = mineru_block_image_path(block)
     image_ref = None
     if image_path:
-        image_ref = str((content_path.parent.parent / image_path).resolve()) if not Path(image_path).is_absolute() else image_path
+        image_ref = resolve_mineru_image_ref(content_path, image_path)
         locator["image_ref"] = image_ref
     blocks.append(
         {
             "text": text,
             "locator": locator,
             "display_locator": display_locator,
-            "basis": "mineru_content_list_overlap",
-            "source_json": content_artifact.get("type"),
+            "basis": f"mineru_{source_json or 'artifact'}_overlap",
+            "source_json": source_json,
             "image_ref": image_ref,
         }
     )
@@ -762,10 +871,12 @@ def mineru_block_text(block: Any) -> str:
 
     def walk(value: Any) -> None:
         if isinstance(value, dict):
-            for key in ("text", "table_body", "content"):
+            for key in MINERU_TEXT_KEYS:
                 item = value.get(key)
                 if isinstance(item, str):
-                    parts.append(item)
+                    cleaned = clean_mineru_text_fragment(item)
+                    if cleaned:
+                        parts.append(cleaned)
             for item in value.values():
                 if isinstance(item, (dict, list)):
                     walk(item)
@@ -777,19 +888,124 @@ def mineru_block_text(block: Any) -> str:
     return re.sub(r"\s+", " ", " ".join(parts)).strip()
 
 
-def mineru_block_image_path(block: dict[str, Any]) -> str | None:
-    for key in ("img_path", "image_path"):
-        value = block.get(key)
-        if isinstance(value, str) and value:
-            return value
-    content = block.get("content")
-    if isinstance(content, dict):
-        image_source = content.get("image_source")
-        if isinstance(image_source, dict):
-            value = image_source.get("path")
-            if isinstance(value, str) and value:
+def clean_mineru_text_fragment(value: str) -> str:
+    text = unescape(value)
+    if "<" in text and ">" in text:
+        text = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", text)
+        text = re.sub(r"(?i)</\s*(p|div|li|tr|td|th|h[1-6])\s*>", "\n", text)
+        text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def mineru_page_index(block: Any, inherited_page_index: int | None) -> int | None:
+    if not isinstance(block, dict):
+        return inherited_page_index
+    value = block.get("page_idx")
+    if isinstance(value, int):
+        return value
+    value = block.get("page_id")
+    if isinstance(value, int):
+        return value
+    return inherited_page_index
+
+
+def mineru_block_bbox(block: Any) -> Any:
+    if isinstance(block, dict):
+        for key in ("bbox", "layout_bbox", "poly"):
+            value = block.get(key)
+            if value:
                 return value
+        for item in block.values():
+            nested = mineru_block_bbox(item)
+            if nested:
+                return nested
+    elif isinstance(block, list):
+        for item in block:
+            nested = mineru_block_bbox(item)
+            if nested:
+                return nested
     return None
+
+
+def mineru_block_image_path(block: dict[str, Any]) -> str | None:
+    found: list[str] = []
+
+    def walk(value: Any) -> None:
+        if found:
+            return
+        if isinstance(value, dict):
+            for key in MINERU_IMAGE_KEYS:
+                item = value.get(key)
+                if isinstance(item, str) and looks_like_mineru_image_path(item):
+                    found.append(item)
+                    return
+            for item in value.values():
+                if isinstance(item, (dict, list, str)):
+                    walk(item)
+                    if found:
+                        return
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+                if found:
+                    return
+        elif isinstance(value, str) and "<img" in value.lower():
+            match = re.search(r"""(?is)<img\b[^>]*\bsrc=["']?([^"'\s>]+)""", value)
+            if match and looks_like_mineru_image_path(match.group(1)):
+                found.append(unescape(match.group(1)))
+
+    walk(block)
+    if found:
+        return found[0]
+    return None
+
+
+def looks_like_mineru_image_path(value: str) -> bool:
+    normalized = value.replace("\\", "/").strip()
+    if not normalized:
+        return False
+    suffix = Path(normalized.split("?", 1)[0]).suffix.lower()
+    return suffix in MINERU_IMAGE_SUFFIXES or "/images/" in normalized.lower()
+
+
+def resolve_mineru_image_ref(content_path: Path, image_path: str) -> str:
+    path = Path(image_path)
+    if path.is_absolute():
+        return str(path)
+    candidates = [
+        content_path.parent / path,
+        content_path.parent.parent / path,
+        content_path.parent / "images" / path.name,
+        content_path.parent.parent / "images" / path.name,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate.resolve())
+    return str((content_path.parent.parent / path).resolve())
+
+
+def mineru_source_block_summary(blocks: list[dict[str, Any]]) -> dict[str, Any]:
+    source_json_counts: dict[str, int] = {}
+    bbox_count = 0
+    image_ref_count = 0
+    content_types: dict[str, int] = {}
+    for block in blocks:
+        locator = block.get("locator") if isinstance(block.get("locator"), dict) else {}
+        source_json = str(block.get("source_json") or locator.get("source_json") or "unknown")
+        source_json_counts[source_json] = source_json_counts.get(source_json, 0) + 1
+        content_type = str(locator.get("content_type") or "unknown")
+        content_types[content_type] = content_types.get(content_type, 0) + 1
+        if locator.get("bbox") is not None:
+            bbox_count += 1
+        if block.get("image_ref") or locator.get("image_ref"):
+            image_ref_count += 1
+    return {
+        "block_count": len(blocks),
+        "source_json_counts": source_json_counts,
+        "content_type_counts": content_types,
+        "bbox_count": bbox_count,
+        "image_ref_count": image_ref_count,
+    }
 
 
 def text_file_source_blocks(source_path: Path) -> list[dict[str, Any]]:

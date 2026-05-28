@@ -13,10 +13,13 @@ from poc_workflow.upload_processing import (
     UploadDocumentGroup,
     business_document_identity,
     build_rag_summary_section,
+    fill_unresolved_citation_locators,
+    internal_doc_id,
     list_upload_document_groups,
     looks_like_corrupted_metadata_text,
     normalized_title_quality_issues,
     process_upload_queue,
+    preclean_markdown,
     source_text_unavailable_but_mineru_ocr_evidence_is_rich,
     strip_generated_rag_summary_blocks,
     upload_run_paths,
@@ -113,6 +116,14 @@ class FakeUploadMinerUConverter:
         }
         (root / "mineru_artifact_index.json").write_text(json.dumps(index, ensure_ascii=False), encoding="utf-8")
         return output_md
+
+
+class BlockedUploadMinerUConverter:
+    def profile_dict(self) -> dict[str, object]:
+        return {"command": "fake-mineru", "method": "auto", "backend": "pipeline"}
+
+    def convert_with_mineru(self, *args: object, **kwargs: object) -> Path:
+        raise RuntimeError("MinerU blocked")
 
 
 def write_upload_pair(root: Path, *, inbox_subdir: str = "procedure", code: str = "PD-TECH-A-02") -> tuple[Path, Path]:
@@ -265,6 +276,34 @@ def test_upload_queue_preserves_non_technical_department_paths(tmp_path: Path) -
     assert (tmp_path / "inbox" / "procedure" / "done" / "human_resources" / "PD-HR-A-02. Rev 04. Quy trinh bao duong.xlsx").exists()
 
 
+def test_upload_queue_falls_back_to_business_code_department_when_path_has_no_department(tmp_path: Path) -> None:
+    write_upload_pair(tmp_path, inbox_subdir="procedure", code="PD-ACC-A-09")
+
+    groups = list_upload_document_groups(tmp_path)
+
+    assert len(groups) == 1
+    group = groups[0]
+    assert group.department == "accounting"
+    assert group.department_name == "Phong Ke toan"
+    assert group.doc_id == "PD-ACC-A-09"
+    assert group.artifact_stem == "PD-ACC-A-09_rev04"
+
+
+def test_upload_queue_preserves_department_for_mixed_category_paths(tmp_path: Path) -> None:
+    inbox = tmp_path / "inbox" / "procedure" / "internal_control"
+    inbox.mkdir(parents=True)
+    (inbox / "BM-001.03 Rev 04. Mẫu tài liệu khác.docx").write_bytes(b"fake docx source")
+
+    groups = list_upload_document_groups(tmp_path, category="form_checklist")
+
+    assert len(groups) == 1
+    group = groups[0]
+    assert group.department == "internal_control"
+    assert group.category == "form_checklist"
+    assert group.doc_id == "BM-001.03"
+    assert group.artifact_stem == "BM-001.03_rev04"
+
+
 def test_upload_queue_groups_doc_docx_xls_candidates(tmp_path: Path) -> None:
     inbox = tmp_path / "inbox" / "procedure" / "accounting"
     inbox.mkdir(parents=True)
@@ -303,12 +342,63 @@ def test_upload_queue_blocks_missing_business_code_before_mineru(tmp_path: Path)
     assert (tmp_path / "inbox" / "procedure" / "failed" / "accounting" / source.name).exists()
 
 
+def test_upload_queue_failed_mineru_conversion_writes_repair_handoff(tmp_path: Path) -> None:
+    write_upload_pair(tmp_path, inbox_subdir="procedure/accounting", code="PD-ACC-A-09")
+
+    result = process_upload_queue(tmp_path, converter=BlockedUploadMinerUConverter(), limit_groups=1)
+
+    assert result[0]["status"] == "failed"
+    artifact_stem = result[0]["artifact_stem"]
+    report_root = tmp_path / ".Workplace" / "artifacts" / "accounting" / "procedure" / artifact_stem / "reports"
+    repair_handoff = report_root / "repair_handoff.json"
+    assert repair_handoff.exists()
+    handoff = json.loads(repair_handoff.read_text(encoding="utf-8"))
+    assert handoff["task"] == "blocked_after_mineru_conversion"
+    assert handoff["hard_rules"]
+
+
+def test_unresolved_heading_citations_get_low_confidence_source_fallback() -> None:
+    citations = [
+        {
+            "chunk_id": "doc_c1",
+            "source_locator": None,
+            "display_locator": "Source locator unresolved",
+            "locator_status": "unresolved",
+            "locator_confidence": 0.0,
+            "requires_human_review": True,
+        },
+        {
+            "chunk_id": "doc_c2",
+            "source_locator": {"type": "mineru", "page_start": 2, "page_end": 2, "mineru_block_id": "b2"},
+            "display_locator": "MinerU page 2",
+            "locator_status": "resolved",
+            "locator_confidence": 0.74,
+            "source_json": "content_list_v2",
+        },
+    ]
+
+    fill_unresolved_citation_locators(citations)
+
+    assert citations[0]["source_locator"] == citations[1]["source_locator"]
+    assert citations[0]["locator_status"] == "resolved_fallback"
+    assert citations[0]["locator_confidence"] == 0.2
+    assert citations[0]["requires_human_review"] is True
+    assert citations[0]["source_json"] == "content_list_v2"
+
+
 def test_business_document_identity_normalizes_underscore_codes_and_forms() -> None:
     assert business_document_identity("PD_ACC_A_02. Rev 01. Quy trình hủy hàng.pdf")["code"] == "PD-ACC-A-02"
     assert business_document_identity("PD-ACC-A-018-Rev04 Quy trình kiểm kê kho.xlsx")["code"] == "PD-ACC-A-018"
     assert business_document_identity("PD-HR-051. Rev 06. Quy trình xin nghỉ việc.pdf")["code"] == "PD-HR-051"
     assert business_document_identity("BM-029.01_Rev 03. Báo cáo hạn dùng.docx")["code"] == "BM-029.01"
     assert business_document_identity("PL-092.01 Rev 04. Quy trình đăng ký đối tác.pdf")["code"] == "PL-092.01"
+
+
+def test_internal_doc_id_keeps_technical_forms_from_colliding_with_procedures() -> None:
+    assert internal_doc_id("PD-TECH-A-02", "technical", "procedure") == "KT-QT-002"
+    assert internal_doc_id("BM-046.02", "technical", "faq_troubleshooting") == "BM-046.02"
+    assert internal_doc_id("BM-046.02", "technical", "procedure") == "BM-046.02"
+    assert internal_doc_id("PL-092.01", "technical", "procedure") == "PL-092.01"
 
 
 def test_upload_run_paths_shorten_long_missing_code_business_keys(tmp_path: Path) -> None:
@@ -415,9 +505,19 @@ def test_upload_approval_gate_requires_quality_and_primary_source_contract(tmp_p
     try:
         validate_record_for_approval(record)
     except ManifestError as exc:
-        assert "human reviewer" in str(exc)
+        assert "human reviewer or explicit AI review override" in str(exc)
     else:
         raise AssertionError("expected AI reviewer gate to block approval")
+
+    review["ai_reviewer_override"] = True
+    review["review_policy"] = "user_requested_ai_review_skip_human_gate"
+    review["quality_evidence"] = {
+        "quality_status": "passed",
+        "citation_map_exists": True,
+        "mineru_sidecars_parsed_for_citation": True,
+    }
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+    validate_record_for_approval(record)
 
 
 def test_upload_human_review_api_controls_approval(tmp_path: Path) -> None:
@@ -538,6 +638,15 @@ def test_upload_quality_flags_corrupted_title_text() -> None:
 
     assert {issue["field"] for issue in issues} == {"group.title", "frontmatter.title", "h1"}
     assert all(issue["severity"] == "high" for issue in issues)
+
+
+def test_preclean_markdown_repairs_common_cp1252_utf8_mojibake() -> None:
+    text = "Quy trÃ¬nh báº£o dÆ°á»¡ng<br>PhÃ²ng Ká»¹ thuáº­t"
+
+    cleaned = preclean_markdown(text)
+
+    assert "Quy trình bảo dưỡng" in cleaned
+    assert "Phòng Kỹ thuật" in cleaned
 
 
 def test_build_rag_summary_section_extracts_steps_responsibilities_and_records() -> None:

@@ -123,10 +123,20 @@ def validate_record_for_approval(record: ManifestRecord) -> None:
         except Exception as exc:
             raise ManifestError(f"Human review packet is not valid JSON: {review_file}") from exc
         if review.get("review_status") != "approved":
-            raise ManifestError("Primary-source-only Upload records require human review_status=approved before approval")
+            raise ManifestError("Primary-source-only Upload records require review_status=approved before approval")
         reviewer = str(review.get("reviewer") or "").strip().lower()
-        if not reviewer or reviewer in {"ai-agent-quality-gate", "system", "agent", "ai"}:
-            raise ManifestError("Primary-source-only Upload records require a human reviewer before approval")
+        ai_review_allowed = (
+            review.get("ai_reviewer_override") is True
+            and review.get("review_policy") == "user_requested_ai_review_skip_human_gate"
+            and isinstance(review.get("quality_evidence"), dict)
+            and review["quality_evidence"].get("quality_status") == "passed"
+            and review["quality_evidence"].get("citation_map_exists") is True
+            and review["quality_evidence"].get("mineru_sidecars_parsed_for_citation") is True
+        )
+        if not reviewer:
+            raise ManifestError("Primary-source-only Upload records require a reviewer before approval")
+        if reviewer in {"ai-agent-quality-gate", "system", "agent", "ai"} and not ai_review_allowed:
+            raise ManifestError("Primary-source-only Upload records require a human reviewer or explicit AI review override before approval")
         checklist = review.get("checklist")
         if not isinstance(checklist, dict) or not checklist:
             raise ManifestError("Primary-source-only Upload records require a populated human review checklist")

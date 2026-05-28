@@ -1500,6 +1500,7 @@ def _per_item_done_summary() -> str:
         [
             "- A file or business-document group is not done until exactly one primary source decision is recorded for duplicate PDF/XLS/XLSX/DOC/DOCX candidates.",
             "- Not done until the full MinerU package is preserved and indexed: Markdown, content_list/content_list_v2, middle.json, model.json, images, origin PDF, extra JSON/log/other sidecars, and mineru_artifact_index when available.",
+            "- Not done until the agent proves it parsed useful MinerU sidecars, not only Markdown: content_list for semantic blocks, middle.json/model.json for page/layout/bbox/model blocks, and images for visual evidence.",
             "- Not done until QA compared original source, converted Markdown, and MinerU sidecars for missing content, mojibake/noise, synthetic headings, table/form/flowchart loss, and citation locator quality.",
             "- Not done until repair loops either pass QA or stop with a precise blocked/human-review reason after the configured limit.",
             "- Not done until the six canonical RAG-ready artifacts exist and point back to source evidence.",
@@ -1514,7 +1515,7 @@ def _definition_of_done_summary() -> str:
         [
             "- Not done until the selected document/group reaches `pending_review` or a blocked state with exact evidence.",
             "- Not done until all six canonical artifacts exist: normalized_markdown, metadata_json, section_index_json, chunk_plan_json, citation_map_json, quality_report_json.",
-            "- Not done until citation_map can drive UI source display with source-type locators and MinerU refs where available.",
+            "- Not done until citation_map can drive UI source display with source-type locators and MinerU refs where available, including source_json/block/page/bbox/image_ref when MinerU sidecars provide them.",
             "- Not done until synthetic headings, prompt/debug leaks, weak locators, empty/noise Markdown, and duplicate multi-format retrieval are blocked.",
             "- Not done until the Upload Dashboard state or run report contains the latest checkpoint, handoff, quality gates, and next skill.",
             "- Not done until the long-run queue has no eligible raw items left, unless a documented blocker or human stop condition applies.",

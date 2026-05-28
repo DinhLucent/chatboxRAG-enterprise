@@ -23,6 +23,7 @@ data/
 source/
 sources/
 backups/
+backup-data/
 converted_raw/
 indexes/
 rag_ready/

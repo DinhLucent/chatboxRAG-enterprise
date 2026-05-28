@@ -23,27 +23,27 @@
       "step": "convert",
       "skill": "mineru-source-converter",
       "input_artifacts": ["batch_manifest", "raw_sources"],
-      "output_artifacts": ["conversion_manifest", "converted_outputs", "mineru_artifact_index", "all_mineru_sidecars", "content_list_v2", "middle_json", "model_json", "images", "conversion_log"],
+      "output_artifacts": ["conversion_manifest", "converted_outputs", "mineru_artifact_index", "all_mineru_sidecars", "content_list_v2", "content_list", "middle_json", "model_json", "images", "conversion_log"],
       "next": "audit"
     },
     {
       "step": "audit",
       "skill": "source-output-quality-auditor",
-      "input_artifacts": ["raw_sources", "conversion_manifest", "converted_outputs", "mineru_artifact_index", "all_mineru_sidecars", "content_list_v2", "middle_json", "images"],
-      "output_artifacts": ["audit_report", "issue_list", "repair_request"],
+      "input_artifacts": ["raw_sources", "conversion_manifest", "converted_outputs", "mineru_artifact_index", "all_mineru_sidecars", "content_list_v2", "content_list", "middle_json", "model_json", "images"],
+      "output_artifacts": ["audit_report", "issue_list", "repair_request", "rich_sidecar_evidence_map"],
       "next": "repair_or_index"
     },
     {
       "step": "repair",
       "skill": "rag-markdown-repairer",
-      "input_artifacts": ["repair_request", "converted_outputs", "mineru_artifact_index", "audit_report"],
-      "output_artifacts": ["repair_manifest", "repaired_outputs", "repair_log"],
+      "input_artifacts": ["repair_request", "converted_outputs", "mineru_artifact_index", "all_mineru_sidecars", "rich_sidecar_evidence_map", "audit_report"],
+      "output_artifacts": ["repair_manifest", "repaired_outputs", "repair_log", "updated_citation_evidence"],
       "next": "audit"
     },
     {
       "step": "index",
       "skill": "ragflow-schema-indexer",
-      "input_artifacts": ["repaired_outputs", "mineru_artifact_index", "audit_report", "run_plan"],
+      "input_artifacts": ["repaired_outputs", "mineru_artifact_index", "all_mineru_sidecars", "rich_sidecar_evidence_map", "audit_report", "run_plan"],
       "output_artifacts": ["rag_ready_folder", "schema_manifest", "citation_manifest", "index_manifest"],
       "next": "evolve"
     },
@@ -113,6 +113,7 @@
       "procedure_steps_present",
       "source_locator_precision",
       "mineru_rich_metadata_available",
+      "mineru_sidecars_parsed_for_citation",
       "supporting_source_not_ingested"
     ],
     "minimum_metrics": {
@@ -131,7 +132,8 @@
     "Source files are processed sequentially and every output links back to source_id.",
     "MinerU ZIP/folder outputs are preserved and indexed completely; content_list_v2/content_list, middle.json, model.json, images, origin PDF, selected Markdown, and extra JSON/log/other sidecars remain linked by checksum.",
     "QA compares converted output and MinerU sidecars against original PDF/Excel, not only against derived text.",
-    "Markdown repairs preserve citations, tables, headings, page/sheet references, MinerU block ids, bbox, and image refs.",
+    "QA and citation mapping parse every useful MinerU sidecar: content_list_v2/content_list for semantic blocks, middle.json for page/layout/bbox, model.json for model-detected blocks, and images/ for visual evidence.",
+    "Markdown repairs preserve citations, tables, headings, page/sheet references, MinerU block ids, source_json, bbox, and image refs.",
     "RAG-ready folder contains schema_manifest.json, citation_manifest.json, index_manifest.json, and normalized Markdown chunks.",
     "Evolution report is written after each loop with concrete rule changes or no-op rationale."
   ]

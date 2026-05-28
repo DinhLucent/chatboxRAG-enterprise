@@ -28,6 +28,16 @@ Dung skill nay sau conversion va sau moi repair loop de xac nhan output gan voi 
 7. Tao `audit_report.json`, `repair_request.json` va `learning_notes.md` neu co loi can sua.
 8. Neu dat nguong, handoff sang `ragflow-schema-indexer`; neu chua dat, handoff sang `rag-markdown-repairer`.
 
+## MinerU Rich Sidecar Contract
+
+- Khong duoc audit chi dua tren file `.md`. Markdown la view de doc, con sidecar MinerU la bang chung de lap locator.
+- Thu tu khai thac: `content_list_v2`, `content_list`, `middle.json`, `model.json`, `images/`, `_origin.pdf`, cac JSON/log phu.
+- `content_list_v2/content_list` dung de lay semantic block, table/body text, block id va page.
+- `middle.json` dung de lay page/layout hierarchy, bbox, reading order va lien ket image/figure khi co.
+- `model.json` dung de bo sung model-detected table/text/image blocks neu content_list thieu.
+- `images/` dung lam visual evidence cho flowchart, form screenshot, figure/table snapshot; khong xoa image neu chua doc chac.
+- Audit pass phai ghi `rich_sidecar_evidence_map` hoac ly do vi sao sidecar khong co evidence dung duoc.
+
 ## Inputs
 
 - `raw_sources`: path PDF/XLSX goc.
@@ -64,6 +74,8 @@ Dung skill nay sau conversion va sau moi repair loop de xac nhan output gan voi 
     "source_compared": true,
     "mineru_artifact_index_checked": true,
     "content_list_or_middle_json_checked": true,
+    "middle_or_model_json_checked": true,
+    "rich_sidecar_evidence_map_created": true,
     "required_coverage_passed": false,
     "tables_passed": false,
     "citations_passed": true
