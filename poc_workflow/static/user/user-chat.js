@@ -854,10 +854,13 @@ function renderWelcomeCards() {
   const cards = state.bootstrap?.welcome_cards || [];
   qs("#welcomeCards").innerHTML = cards
     .map(
-      (card) => `
+      (card) => {
+        const isProcedure = card.template_id === "procedure_steps";
+        return `
         <button
-          class="welcome-card"
+          class="welcome-card${isProcedure ? "" : " disabled"}"
           type="button"
+          ${isProcedure ? "" : "disabled"}
           data-template-id="${escapeHtml(card.template_id)}"
           data-question="${escapeHtml(card.question)}"
           data-label="${escapeHtml(card.label)}"
@@ -866,13 +869,16 @@ function renderWelcomeCards() {
           <span>${displayText(card.label)}</span>
           <small>${displayText(card.question)}</small>
         </button>
-      `,
+        `;
+      }
     )
     .join("");
   document.querySelectorAll(".welcome-card").forEach((button) => {
-    button.addEventListener("click", () => selectPrompt(button));
+    if (!button.disabled) {
+      button.addEventListener("click", () => selectPrompt(button));
+    }
   });
-  wireSpotlight(".welcome-card");
+  wireSpotlight(".welcome-card:not(:disabled)");
 }
 
 function renderTemplates() {
@@ -881,22 +887,28 @@ function renderTemplates() {
   target.innerHTML = groups
     .flatMap((group) =>
       (group.templates || []).map(
-        (template) => `
+        (template) => {
+          const isProcedure = template.id === "procedure_steps";
+          return `
           <button
-            class="template-chip"
+            class="template-chip${isProcedure ? "" : " disabled"}"
             type="button"
+            ${isProcedure ? "" : "disabled"}
             data-template-id="${escapeHtml(template.id)}"
             data-question="${escapeHtml(template.question)}"
             data-label="${escapeHtml(group.label)}"
           >
             ${displayText(group.label)}
           </button>
-        `,
+          `;
+        }
       ),
     )
     .join("");
   document.querySelectorAll(".template-chip").forEach((button) => {
-    button.addEventListener("click", () => selectPrompt(button));
+    if (!button.disabled) {
+      button.addEventListener("click", () => selectPrompt(button));
+    }
   });
 }
 

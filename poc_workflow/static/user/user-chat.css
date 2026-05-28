@@ -329,6 +329,18 @@ a:focus-visible {
   box-shadow: 0 4px 10px var(--red-glow);
 }
 
+.template-chip.disabled,
+.template-chip:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+  background: var(--surface-muted);
+  border-color: var(--line-strong);
+  color: var(--muted);
+  box-shadow: none;
+  transform: none !important;
+}
+
 /* Messages Area */
 .messages {
   min-width: 0;
@@ -439,6 +451,22 @@ a:focus-visible {
 
 .welcome-card:hover::before {
   opacity: 1;
+}
+
+.welcome-card.disabled,
+.welcome-card:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: none;
+  background: var(--surface-muted);
+  border-color: var(--line-strong);
+  box-shadow: none;
+  transform: none !important;
+}
+
+.welcome-card.disabled::before,
+.welcome-card:disabled::before {
+  display: none;
 }
 
 .welcome-card span,
