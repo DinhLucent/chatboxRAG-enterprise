@@ -620,6 +620,13 @@ function toast(message) {
   window.setTimeout(() => target.classList.remove("show"), 2800);
 }
 
+function formatDateTime(value) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
+}
+
 function getCalloutHeader(type) {
   const titles = {
     NOTE: "Ghi chú",
