@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 import os
 import re
 import shutil
+import threading
+import time
 import unicodedata
 import xml.etree.ElementTree as ET
 import zipfile
@@ -87,6 +90,10 @@ from .utils import read_json
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = PACKAGE_DIR / "static"
+USER_CHAT_QUEUE_LOCK = threading.Lock()
+USER_CHAT_RATE_LOCK = threading.Lock()
+USER_CHAT_ACTIVE_KEYS: set[str] = set()
+USER_CHAT_LAST_FINISHED_AT: dict[str, float] = {}
 
 
 class ChatRequest(BaseModel):
@@ -129,6 +136,132 @@ class UserFeedbackRequest(BaseModel):
 class UserSessionHeartbeatRequest(BaseModel):
     session_id: str | None = None
     device_id: str | None = None
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    value = str(os.getenv(name) or "").strip().lower()
+    if not value:
+        return default
+    return value in {"1", "true", "yes", "on", "enabled"}
+
+
+def env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
+    raw = str(os.getenv(name, default)).strip()
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
+
+def user_chat_queue_enabled() -> bool:
+    return env_flag("KB_USER_CHAT_QUEUE_ENABLED", False)
+
+
+def user_chat_cooldown_seconds() -> float:
+    return env_float("KB_USER_CHAT_COOLDOWN_SECONDS", 15.0, minimum=0.0, maximum=3600.0)
+
+
+def user_chat_queue_timeout_seconds() -> float:
+    return env_float("KB_USER_CHAT_QUEUE_MAX_WAIT_SECONDS", 120.0, minimum=0.0, maximum=900.0)
+
+
+def user_chat_client_key(payload: UserChatRequest, request: Request | None = None) -> str:
+    raw = str(payload.session_id or payload.device_id or "").strip()
+    if not raw and request and request.client:
+        raw = request.client.host or ""
+    cleaned = re.sub(r"[^A-Za-z0-9_.:-]+", "-", raw)[:96].strip("-")
+    return cleaned or "anonymous-user-chat"
+
+
+def acquire_user_chat_queue_ticket(payload: UserChatRequest, request: Request | None = None) -> dict[str, Any] | None:
+    if not user_chat_queue_enabled():
+        return None
+    user_key = user_chat_client_key(payload, request)
+    cooldown_seconds = user_chat_cooldown_seconds()
+    now = time.monotonic()
+    with USER_CHAT_RATE_LOCK:
+        if user_key in USER_CHAT_ACTIVE_KEYS:
+            retry_after = max(1, math.ceil(cooldown_seconds))
+            raise HTTPException(
+                status_code=429,
+                detail=f"Yeu cau truoc cua ban dang duoc xu ly. Vui long cho hoan tat roi thu lai sau {retry_after} giay.",
+                headers={"Retry-After": str(retry_after)},
+            )
+        remaining = cooldown_seconds - (now - USER_CHAT_LAST_FINISHED_AT.get(user_key, 0.0))
+        if remaining > 0:
+            retry_after = max(1, math.ceil(remaining))
+            raise HTTPException(
+                status_code=429,
+                detail=f"Vui long cho {retry_after} giay truoc khi gui cau hoi tiep theo.",
+                headers={"Retry-After": str(retry_after)},
+            )
+        USER_CHAT_ACTIVE_KEYS.add(user_key)
+
+    queued_at = time.monotonic()
+    timeout_seconds = user_chat_queue_timeout_seconds()
+    acquired = False
+    try:
+        acquired = USER_CHAT_QUEUE_LOCK.acquire(timeout=timeout_seconds)
+        if not acquired:
+            raise HTTPException(
+                status_code=503,
+                detail="Hang doi chat dang qua tai. Vui long thu lai sau.",
+                headers={"Retry-After": str(max(1, math.ceil(cooldown_seconds)))},
+            )
+        return {
+            "enabled": True,
+            "mode": "sequential",
+            "user_key": user_key,
+            "queued_at": queued_at,
+            "acquired_at": time.monotonic(),
+            "cooldown_seconds": cooldown_seconds,
+            "queue_timeout_seconds": timeout_seconds,
+            "acquired": acquired,
+        }
+    except Exception:
+        with USER_CHAT_RATE_LOCK:
+            USER_CHAT_ACTIVE_KEYS.discard(user_key)
+        raise
+
+
+def release_user_chat_queue_ticket(ticket: dict[str, Any] | None) -> None:
+    if not ticket:
+        return
+    user_key = str(ticket.get("user_key") or "")
+    try:
+        if ticket.get("acquired"):
+            USER_CHAT_QUEUE_LOCK.release()
+    finally:
+        with USER_CHAT_RATE_LOCK:
+            if user_key:
+                USER_CHAT_ACTIVE_KEYS.discard(user_key)
+                USER_CHAT_LAST_FINISHED_AT[user_key] = time.monotonic()
+
+
+def public_user_chat_queue(ticket: dict[str, Any] | None) -> dict[str, Any]:
+    if not ticket:
+        return {"enabled": False}
+    waited_ms = int(max(0.0, float(ticket.get("acquired_at") or 0.0) - float(ticket.get("queued_at") or 0.0)) * 1000)
+    return {
+        "enabled": True,
+        "mode": "sequential",
+        "cooldown_seconds": int(math.ceil(float(ticket.get("cooldown_seconds") or 0.0))),
+        "queue_timeout_seconds": int(math.ceil(float(ticket.get("queue_timeout_seconds") or 0.0))),
+        "waited_ms": waited_ms,
+    }
+
+
+def public_user_chat_queue_config() -> dict[str, Any]:
+    with USER_CHAT_RATE_LOCK:
+        active_count = len(USER_CHAT_ACTIVE_KEYS)
+    return {
+        "enabled": user_chat_queue_enabled(),
+        "mode": "sequential",
+        "cooldown_seconds": int(math.ceil(user_chat_cooldown_seconds())),
+        "queue_timeout_seconds": int(math.ceil(user_chat_queue_timeout_seconds())),
+        "active_count": active_count,
+    }
 
 
 class ApproveRequest(BaseModel):
@@ -1176,6 +1309,7 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "critical": quality_stats["critical_incident_count"],
             },
             "service_status": service_status,
+            "user_chat_queue": public_user_chat_queue_config(),
             "evaluation": latest_report(workspace),
             "readiness": deployment_readiness(workspace, check_network=False),
         }
@@ -1194,6 +1328,7 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "streaming": qa_agent_streaming_enabled(),
                 "trace_visibility": "detailed_safe_rationale",
             },
+            "queue": public_user_chat_queue_config(),
             "ui": {
                 "default_drawer_tab": "sources",
                 "drawer_can_hide": True,
@@ -1204,7 +1339,7 @@ def create_app(root: Path | None = None) -> FastAPI:
         }
 
     @app.post("/api/user/chat")
-    def user_chat_api(payload: UserChatRequest) -> dict[str, Any]:
+    def user_chat_api(payload: UserChatRequest, request: Request) -> dict[str, Any]:
         if maintenance_enabled():
             message = os.getenv("KB_MAINTENANCE_MESSAGE", "He thong dang duoc bao tri. Vui long quay lai sau.")
             raise HTTPException(status_code=503, detail=message)
@@ -1214,19 +1349,25 @@ def create_app(root: Path | None = None) -> FastAPI:
         if not template_exists(templates, payload.template_id):
             raise HTTPException(status_code=400, detail=f"Unknown template_id: {payload.template_id}")
         answer_style = normalize_answer_style(payload.answer_style)
-        return user_chat_response(
-            workspace,
-            payload.query,
-            template_id=payload.template_id,
-            answer_style=answer_style,
-            session_id=payload.session_id,
-            device_id=payload.device_id,
-            use_llm=payload.use_llm,
-            variables=payload.variables,
-        )
+        ticket = acquire_user_chat_queue_ticket(payload, request)
+        try:
+            result = user_chat_response(
+                workspace,
+                payload.query,
+                template_id=payload.template_id,
+                answer_style=answer_style,
+                session_id=payload.session_id,
+                device_id=payload.device_id,
+                use_llm=payload.use_llm,
+                variables=payload.variables,
+            )
+            result["queue"] = public_user_chat_queue(ticket)
+            return result
+        finally:
+            release_user_chat_queue_ticket(ticket)
 
     @app.post("/api/user/chat/stream")
-    def user_chat_stream_api(payload: UserChatRequest) -> StreamingResponse:
+    def user_chat_stream_api(payload: UserChatRequest, request: Request) -> StreamingResponse:
         if maintenance_enabled():
             message = os.getenv("KB_MAINTENANCE_MESSAGE", "He thong dang duoc bao tri. Vui long quay lai sau.")
             raise HTTPException(status_code=503, detail=message)
@@ -1236,6 +1377,7 @@ def create_app(root: Path | None = None) -> FastAPI:
         if not template_exists(templates, payload.template_id):
             raise HTTPException(status_code=400, detail=f"Unknown template_id: {payload.template_id}")
         answer_style = normalize_answer_style(payload.answer_style)
+        ticket = acquire_user_chat_queue_ticket(payload, request)
 
         def event_stream():
             from queue import Queue
@@ -1259,10 +1401,12 @@ def create_app(root: Path | None = None) -> FastAPI:
                         stream_callback=emit,
                         variables=payload.variables,
                     )
+                    result["queue"] = public_user_chat_queue(ticket)
                     queue.put({"event": "final", "result": result})
                 except Exception as exc:  # pragma: no cover - surfaced to client as SSE
                     queue.put({"event": "error", "detail": str(exc)})
                 finally:
+                    release_user_chat_queue_ticket(ticket)
                     queue.put(None)
 
             Thread(target=worker, daemon=True).start()
@@ -1349,6 +1493,22 @@ def create_app(root: Path | None = None) -> FastAPI:
                 raise LLMError(str(status.get("last_error") or "LLM smoke test failed."))
             saved = save_llm_runtime_config(workspace, payload_data)
             return {"config": saved, "status": status}
+        except LLMError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/llm/config/switch")
+    def llm_switch_config_api(payload: LLMConfigRequest, smoke: bool = True) -> dict[str, Any]:
+        timeout = float(payload.timeout_seconds or os.getenv("KB_LLM_HEALTH_TIMEOUT_SECONDS", "8"))
+        try:
+            payload_data = model_payload(payload)
+            config = transient_llm_config(payload_data)
+            status = llm_runtime_status(config=config, check_live=True, smoke=smoke, timeout=timeout)
+            if smoke and status.get("state") != "ready":
+                raise LLMError(str(status.get("last_error") or "LLM smoke test failed."))
+            if not smoke and status.get("state") == "error":
+                raise LLMError(str(status.get("last_error") or "LLM connection test failed."))
+            saved = save_llm_runtime_config(workspace, payload_data)
+            return {"config": saved, "status": status, "switched": True}
         except LLMError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 

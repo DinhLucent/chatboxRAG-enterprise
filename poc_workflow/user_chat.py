@@ -18,7 +18,21 @@ from .chatbot import (
 )
 from .database import QualityDatabase
 from .manifest import ManifestStore, latest_active_records
-from .qa_agent_workflow import qa_agent_workflow_enabled, run_qa_agent_workflow
+from .qa_agent_workflow import (
+    RESPONSE_CONTRACT_VERSION,
+    attach_answer_contract,
+    clarification_format_plan,
+    clarification_structured_answer,
+    no_answer_format_plan,
+    no_answer_structured_answer,
+    normalize_block_plan,
+    normalize_blocks,
+    public_format_plan,
+    public_structured_answer,
+    qa_agent_workflow_enabled,
+    run_qa_agent_workflow,
+    scope_guard,
+)
 from .text_cleaning import clean_excerpt, clean_retrieval_text, contains_raw_markup, normalized_text
 from .utils import utc_now
 
@@ -80,7 +94,7 @@ WELCOME_CARDS = [
 
 FOLLOW_UP_PATTERNS = [
     r"\b(buoc|bước)\s*\d+\b",
-    r"\b(no|nó|nay|này|do|đó|tren|trên|duoi|dưới)\b",
+    r"\b(no|nó|do|đó|tren|trên|duoi|dưới)\b",
     r"\b(ai duyet|ai duyệt|o dau|ở đâu|can gi tiep|cần gì tiếp)\b",
     r"\b(tiep|tiếp|tie?p theo|sau do|sau đó)\b",
 ]
@@ -143,6 +157,205 @@ def welcome_cards_payload() -> list[dict[str, str]]:
     return WELCOME_CARDS
 
 
+def confidence_label(value: object = None, *, has_citations: bool = False, needs_clarification: bool = False) -> str:
+    if needs_clarification:
+        return "low"
+    try:
+        score = float(value) if value is not None else (0.82 if has_citations else 0.2)
+    except (TypeError, ValueError):
+        score = 0.82 if has_citations else 0.2
+    if score > 1:
+        score = score / 100
+    if score >= 0.75:
+        return "high"
+    if score >= 0.45:
+        return "medium"
+    return "low"
+
+
+def answer_contract_fields(
+    answer: str,
+    citations: list[dict[str, Any]],
+    *,
+    answer_style: str,
+    fallback_reason: str | None = None,
+) -> dict[str, Any]:
+    if fallback_reason or (not citations and normalized_text(answer) == normalized_text(NO_SOURCE_ANSWER)):
+        reason = fallback_reason or "no_active_source"
+        format_plan = no_answer_format_plan()
+        structured_answer = no_answer_structured_answer(answer or NO_SOURCE_ANSWER, reason)
+        return {
+            "answer_text": answer or NO_SOURCE_ANSWER,
+            "confidence": "low",
+            "response_contract_version": RESPONSE_CONTRACT_VERSION,
+            "format_type": "no_answer_card",
+            "format_plan": public_format_plan(format_plan),
+            "structured_answer": public_structured_answer(structured_answer),
+            "blocks": normalize_blocks(structured_answer.get("blocks")),
+            "block_plan": normalize_block_plan(format_plan.get("block_plan")),
+        }
+
+    format_type = {
+        "workflow": "workflow",
+        "checklist": "checklist",
+        "steps": "step_by_step",
+    }.get(answer_style, "summary")
+    blocks = legacy_answer_blocks(answer, citations, answer_style)
+    block_plan = normalize_block_plan(
+        {
+            str(block.get("type")): {
+                "enabled": True,
+                "reason": "Derived from legacy grounded answer.",
+            }
+            for block in blocks
+            if isinstance(block, dict) and block.get("type")
+        }
+    )
+    format_plan = {
+        "primary_format": format_type,
+        "secondary_blocks": ["sources"],
+        "render_hints": {
+            "show_timeline": format_type in {"workflow", "step_by_step"},
+            "show_checklist_button": format_type in {"workflow", "step_by_step", "checklist"},
+            "show_mermaid_button": format_type == "workflow",
+            "show_no_answer_card": False,
+        },
+        "block_plan": block_plan,
+    }
+    structured_answer = {
+        "answer_type": format_type,
+        "title": "",
+        "summary": answer_summary_text(answer),
+        "steps": [],
+        "responsibilities": [],
+        "forms_records": [],
+        "notes": [],
+        "sources": sources_from_public_citations(citations),
+        "markdown": answer,
+        "blocks": blocks,
+    }
+    return {
+        "answer_text": answer,
+        "confidence": confidence_label(has_citations=bool(citations)),
+        "response_contract_version": RESPONSE_CONTRACT_VERSION,
+        "format_type": format_type,
+        "format_plan": public_format_plan(format_plan),
+        "structured_answer": public_structured_answer(structured_answer),
+        "blocks": blocks,
+        "block_plan": normalize_block_plan(format_plan.get("block_plan")),
+    }
+
+
+def answer_summary_text(answer: str) -> str:
+    sections = answer_sections(answer)
+    summary = "\n".join(sections.get("summary") or []).strip()
+    if summary:
+        return clean_excerpt(summary, max_chars=720)
+    for line in answer.splitlines():
+        cleaned = line.strip()
+        normalized = normalized_text(cleaned).rstrip(":")
+        if cleaned and normalized not in {"tom tat", "workflow", "nguon"}:
+            return clean_excerpt(cleaned, max_chars=720)
+    return ""
+
+
+def answer_sections(answer: str) -> dict[str, list[str]]:
+    sections: dict[str, list[str]] = {}
+    current = "summary"
+    for raw_line in str(answer or "").splitlines():
+        normalized = normalized_text(raw_line).strip().strip("#").strip().rstrip(":")
+        if normalized.startswith("tom tat"):
+            current = "summary"
+            sections.setdefault(current, [])
+            continue
+        if normalized.startswith("workflow"):
+            current = "workflow"
+            sections.setdefault(current, [])
+            continue
+        if normalized.startswith("cac buoc") or normalized.startswith("noi dung chinh"):
+            current = "main"
+            sections.setdefault(current, [])
+            continue
+        if normalized.startswith("nguon"):
+            current = "sources"
+            sections.setdefault(current, [])
+            continue
+        sections.setdefault(current, []).append(raw_line)
+    return {key: [line for line in value if line.strip()] for key, value in sections.items()}
+
+
+def legacy_answer_blocks(answer: str, citations: list[dict[str, Any]], answer_style: str) -> list[dict[str, object]]:
+    sections = answer_sections(answer)
+    blocks: list[dict[str, object]] = []
+    summary = "\n".join(sections.get("summary") or []).strip()
+    if summary:
+        blocks.append({"type": "summary", "content": clean_excerpt(summary, max_chars=720)})
+
+    main_items = legacy_block_items(sections.get("main") or [], citations)
+    mermaid = extract_mermaid(answer)
+    if answer_style == "workflow" or mermaid:
+        workflow_items = main_items or workflow_items_from_mermaid(mermaid)
+        if workflow_items or mermaid:
+            block: dict[str, object] = {"type": "workflow", "items": workflow_items}
+            if mermaid:
+                block["mermaid"] = mermaid
+            blocks.append(block)
+    if main_items:
+        blocks.append({"type": "checklist" if answer_style == "checklist" else "steps", "items": main_items})
+
+    sources = sources_from_public_citations(citations)
+    if sources:
+        blocks.append({"type": "sources", "items": sources})
+    return normalize_blocks(blocks)
+
+
+def legacy_block_items(lines: list[str], citations: list[dict[str, Any]]) -> list[dict[str, str]]:
+    source_anchor = str((citations[0] if citations else {}).get("anchor_id") or "")
+    items: list[dict[str, str]] = []
+    for line in lines:
+        text = re.sub(r"^\s*(?:[-*]\s*(?:\[[ xX]\]\s*)?|\d+[\).\s-]+)", "", line).strip()
+        if not text:
+            continue
+        items.append({"text": clean_excerpt(text, max_chars=260), "detail": "", "source_anchor": source_anchor})
+    return items[:12]
+
+
+def extract_mermaid(answer: str) -> str:
+    match = re.search(r"```mermaid\s*(.*?)```", str(answer or ""), flags=re.IGNORECASE | re.DOTALL)
+    return match.group(1).strip() if match else ""
+
+
+def workflow_items_from_mermaid(mermaid: str) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    for label in re.findall(r"\[\"?([^\"\]\n]+)\"?\]", mermaid or ""):
+        cleaned = clean_excerpt(label, max_chars=160)
+        if cleaned:
+            items.append({"text": cleaned, "detail": "", "source_anchor": ""})
+    return items[:12]
+
+
+def sources_from_public_citations(citations: list[dict[str, Any]]) -> list[dict[str, str]]:
+    sources: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for citation in citations:
+        doc_id = str(citation.get("doc_id") or "")
+        version = str(citation.get("version") or "")
+        if not doc_id or (doc_id, version) in seen:
+            continue
+        sources.append(
+            {
+                "doc_id": doc_id,
+                "version": version,
+                "display_code": str(citation.get("display_code") or ""),
+                "display_version": str(citation.get("display_version") or ""),
+                "title": clean_excerpt(citation.get("title") or doc_id, max_chars=180),
+                "locator": str(citation.get("anchor_id") or ""),
+            }
+        )
+        seen.add((doc_id, version))
+    return sources[:10]
+
+
 def user_chat_response(
     root: Path,
     query: str,
@@ -168,6 +381,7 @@ def user_chat_response(
         )
         
         # Build mock citations if doc_id is available
+        annotated_answer = str(annotation.get("annotated_answer") or "")
         citations = []
         doc_id = annotation.get("doc_id")
         version = annotation.get("version")
@@ -178,7 +392,7 @@ def user_chat_response(
                 "version": version or "1.0",
                 "display_code": doc_id,
                 "display_version": f"v{version}" if version else "",
-                "excerpt": annotation.get("annotated_answer"),
+                "excerpt": annotated_answer,
                 "anchor_id": ""
             })
             
@@ -189,7 +403,7 @@ def user_chat_response(
             [doc_id] if doc_id else [],
             bool(citations),
             0,
-            annotation.get("annotated_answer"),
+            annotated_answer,
             llm_used=False,
             answer_source="annotations",
             tokens_prompt=0,
@@ -201,7 +415,7 @@ def user_chat_response(
             active_session_id,
             query=query,
             effective_query=query,
-            answer=annotation.get("annotated_answer"),
+            answer=annotated_answer,
             citation_doc_ids=[doc_id] if doc_id else [],
             query_log_id=log_id,
             template_id=template_id
@@ -232,9 +446,11 @@ def user_chat_response(
                 "expires_at": session["expires_at"],
             }
         }
+        contract = answer_contract_fields(annotated_answer, citations, answer_style=answer_style or "brief")
         
         return {
-            "answer": annotation.get("annotated_answer"),
+            "answer": annotated_answer,
+            **contract,
             "citations": citations,
             "trace": trace,
             "trace_steps": trace_steps,
@@ -264,6 +480,20 @@ def user_chat_response(
     )
     session_context = db.user_chat_context(active_session_id)
     history = db.recent_user_chat_turns(active_session_id, limit=user_context_turn_limit())
+    scope = scope_guard(query)
+    contextual_follow_up = should_use_context(query) and (history or session_context.get("active_doc_id"))
+    if not scope["in_scope"] and not contextual_follow_up:
+        return scope_reject_response(
+            db,
+            policy,
+            query=query,
+            answer=str(scope.get("safe_reply") or policy.get("no_answer") or NO_SOURCE_ANSWER),
+            active_session_id=active_session_id,
+            session=session,
+            template_id=template_id,
+            answer_style=active_answer_style,
+            user_id=user_id,
+        )
     if needs_clarification(query, history, session_context):
         return clarification_response(
             db,
@@ -356,8 +586,15 @@ def user_chat_response(
                 "detail": f"Dùng {len(history)} lượt gần nhất để hiểu câu hỏi nối tiếp.",
             },
         )
+    contract = answer_contract_fields(
+        str(result.get("answer") or policy.get("no_answer") or NO_SOURCE_ANSWER),
+        citations,
+        answer_style=active_answer_style,
+        fallback_reason=str(result.get("fallback_reason") or "") if not citations else None,
+    )
     return {
         "answer": result.get("answer") or policy.get("no_answer") or NO_SOURCE_ANSWER,
+        **contract,
         "citations": citations,
         "trace": trace,
         "trace_steps": trace["steps"],
@@ -408,6 +645,7 @@ def qa_agent_chat_response(
         emit=stream_callback,
         variables=variables,
     )
+    result = attach_answer_contract(result)
     citations = sanitize_public_citations(
         root,
         result.get("citations") or [],
@@ -509,6 +747,12 @@ def qa_agent_chat_response(
     }
     return {
         "answer": answer or policy.get("no_answer") or NO_SOURCE_ANSWER,
+        "answer_text": answer or policy.get("no_answer") or NO_SOURCE_ANSWER,
+        "confidence": confidence_label(
+            answer_run.get("final_confidence") if isinstance(answer_run, dict) else None,
+            has_citations=bool(citations),
+            needs_clarification=bool(result.get("needs_clarification")),
+        ),
         "citations": citations,
         "trace": trace,
         "trace_steps": trace_steps,
@@ -520,6 +764,10 @@ def qa_agent_chat_response(
         "answer_run": answer_run,
         "structured_answer": result.get("structured_answer") or {},
         "format_plan": result.get("format_plan") or {},
+        "response_contract_version": result.get("response_contract_version") or RESPONSE_CONTRACT_VERSION,
+        "blocks": result.get("blocks") or [],
+        "block_plan": result.get("block_plan") or {},
+        "handoff": result.get("handoff"),
         "query_log_id": log_id,
         "log_id": log_id,
         "knowledge_gap_id": gap_id,
@@ -577,6 +825,8 @@ def clarification_response(
         template_id=template_id,
     )
     trace = build_public_trace({"answer": answer, "answer_source": "clarification"}, 0, policy)
+    format_plan = clarification_format_plan()
+    structured_answer = clarification_structured_answer(answer, ["document_or_procedure_name"])
     trace["context"] = {
         "session_id": active_session_id,
         "turns_available": 0,
@@ -586,6 +836,8 @@ def clarification_response(
     }
     return {
         "answer": answer,
+        "answer_text": answer,
+        "confidence": "low",
         "citations": [],
         "trace": trace,
         "trace_steps": trace["steps"],
@@ -595,7 +847,89 @@ def clarification_response(
         "policy": public_policy_summary(policy),
         "template_id": template_id,
         "answer_style": answer_style,
+        "response_contract_version": RESPONSE_CONTRACT_VERSION,
+        "format_type": "clarification",
+        "format_plan": public_format_plan(format_plan),
+        "structured_answer": public_structured_answer(structured_answer),
+        "blocks": normalize_blocks(structured_answer.get("blocks")),
+        "block_plan": normalize_block_plan(format_plan.get("block_plan")),
         "needs_clarification": True,
+        "session_id": active_session_id,
+        "session": {
+            "session_id": active_session_id,
+            "device_id": session.get("device_id"),
+            "last_seen_at": session.get("last_seen_at"),
+            "expires_at": session.get("expires_at"),
+            "ttl_seconds": user_session_ttl_seconds(),
+        },
+    }
+
+
+def scope_reject_response(
+    db: QualityDatabase,
+    policy: dict[str, Any],
+    *,
+    query: str,
+    answer: str,
+    active_session_id: str,
+    session: dict[str, Any],
+    template_id: str | None,
+    answer_style: str,
+    user_id: str | None,
+) -> dict[str, Any]:
+    log_id = db.log_query(
+        query,
+        user_id,
+        [],
+        False,
+        0,
+        answer,
+        answer_source="scope_guard",
+    )
+    gap_id = db.create_gap(query, "out_of_scope", infer_category(query))
+    db.annotate_query(
+        log_id,
+        session_id=active_session_id,
+        template_id=template_id,
+        policy_id=str(policy.get("policy_id") or ""),
+        policy_version=str(policy.get("version") or ""),
+    )
+    db.log_user_chat_turn(
+        active_session_id,
+        query=query,
+        effective_query=query,
+        answer=answer,
+        citation_doc_ids=[],
+        query_log_id=log_id,
+        template_id=template_id,
+    )
+    trace = build_public_trace({"answer": answer, "answer_source": "scope_guard"}, 0, policy)
+    trace["context"] = {
+        "session_id": active_session_id,
+        "turns_available": 0,
+        "turns_used": 0,
+        "context_used": False,
+        "expires_at": session["expires_at"],
+    }
+    contract = answer_contract_fields(answer, [], answer_style=answer_style, fallback_reason="out_of_scope")
+    return {
+        "answer": answer,
+        **contract,
+        "citations": [],
+        "trace": trace,
+        "trace_steps": trace["steps"],
+        "query_log_id": log_id,
+        "log_id": log_id,
+        "knowledge_gap_id": gap_id,
+        "quality_decision": {
+            "decision": "scope_reject",
+            "reason": "out_of_scope",
+            "issues": ["Question is outside the supported document scope."],
+        },
+        "policy": public_policy_summary(policy),
+        "template_id": template_id,
+        "answer_style": answer_style,
+        "needs_clarification": False,
         "session_id": active_session_id,
         "session": {
             "session_id": active_session_id,
@@ -849,6 +1183,8 @@ def has_context_reference(normalized_query: str) -> bool:
             "tai lieu nay",
             "trong quy trinh nay",
             "noi dung nay",
+            "cai nay",
+            "van de nay",
             "muc nay",
             "phan nay",
             "noi dung tren",
@@ -1024,6 +1360,8 @@ def build_public_trace(
         answer_detail = "Câu trả lời được tạo từ trích đoạn tài liệu đã làm sạch."
     elif answer_source == "clarification":
         answer_detail = "Cần thêm mã hoặc tên tài liệu/quy trình để trả lời đúng nguồn."
+    elif answer_source == "scope_guard":
+        answer_detail = "Câu hỏi nằm ngoài phạm vi tài liệu quy trình đang hỗ trợ."
     elif answer_source == "no_answer":
         answer_detail = "Không tìm thấy căn cứ trong tài liệu hiện hành."
     else:

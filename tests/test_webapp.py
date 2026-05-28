@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+import poc_workflow.webapp as webapp_module
 from poc_workflow.chatbot import NO_SOURCE_ANSWER
 from poc_workflow.database import QualityDatabase
 from poc_workflow.pipeline import approve_record, process_sources
@@ -109,6 +112,12 @@ def write_catalog_source(root: Path) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def clear_user_chat_queue_state() -> None:
+    with webapp_module.USER_CHAT_RATE_LOCK:
+        webapp_module.USER_CHAT_ACTIVE_KEYS.clear()
+        webapp_module.USER_CHAT_LAST_FINISHED_AT.clear()
 
 
 def test_web_health_manifest_and_chat(tmp_path: Path) -> None:
@@ -270,6 +279,11 @@ def test_user_chat_app_public_api_safe_citations_policy_and_feedback(tmp_path: P
     assert "provider timeout" not in public_text
     assert body["trace_steps"]
     assert body["answer_style"] == "checklist"
+    assert body["answer_text"] == body["answer"]
+    assert body["confidence"] == "high"
+    assert body["response_contract_version"] == "answer_blocks.v1"
+    assert body["block_plan"]["checklist"]["enabled"] is True
+    assert any(block["type"] == "checklist" for block in body["blocks"])
     assert "Tóm tắt:" in body["answer"]
     assert "Các bước / Nội dung chính:" in body["answer"]
     assert "Nguồn:" in body["answer"]
@@ -371,6 +385,8 @@ def test_public_source_file_prefers_supporting_pdf_for_user_verification(tmp_pat
 def test_user_bootstrap_exposes_qa_agent_flags(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("KB_QA_AGENT_WORKFLOW_ENABLED", "true")
     monkeypatch.setenv("KB_QA_AGENT_STREAMING_ENABLED", "true")
+    monkeypatch.setenv("KB_USER_CHAT_QUEUE_ENABLED", "true")
+    monkeypatch.setenv("KB_USER_CHAT_COOLDOWN_SECONDS", "15")
     client = TestClient(create_app(tmp_path))
 
     response = client.get("/api/user/bootstrap")
@@ -382,6 +398,66 @@ def test_user_bootstrap_exposes_qa_agent_flags(tmp_path: Path, monkeypatch) -> N
         "streaming": True,
         "trace_visibility": "detailed_safe_rationale",
     }
+    assert body["queue"]["enabled"] is True
+    assert body["queue"]["mode"] == "sequential"
+    assert body["queue"]["cooldown_seconds"] == 15
+
+
+def test_user_chat_queue_cooldown_rejects_same_session(tmp_path: Path, monkeypatch) -> None:
+    clear_user_chat_queue_state()
+    monkeypatch.setenv("KB_USER_CHAT_QUEUE_ENABLED", "true")
+    monkeypatch.setenv("KB_USER_CHAT_COOLDOWN_SECONDS", "15")
+    monkeypatch.setenv("KB_USER_CHAT_QUEUE_MAX_WAIT_SECONDS", "1")
+
+    def fake_user_chat_response(*args, **kwargs):
+        return {"answer": "ok", "citations": [], "trace_steps": [], "query_log_id": 1}
+
+    monkeypatch.setattr(webapp_module, "user_chat_response", fake_user_chat_response)
+    client = TestClient(webapp_module.create_app(tmp_path))
+
+    first = client.post(
+        "/api/user/chat",
+        json={"query": "quy trinh lap dat", "session_id": "queue-session", "use_llm": False},
+    )
+    assert first.status_code == 200
+    assert first.json()["queue"]["enabled"] is True
+    assert first.json()["queue"]["mode"] == "sequential"
+
+    second = client.post(
+        "/api/user/chat",
+        json={"query": "quy trinh bao duong", "session_id": "queue-session", "use_llm": False},
+    )
+    assert second.status_code == 429
+    assert second.headers["retry-after"] == "15"
+
+
+def test_user_chat_queue_serializes_different_sessions(monkeypatch) -> None:
+    clear_user_chat_queue_state()
+    monkeypatch.setenv("KB_USER_CHAT_QUEUE_ENABLED", "true")
+    monkeypatch.setenv("KB_USER_CHAT_COOLDOWN_SECONDS", "0")
+    monkeypatch.setenv("KB_USER_CHAT_QUEUE_MAX_WAIT_SECONDS", "1")
+    first_payload = webapp_module.UserChatRequest(query="q1", session_id="queue-a")
+    second_payload = webapp_module.UserChatRequest(query="q2", session_id="queue-b")
+
+    first_ticket = webapp_module.acquire_user_chat_queue_ticket(first_payload)
+    acquired = threading.Event()
+    released = threading.Event()
+
+    def acquire_second() -> None:
+        second_ticket = webapp_module.acquire_user_chat_queue_ticket(second_payload)
+        acquired.set()
+        webapp_module.release_user_chat_queue_ticket(second_ticket)
+        released.set()
+
+    thread = threading.Thread(target=acquire_second)
+    thread.start()
+    time.sleep(0.05)
+    assert not acquired.is_set()
+
+    webapp_module.release_user_chat_queue_ticket(first_ticket)
+    assert acquired.wait(1)
+    assert released.wait(1)
+    thread.join(timeout=1)
 
 
 def test_user_chat_qa_agent_scope_reject_preserves_safe_reply(tmp_path: Path, monkeypatch) -> None:
@@ -397,11 +473,33 @@ def test_user_chat_qa_agent_scope_reject_preserves_safe_reply(tmp_path: Path, mo
     body = response.json()
     assert "ngoai pham vi" in normalized_text(body["answer"])
     assert body["format_type"] == "no_answer_card"
+    assert body["response_contract_version"] == "answer_blocks.v1"
     assert body["format_plan"]["primary_format"] == "no_answer_card"
+    assert body["block_plan"]["scope_reject"]["enabled"] is True
     assert body["structured_answer"]["answer_type"] == "no_answer"
+    assert body["blocks"][0]["type"] == "scope_reject"
     assert body["quality_decision"]["decision"] == "scope_reject"
     assert body["knowledge_gap_id"]
     assert body["citations"] == []
+
+
+def test_user_chat_scope_guard_runs_without_qa_agent_flag(tmp_path: Path) -> None:
+    client = TestClient(create_app(tmp_path))
+
+    response = client.post(
+        "/api/user/chat",
+        json={"query": "thoi tiet hom nay the nao", "session_id": "scope-default-session"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer_text"] == body["answer"]
+    assert body["confidence"] == "low"
+    assert body["format_type"] == "no_answer_card"
+    assert body["blocks"][0]["type"] == "scope_reject"
+    assert body["quality_decision"]["decision"] == "scope_reject"
+    assert body["citations"] == []
+    assert "ngoai pham vi" in normalized_text(body["answer"])
 
 
 def test_user_chat_qa_agent_flag_on_returns_public_payload(tmp_path: Path, monkeypatch) -> None:
@@ -458,6 +556,7 @@ def test_user_chat_qa_agent_flag_on_returns_public_payload(tmp_path: Path, monke
                 "forms_records": [],
                 "notes": [],
                 "sources": [{"doc_id": "KT-QT-215", "version": "1.0", "title": "Danh sach SOP"}],
+                "markdown": "| Ma | Ten |\n| --- | --- |\n| KT-QT-215 | Danh sach SOP |",
             },
             "evidence_pack": {
                 "verified_evidence": [
@@ -505,6 +604,8 @@ def test_user_chat_qa_agent_flag_on_returns_public_payload(tmp_path: Path, monke
 
     assert response.status_code == 200
     body = response.json()
+    assert body["answer_text"] == body["answer"]
+    assert body["confidence"] == "high"
     assert body["citations"][0]["doc_id"] == "KT-QT-215"
     assert set(body["citations"][0]) == {
         "title",
@@ -520,6 +621,9 @@ def test_user_chat_qa_agent_flag_on_returns_public_payload(tmp_path: Path, monke
     assert body["quality_decision"]["decision"] == "pass"
     assert body["procedure_compliance"]["final_decision"] == "release"
     assert body["format_plan"]["primary_format"] == "table"
+    assert body["response_contract_version"] == "answer_blocks.v1"
+    assert body["block_plan"]["table"]["enabled"] is True
+    assert any(block["type"] == "table" for block in body["blocks"])
     assert body["structured_answer"]["title"] == "Danh sach SOP"
     assert body["answer_run"]["stage"] == "finalized"
     assert body["evidence_pack"]["verified_evidence"][0]["doc_id"] == "KT-QT-215"
@@ -682,6 +786,9 @@ def test_user_chat_rejects_unknown_template_and_no_answer_trace(tmp_path: Path) 
     assert clarification.status_code == 200
     clarify_body = clarification.json()
     assert clarify_body["needs_clarification"] is True
+    assert clarify_body["response_contract_version"] == "answer_blocks.v1"
+    assert clarify_body["block_plan"]["clarification"]["enabled"] is True
+    assert clarify_body["blocks"][0]["type"] == "clarification"
     assert clarify_body["answer"] != NO_SOURCE_ANSWER
     assert "mã hoặc tên tài liệu" in clarify_body["answer"]
     assert clarify_body["citations"] == []
@@ -703,6 +810,9 @@ def test_user_chat_asks_for_context_when_question_is_ambiguous(tmp_path: Path) -
     assert response.status_code == 200
     body = response.json()
     assert body["needs_clarification"] is True
+    assert body["response_contract_version"] == "answer_blocks.v1"
+    assert body["block_plan"]["clarification"]["enabled"] is True
+    assert body["blocks"][0]["type"] == "clarification"
     assert body["citations"] == []
     assert "mã hoặc tên tài liệu" in body["answer"]
     assert "Không tìm thấy căn cứ" not in body["answer"]
@@ -780,7 +890,7 @@ def test_user_chat_keeps_context_for_follow_up_questions(tmp_path: Path) -> None
     )
     assert unrelated.status_code == 200
     unrelated_body = unrelated.json()
-    assert unrelated_body["answer"] == NO_SOURCE_ANSWER
+    assert "phạm vi" in unrelated_body["answer"].lower() or unrelated_body["answer"] == NO_SOURCE_ANSWER
     assert unrelated_body["citations"] == []
     assert unrelated_body["trace"]["context"]["context_used"] is False
 
@@ -1496,7 +1606,7 @@ def test_llm_dashboard_config_presets_and_secret_redaction(tmp_path: Path, monke
     presets = client.get("/api/llm/presets")
     assert presets.status_code == 200
     preset_ids = {item["id"] for item in presets.json()}
-    assert {"ollama", "freellmapi", "openai", "deepseek", "gemini", "custom"} <= preset_ids
+    assert {"ollama", "freellmapi", "freemodel", "freemmlai", "openai", "deepseek", "gemini", "custom"} <= preset_ids
 
     missing_key = client.post(
         "/api/llm/test",
@@ -1520,7 +1630,7 @@ def test_llm_dashboard_config_presets_and_secret_redaction(tmp_path: Path, monke
     assert body["config"]["source"] == "runtime"
     assert body["config"]["provider"] == "ollama"
     assert body["config"]["api_key_configured"] is True
-    assert body["config"]["api_key_mask"] == "••••"
+    assert "api_key_mask" not in body["config"]
 
     openai_saved = client.put(
         "/api/llm/config",
@@ -1539,10 +1649,60 @@ def test_llm_dashboard_config_presets_and_secret_redaction(tmp_path: Path, monke
     redacted = json.dumps(config.json())
     assert "sk-test-secret-123456" not in redacted
     assert '"api_key":' not in redacted
+    assert "api_key_mask" not in config.json()
 
     reset = client.post("/api/llm/config/reset")
     assert reset.status_code == 200
     assert reset.json()["source"] in {"none", "env", "autodetect"}
+
+
+def test_llm_switch_uses_provider_key_from_env_without_persisting_secret(tmp_path: Path, monkeypatch) -> None:
+    def fake_list_models(self, timeout: float = 8) -> dict[str, object]:
+        return {"count": 1, "sample": [self.config.model]}
+
+    def fake_smoke(self, timeout: float = 12) -> str:
+        return "ok"
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-env-secret")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "deepseek-chat")
+    monkeypatch.setattr("poc_workflow.llm.OpenAICompatibleClient.list_models", fake_list_models)
+    monkeypatch.setattr("poc_workflow.llm.OpenAICompatibleClient.smoke", fake_smoke)
+
+    client = TestClient(create_app(tmp_path))
+
+    switched = client.post("/api/llm/config/switch", json={"provider": "deepseek"})
+
+    assert switched.status_code == 200
+    body = switched.json()
+    assert body["switched"] is True
+    assert body["config"]["provider"] == "deepseek"
+    assert body["config"]["model"] == "deepseek-chat"
+    assert body["config"]["api_key_configured"] is True
+    assert body["status"]["state"] == "ready"
+    secrets_text = (tmp_path / ".runtime" / "llm-secrets.json").read_text(encoding="utf-8")
+    assert "deepseek-env-secret" not in secrets_text
+
+    config = client.get("/api/llm/config")
+    assert config.status_code == 200
+    assert config.json()["provider"] == "deepseek"
+    assert config.json()["api_key_configured"] is True
+
+
+def test_llm_env_freemodel_is_not_reported_as_freellmapi(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("POC_LLM_BASE_URL", "https://api.freemodel.dev/v1")
+    monkeypatch.setenv("POC_LLM_API_KEY", "freemodel-secret")
+    monkeypatch.setenv("POC_LLM_MODEL", "auto")
+    monkeypatch.setenv("POC_LLM_FREELLMAPI_AUTODETECT", "false")
+
+    client = TestClient(create_app(tmp_path))
+
+    response = client.get("/api/llm/config")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["provider"] == "freemodel"
+    assert body["base_url"] == "https://api.freemodel.dev/v1"
+    assert body["model"] == "auto"
+    assert body["api_key_configured"] is True
 
 
 def test_llm_config_save_requires_successful_smoke(tmp_path: Path, monkeypatch) -> None:
@@ -1776,4 +1936,3 @@ def test_clear_diagnostics_logs(tmp_path: Path) -> None:
     # Verify unlinked
     assert not log_file1.exists()
     assert not log_file2.exists()
-

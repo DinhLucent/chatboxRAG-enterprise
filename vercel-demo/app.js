@@ -391,9 +391,27 @@ async function api(path, options = {}) {
     headers,
   });
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : null;
+  let payload = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch (e) {
+    payload = { message: text };
+  }
   if (!response.ok) {
-    throw new Error(payload?.detail || payload?.error || payload?.message || response.statusText);
+    const errorMsg = payload?.detail || payload?.error || payload?.message || response.statusText;
+    const error = new Error(errorMsg);
+    error.status = response.status;
+    const retryAfter = response.headers.get("Retry-After");
+    if (retryAfter) {
+      error.retryAfter = parseInt(retryAfter, 10);
+    } else {
+      // Fallback: parse number of seconds from the message string (e.g. "cho 15 giay")
+      const match = errorMsg.match(/\d+/);
+      if (match) {
+        error.retryAfter = parseInt(match[0], 10);
+      }
+    }
+    throw error;
   }
   return payload;
 }
@@ -583,8 +601,21 @@ async function submitChat(event) {
 
   // Setup loading animation interval for active step representation
   let activeStepIdx = 0;
+  let elapsedMs = 0;
+  let queueStateDetected = false;
   const loadingInterval = setInterval(() => {
     if (!pending) return;
+    
+    elapsedMs += 1200;
+    if (elapsedMs >= 4800 && !queueStateDetected) {
+      queueStateDetected = true;
+      const titleEl = pending.querySelector(".loading-title");
+      if (titleEl) {
+        titleEl.innerHTML = `<span class="queue-hourglass">⏳</span> Hàng đợi bận. Bạn đang xếp hàng chờ xử lý...`;
+      }
+      pending.querySelector(".loading-indicator-wrapper")?.classList.add("queued-state");
+    }
+
     const steps = pending.querySelectorAll(".loading-step");
     if (!steps.length) {
       clearInterval(loadingInterval);
@@ -622,6 +653,7 @@ async function submitChat(event) {
     });
     clearInterval(loadingInterval);
     state.lastResponse = result;
+    localStorage.removeItem("kbUserChatDraft"); // Clear draft on success
     if (result.session?.session_id || result.session_id) {
       state.sessionId = result.session?.session_id || result.session_id;
       localStorage.setItem("kbUserChatSessionId", state.sessionId);
@@ -639,12 +671,131 @@ async function submitChat(event) {
     checkHealth();
   } catch (error) {
     clearInterval(loadingInterval);
-    pending.querySelector(".message-body").textContent = error.message || "Hệ thống chưa sẵn sàng.";
+    const is429 = error.status === 429 || 
+                  error.message?.includes("429") || 
+                  error.message?.toLowerCase().includes("vui long cho") || 
+                  error.message?.toLowerCase().includes("vui lòng chờ") ||
+                  error.message?.toLowerCase().includes("dang duoc xu ly");
+                  
+    if (is429) {
+      const waitSeconds = error.retryAfter || 15;
+      
+      // Save question as draft
+      localStorage.setItem("kbUserChatDraft", query);
+      
+      // Disable composer inputs and add styling class
+      const queryInput = qs("#queryInput");
+      if (queryInput) {
+        queryInput.disabled = true;
+        queryInput.placeholder = "Hệ thống đang hạ nhiệt. Vui lòng chờ...";
+      }
+      qs(".composer-container")?.classList.add("cooldown-active");
+      
+      renderCooldownUI(pending, query, waitSeconds);
+    } else {
+      pending.querySelector(".message-body").textContent = error.message || "Hệ thống chưa sẵn sàng.";
+    }
     toast(error.message);
   } finally {
     clearInterval(loadingInterval);
     qs("#sendBtn").disabled = false;
   }
+}
+
+function renderCooldownUI(pendingCard, query, seconds) {
+  // Clear the active trace
+  renderTrace([]);
+  
+  const messageBody = pendingCard.querySelector(".message-body");
+  messageBody.classList.add("cooldown-container-wrapper");
+  
+  const strokeMax = 213.6; // 2 * PI * r (r=34)
+  
+  messageBody.innerHTML = `
+    <div class="cooldown-card">
+      <div class="cooldown-visual">
+        <svg class="cooldown-ring" viewBox="0 0 80 80">
+          <circle class="cooldown-ring-bg" cx="40" cy="40" r="34" />
+          <circle class="cooldown-ring-progress" cx="40" cy="40" r="34" style="stroke-dashoffset: 0;" />
+        </svg>
+        <div class="cooldown-timer">${seconds}</div>
+      </div>
+      <div class="cooldown-content">
+        <div class="cooldown-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/>
+            <line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+          Hạ nhiệt hệ thống
+        </div>
+        <div class="cooldown-desc">Bạn đang gửi câu hỏi quá nhanh. Vui lòng chờ để hệ thống xử lý tuần tự.</div>
+        <div class="cooldown-query-preview" title="${escapeHtml(query)}"><strong>Câu hỏi bị chặn:</strong> "${escapeHtml(query)}"</div>
+      </div>
+      <button class="cooldown-btn" type="button" disabled>
+        <svg class="send-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width: 14px; height: 14px; stroke: currentColor;">
+          <line x1="22" y1="2" x2="11" y2="13"></line>
+          <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+        </svg>
+        <span>Gửi lại sau (${seconds}s)</span>
+      </button>
+    </div>
+  `;
+
+  let remaining = seconds;
+  const progressCircle = messageBody.querySelector(".cooldown-ring-progress");
+  const timerText = messageBody.querySelector(".cooldown-timer");
+  const actionButton = messageBody.querySelector(".cooldown-btn");
+  
+  const interval = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      clearInterval(interval);
+      timerText.textContent = "✓";
+      timerText.style.color = "var(--green)";
+      progressCircle.style.stroke = "var(--green)";
+      progressCircle.style.strokeDashoffset = 0;
+      
+      const titleEl = messageBody.querySelector(".cooldown-title");
+      titleEl.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="animation: none;">
+          <polyline points="20 6 9 17 4 12"></polyline>
+        </svg>
+        Hệ thống đã sẵn sàng
+      `;
+      titleEl.style.color = "var(--green)";
+      
+      messageBody.querySelector(".cooldown-desc").textContent = "Thời gian chờ đã kết thúc. Bạn có thể gửi lại câu hỏi này ngay lập tức.";
+      
+      // Re-enable composer inputs
+      const queryInput = qs("#queryInput");
+      if (queryInput) {
+        queryInput.disabled = false;
+        queryInput.placeholder = "Nhập câu hỏi tại đây...";
+      }
+      qs(".composer-container")?.classList.remove("cooldown-active");
+      
+      actionButton.disabled = false;
+      actionButton.classList.add("ready");
+      actionButton.querySelector("span").textContent = "Gửi lại ngay";
+      
+      // Focus button for accessibility
+      actionButton.focus();
+      
+      actionButton.onclick = () => {
+        localStorage.removeItem("kbUserChatDraft"); // Clear draft on resubmit
+        pendingCard.remove();
+        qs("#queryInput").value = query;
+        qs("#chatForm").requestSubmit();
+      };
+    } else {
+      timerText.textContent = remaining;
+      const percent = remaining / seconds;
+      const offset = strokeMax * (1 - percent);
+      progressCircle.style.strokeDashoffset = offset;
+      actionButton.querySelector("span").textContent = `Gửi lại sau (${remaining}s)`;
+    }
+  }, 1000);
 }
 
 function renderLoadingMessage() {
@@ -683,12 +834,91 @@ function renderSources(citations) {
             ${escapeHtml(citation.display_code || citation.doc_id || "-")} | ${escapeHtml(citation.display_version || `v${citation.version || "-"}`)}
             ${citation.display_code && citation.doc_id ? ` | ${escapeHtml(citation.doc_id)}` : ""}
           </div>
-          <div class="source-excerpt">${escapeHtml(citation.excerpt || "Không có đoạn trích công khai.")}</div>
+          <div class="source-actions" style="display: flex; gap: 8px; margin-top: 12px;">
+            <button class="source-open-btn" type="button" disabled style="margin-top: 0;">Tải PDF gốc</button>
+            <button class="source-open-btn" type="button" disabled style="margin-top: 0; opacity: 0.5; cursor: not-allowed;" title="Tính năng xem trước (Preview) sẽ được cập nhật trong tương lai">Xem trước</button>
+          </div>
         </article>
       `,
     )
     .join("");
   wireSpotlight(".source-card");
+}
+
+function getStepIcon(stepId, status) {
+  const cleanId = String(stepId || "").toLowerCase();
+  if (cleanId.includes("scope")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg shield"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`;
+  }
+  if (cleanId.includes("context")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg context"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
+  }
+  if (cleanId.includes("analyze") || cleanId.includes("analysis")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg brain"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96-.44 2.5 2.5 0 0 1 0-3.12 3 3 0 0 1 0-3.88 2.5 2.5 0 0 1 0-3.12A2.5 2.5 0 0 1 9.5 2zM14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96-.44 2.5 2.5 0 0 0 0-3.12 3 3 0 0 0 0-3.88 2.5 2.5 0 0 0 0-3.12A2.5 2.5 0 0 0 14.5 2z"/></svg>`;
+  }
+  if (cleanId.includes("plan_retrieval") || cleanId.includes("retrieval_plan")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg compass"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>`;
+  }
+  if (cleanId.includes("retrieve") || cleanId.includes("search")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg database"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>`;
+  }
+  if (cleanId.includes("evidence")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg evidence"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>`;
+  }
+  if (cleanId.includes("format")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg format"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>`;
+  }
+  if (cleanId.includes("draft")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg draft"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
+  }
+  if (cleanId.includes("verify") || cleanId.includes("verification") || cleanId.includes("repair")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg verify"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 11 11 13 15 9"/></svg>`;
+  }
+  if (cleanId.includes("critic")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg critic"><line x1="12" y1="2" x2="12" y2="22"/><line x1="5" y1="7" x2="19" y2="7"/><path d="M19 7l-3 6H20l-3-6M5 7L2 13H6L3 13"/></svg>`;
+  }
+  if (cleanId.includes("final")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg final"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>`;
+  }
+
+  const isDone = status === 'done';
+  const isWarning = status === 'warning';
+  const isEmpty = status === 'empty';
+  
+  if (isDone) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="trace-svg done"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
+  }
+  if (isWarning) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="trace-svg warning"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>`;
+  }
+  if (isEmpty) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="trace-svg empty"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>`;
+  }
+
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`;
+}
+
+function getStepDuration(step) {
+  state.traceTimes = state.traceTimes || {};
+  const key = step.id || step.label;
+  const now = Date.now();
+  if (step.status === 'running') {
+    if (!state.traceTimes[key]) {
+      state.traceTimes[key] = { start: now };
+    }
+    return 'đang chạy...';
+  }
+  if (step.status === 'done' || step.status === 'warning' || step.status === 'empty') {
+    if (state.traceTimes[key]) {
+      if (!state.traceTimes[key].end) {
+        state.traceTimes[key].end = now;
+        state.traceTimes[key].duration = ((state.traceTimes[key].end - state.traceTimes[key].start) / 1000).toFixed(1) + 's';
+      }
+      return state.traceTimes[key].duration;
+    }
+    return '';
+  }
+  return '';
 }
 
 function renderTrace(steps) {
@@ -698,19 +928,35 @@ function renderTrace(steps) {
     target.innerHTML = `<div class="empty-state">Chưa có quá trình xử lý.</div>`;
     return;
   }
-  target.innerHTML = rows
-    .map(
-      (step) => `
-        <article class="trace-step">
-          <span class="trace-dot ${escapeHtml(step.status || "")}"></span>
-          <div class="trace-card">
+  
+  const stepHtmls = rows.map((step) => {
+    const duration = getStepDuration(step);
+    // Vercel demo steps can also show detail or some simple content
+    const detailHtml = step.detail ? `<div class="trace-meta">${escapeHtml(step.detail)}</div>` : "";
+    
+    return `
+      <article class="trace-step">
+        <div class="trace-icon-wrapper ${escapeHtml(step.status || "")}">
+          ${getStepIcon(step.id || step.label, step.status)}
+        </div>
+        <div class="trace-card ${escapeHtml(step.status || "")}" data-step-id="${escapeHtml(step.id || step.label)}">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
             <div class="source-title">${escapeHtml(step.label || "Bước xử lý")}</div>
-            ${step.detail ? `<div class="trace-meta">${escapeHtml(step.detail)}</div>` : ""}
+            ${duration ? `<span class="trace-duration" style="font-size: 11px; color: var(--muted); font-weight: 600;">${duration}</span>` : ""}
           </div>
-        </article>
-      `,
-    )
-    .join("");
+          ${detailHtml}
+        </div>
+      </article>
+    `;
+  }).join("");
+
+  target.innerHTML = `
+    <div class="trace-timeline-container">
+      <div class="trace-timeline-connector"></div>
+      ${stepHtmls}
+    </div>
+  `;
+
   wireSpotlight(".trace-card");
 }
 
@@ -923,6 +1169,18 @@ async function init() {
     }
   }
   syncDrawer();
+  
+  // Draft recovery check on load
+  const savedDraft = localStorage.getItem("kbUserChatDraft");
+  if (savedDraft) {
+    const queryInput = qs("#queryInput");
+    if (queryInput) {
+      queryInput.value = savedDraft;
+      autoGrowTextarea();
+      queryInput.focus();
+      toast("Đã khôi phục câu hỏi nháp chưa gửi.");
+    }
+  }
 }
 
 init();

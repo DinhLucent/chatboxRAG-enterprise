@@ -25,8 +25,14 @@ def test_user_chat_render_smoke_harness_contains_required_ui_blocks(tmp_path: Pa
     assert "sampleCitationPreview" in html
     assert "/api/user/documents/" in html
     assert workflow["format_type"] == "mermaid"
+    assert workflow["response_contract_version"] == "answer_blocks.v1"
+    assert workflow["block_plan"]["workflow"]["enabled"] is True
+    assert any(block["type"] == "workflow" for block in workflow["blocks"])
     assert workflow["evidence_pack"]["verified_evidence"]
     assert table["format_type"] == "table"
+    assert table["response_contract_version"] == "answer_blocks.v1"
+    assert table["block_plan"]["decision_matrix"]["enabled"] is True
+    assert any(block["type"] == "decision_matrix" for block in table["blocks"])
     assert table["evidence_pack"]["verified_evidence"]
     assert table["structured_answer"]["markdown"]
     preview = sample_public_citation_payload()

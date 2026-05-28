@@ -257,6 +257,9 @@ function parseMarkdown(text) {
 
 function renderStructuredAnswer(answer, formatPlan = {}, citations = []) {
   if (!answer || typeof answer !== "object") return parseMarkdown(NO_SOURCE_TEXT);
+  if (Array.isArray(answer.blocks) && answer.blocks.length) {
+    return renderAnswerBlocks(answer.blocks, citations, formatPlan);
+  }
   const steps = Array.isArray(answer.steps) ? answer.steps : [];
   const responsibilities = Array.isArray(answer.responsibilities) ? answer.responsibilities : [];
   const forms = Array.isArray(answer.forms_records) ? answer.forms_records : [];
@@ -287,6 +290,123 @@ function renderStructuredAnswer(answer, formatPlan = {}, citations = []) {
   `;
 }
 
+function renderAnswerBlocks(blocks, citations = [], formatPlan = {}) {
+  const primaryFormat = formatPlan?.primary_format || "blocks";
+  return `
+    <section class="structured-answer block-answer" data-contract="answer_blocks.v1" data-format="${displayText(primaryFormat)}">
+      ${renderFormatBadges(primaryFormat, formatPlan)}
+      ${blocks.map((block) => renderAnswerBlock(block, citations, formatPlan)).join("")}
+    </section>
+  `;
+}
+
+function renderAnswerBlock(block, citations = [], formatPlan = {}) {
+  const type = String(block?.type || "").replace(/_/g, "-");
+  if (type === "summary") {
+    return `<div class="answer-block summary"><p>${displayText(block.content || block.summary || "")}</p></div>`;
+  }
+  if (type === "clarification") {
+    const missing = Array.isArray(block.missing_context) ? block.missing_context : [];
+    return `
+      <div class="answer-block clarification">
+        <h4>Cần thêm bối cảnh</h4>
+        <p>${displayText(block.question || block.content || "")}</p>
+        ${missing.length ? `<ul>${missing.map((item) => `<li>${displayText(item)}</li>`).join("")}</ul>` : ""}
+      </div>
+    `;
+  }
+  if (type === "scope-reject") {
+    return `
+      <div class="answer-block scope-reject">
+        <h4>${displayText(block.title || "Ngoài phạm vi hỗ trợ")}</h4>
+        <p>${displayText(block.content || block.reason || NO_SOURCE_TEXT)}</p>
+      </div>
+    `;
+  }
+  if (type === "steps" || type === "checklist") {
+    const items = Array.isArray(block.items) ? block.items : [];
+    return renderBlockItems(type, type === "checklist" ? "Checklist" : "Các bước", items, citations);
+  }
+  if (type === "workflow") {
+    const items = Array.isArray(block.items) ? block.items : [];
+    const mermaid = typeof block.mermaid === "string" ? block.mermaid.trim() : "";
+    return `
+      <div class="answer-block workflow">
+        <h4>Sơ đồ quy trình</h4>
+        ${items.length ? renderStructuredWorkflow(items.map((item, index) => ({
+          step_no: index + 1,
+          title: item.text || item.title || item.label || item.detail || `Bước ${index + 1}`,
+        }))) : ""}
+        ${mermaid ? `<pre class="workflow-mermaid"><code>${displayText(mermaid)}</code></pre>` : ""}
+      </div>
+    `;
+  }
+  if (type === "table") {
+    if (block.markdown) {
+      return `<div class="answer-block table">${renderStructuredMarkdown(block.markdown)}</div>`;
+    }
+    const rows = Array.isArray(block.rows) ? block.rows : Array.isArray(block.items) ? block.items : [];
+    return renderBlockTable(rows, citations);
+  }
+  if (type === "form") {
+    const fields = Array.isArray(block.fields) ? block.fields : Array.isArray(block.items) ? block.items : [];
+    return renderBlockItems("form", block.title || "Biểu mẫu / thông tin cần bổ sung", fields, citations);
+  }
+  if (type === "listing" || type === "warnings" || type === "decision-matrix") {
+    const items = Array.isArray(block.items) ? block.items : [];
+    const title = block.title || (type === "warnings" ? "Lưu ý" : type === "decision-matrix" ? "Gợi ý quyết định" : "Danh sách");
+    return renderBlockItems(type, title, items, citations);
+  }
+  if (type === "sources") {
+    const sources = Array.isArray(block.items) ? block.items : [];
+    return renderStructuredSources(sources, citations);
+  }
+  return "";
+}
+
+function renderBlockItems(type, title, items = [], citations = []) {
+  if (!items.length) return "";
+  return `
+    <div class="answer-block ${displayText(type)}">
+      <h4>${displayText(title)}</h4>
+      <ul>
+        ${items.map((item) => {
+          const label = item.text || item.label || item.title || item.name || "";
+          const detail = item.detail || item.description || item.value || "";
+          const anchor = item.source_anchor || item.anchor || "";
+          return `
+            <li>
+              <strong>${displayText(label)}</strong>
+              ${detail ? `<span>${displayText(detail)}</span>` : ""}
+              ${renderAnswerSourceLink(anchor, citations)}
+            </li>
+          `;
+        }).join("")}
+      </ul>
+    </div>
+  `;
+}
+
+function renderBlockTable(rows = [], citations = []) {
+  if (!rows.length) return "";
+  const keys = [...new Set(rows.flatMap((row) => Object.keys(row || {}).filter((key) => !["source_anchor", "anchor"].includes(key))))].slice(0, 5);
+  return `
+    <div class="answer-block table structured-table-wrap">
+      <table class="structured-table">
+        <thead><tr>${keys.map((key) => `<th>${displayText(key)}</th>`).join("")}<th>Nguồn</th></tr></thead>
+        <tbody>
+          ${rows.map((row) => `
+            <tr>
+              ${keys.map((key) => `<td>${displayText(row?.[key] || "")}</td>`).join("")}
+              <td>${renderAnswerSourceLink(row?.source_anchor || row?.anchor || "", citations)}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
 function renderNoAnswerCard(answer, formatPlan = {}) {
   const message = answer.summary || answer.markdown || NO_SOURCE_TEXT;
   const hints = formatPlan?.render_hints || {};
@@ -306,6 +426,7 @@ function renderStructuredMarkdown(markdown) {
 function hasStructuredAnswer(answer) {
   if (!answer || typeof answer !== "object") return false;
   return Boolean(
+    (Array.isArray(answer.blocks) && answer.blocks.length) ||
     answer.title ||
     answer.summary ||
     answer.markdown ||
@@ -315,6 +436,13 @@ function hasStructuredAnswer(answer) {
 }
 
 function structuredAnswerForResult(result = {}) {
+  if (Array.isArray(result.blocks) && result.blocks.length) {
+    return {
+      ...(result.structured_answer && typeof result.structured_answer === "object" ? result.structured_answer : {}),
+      answer_type: result.format_type || result.structured_answer?.answer_type || "blocks",
+      blocks: result.blocks,
+    };
+  }
   if (hasStructuredAnswer(result.structured_answer)) {
     return result.structured_answer;
   }
@@ -1181,10 +1309,12 @@ function renderSources(citations, result = null) {
             ${displayText(citation.display_code || citation.doc_id || "-")} | ${displayText(citation.display_version || `v${citation.version || "-"}`)}
             ${citation.display_code && citation.doc_id ? ` | ${displayText(citation.doc_id)}` : ""}
           </div>
-          <div class="source-excerpt">${displayText(citation.excerpt || "Không có đoạn trích công khai.")}</div>
-          ${canOpenCitation(citation)
-            ? `<a class="source-open-btn" href="${escapeHtml(publicSourceFilePath(citation))}" target="_blank" rel="noopener" download>Tải PDF gốc</a>`
-            : `<button class="source-open-btn" type="button" disabled>Tải PDF gốc</button>`}
+          <div class="source-actions" style="display: flex; gap: 8px; margin-top: 12px;">
+            ${canOpenCitation(citation)
+              ? `<a class="source-open-btn" href="${escapeHtml(publicSourceFilePath(citation))}" target="_blank" rel="noopener" download style="margin-top: 0;">Tải PDF gốc</a>`
+              : `<button class="source-open-btn" type="button" disabled style="margin-top: 0;">Tải PDF gốc</button>`}
+            <button class="source-open-btn" type="button" disabled style="margin-top: 0; opacity: 0.5; cursor: not-allowed;" title="Tính năng xem trước (Preview) sẽ được cập nhật trong tương lai">Xem trước</button>
+          </div>
         </article>
       `,
     )
@@ -1661,6 +1791,82 @@ function renderCitationPreview(payload) {
   });
 }
 
+function getStepIcon(stepId, status) {
+  const cleanId = String(stepId || "").toLowerCase();
+  if (cleanId.includes("scope")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg shield"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>`;
+  }
+  if (cleanId.includes("context")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg context"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>`;
+  }
+  if (cleanId.includes("analyze") || cleanId.includes("analysis")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg brain"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96-.44 2.5 2.5 0 0 1 0-3.12 3 3 0 0 1 0-3.88 2.5 2.5 0 0 1 0-3.12A2.5 2.5 0 0 1 9.5 2zM14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96-.44 2.5 2.5 0 0 0 0-3.12 3 3 0 0 0 0-3.88 2.5 2.5 0 0 0 0-3.12A2.5 2.5 0 0 0 14.5 2z"/></svg>`;
+  }
+  if (cleanId.includes("plan_retrieval") || cleanId.includes("retrieval_plan")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg compass"><circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/></svg>`;
+  }
+  if (cleanId.includes("retrieve") || cleanId.includes("search")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg database"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>`;
+  }
+  if (cleanId.includes("evidence")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg evidence"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>`;
+  }
+  if (cleanId.includes("format")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg format"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>`;
+  }
+  if (cleanId.includes("draft")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg draft"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
+  }
+  if (cleanId.includes("verify") || cleanId.includes("verification") || cleanId.includes("repair")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg verify"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 11 11 13 15 9"/></svg>`;
+  }
+  if (cleanId.includes("critic")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg critic"><line x1="12" y1="2" x2="12" y2="22"/><line x1="5" y1="7" x2="19" y2="7"/><path d="M19 7l-3 6H20l-3-6M5 7L2 13H6L3 13"/></svg>`;
+  }
+  if (cleanId.includes("final")) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg final"><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>`;
+  }
+
+  const isDone = status === 'done';
+  const isWarning = status === 'warning';
+  const isEmpty = status === 'empty';
+  
+  if (isDone) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="trace-svg done"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
+  }
+  if (isWarning) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="trace-svg warning"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path><line x1="12" y1="9" x2="12" y2="13"></line><line x1="12" y1="17" x2="12.01" y2="17"></line></svg>`;
+  }
+  if (isEmpty) {
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" class="trace-svg empty"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>`;
+  }
+
+  return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="trace-svg"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>`;
+}
+
+function getStepDuration(step) {
+  state.traceTimes = state.traceTimes || {};
+  const key = step.id || step.label;
+  const now = Date.now();
+  if (step.status === 'running') {
+    if (!state.traceTimes[key]) {
+      state.traceTimes[key] = { start: now };
+    }
+    return 'đang chạy...';
+  }
+  if (step.status === 'done' || step.status === 'warning' || step.status === 'empty') {
+    if (state.traceTimes[key]) {
+      if (!state.traceTimes[key].end) {
+        state.traceTimes[key].end = now;
+        state.traceTimes[key].duration = ((state.traceTimes[key].end - state.traceTimes[key].start) / 1000).toFixed(1) + 's';
+      }
+      return state.traceTimes[key].duration;
+    }
+    return '';
+  }
+  return '';
+}
+
 function renderTrace(steps, trace = null) {
   const target = qs("#tracePanel");
   const rows = Array.isArray(steps) ? steps : [];
@@ -1696,20 +1902,51 @@ function renderTrace(steps, trace = null) {
     `;
   }
   
-  target.innerHTML = summaryHtml + rows
-    .map(
-      (step) => `
-        <article class="trace-step">
-          <span class="trace-dot ${escapeHtml(step.status || "")}"></span>
-          <div class="trace-card">
+  const stepHtmls = rows.map((step) => {
+    const duration = getStepDuration(step);
+    const metadataHtml = renderTraceMetadata(step.metadata);
+    const hasMetadata = !!metadataHtml;
+    
+    return `
+      <article class="trace-step">
+        <div class="trace-icon-wrapper ${escapeHtml(step.status || "")}">
+          ${getStepIcon(step.id || step.label, step.status)}
+        </div>
+        <div class="trace-card ${escapeHtml(step.status || "")} ${hasMetadata ? 'expandable' : ''}" data-step-id="${escapeHtml(step.id || step.label)}">
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
             <div class="source-title">${displayText(step.label || "Bước xử lý")}</div>
-            ${step.detail ? `<div class="trace-meta">${displayText(step.detail)}</div>` : ""}
-            ${renderTraceMetadata(step.metadata)}
+            ${duration ? `<span class="trace-duration" style="font-size: 11px; color: var(--muted); font-weight: 600;">${duration}</span>` : ""}
           </div>
-        </article>
-      `,
-    )
-    .join("");
+          ${step.detail ? `<div class="trace-meta">${displayText(step.detail)}</div>` : ""}
+          ${hasMetadata ? `
+            <div class="trace-metadata-accordion ${step.status === 'running' || step.status === 'warning' ? 'expanded' : ''}">
+              ${metadataHtml}
+            </div>
+          ` : ""}
+        </div>
+      </article>
+    `;
+  }).join("");
+
+  target.innerHTML = summaryHtml + `
+    <div class="trace-timeline-container">
+      <div class="trace-timeline-connector"></div>
+      ${stepHtmls}
+    </div>
+  `;
+
+  // Wire collapse click events
+  document.querySelectorAll(".trace-card.expandable").forEach((card) => {
+    card.addEventListener("click", (e) => {
+      // Don't toggle if clicking on sub-links or buttons inside
+      if (e.target.closest("a") || e.target.closest("button")) return;
+      const accordion = card.querySelector(".trace-metadata-accordion");
+      if (accordion) {
+        accordion.classList.toggle("expanded");
+      }
+    });
+  });
+
   wireSpotlight(".trace-card");
 }
 

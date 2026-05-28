@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import os
 import time
 from pathlib import Path
 
@@ -9,7 +10,7 @@ from .llm import LLMError, OpenAICompatibleClient, resolve_llm_config
 from .manifest import ManifestStore, latest_active_records
 from .models import ManifestRecord
 from .rag_index import LocalRagIndex, SearchHit
-from .ragflow_http import RAGFlowConfig, RAGFlowHTTPError, answer_with_ragflow
+from .ragflow_http import RAGFlowConfig, RAGFlowHTTPClient, RAGFlowHTTPError, answer_with_ragflow
 from .runtime import local_fallback_enabled, provider_allowed
 from .text_cleaning import clean_excerpt, clean_retrieval_text, contains_raw_markup, normalized_text
 from .utils import tokenize
@@ -26,6 +27,82 @@ ANSWER_STYLE_LABELS = {
     "workflow": "Workflow",
 }
 MIN_LOCAL_CONFIDENCE_SCORE = 8
+
+
+def ragflow_retrieval_hits(query: str, config: RAGFlowConfig, category: str | None = None) -> list[SearchHit]:
+    if not config.dataset_id:
+        raise RAGFlowHTTPError("RAGFLOW_TECHNICAL_ACTIVE_DATASET_ID is required for RAGFlow retrieval")
+    client = RAGFlowHTTPClient(config.base_url, config.api_key)
+    response = client.retrieve_chunks(
+        [config.dataset_id],
+        query,
+        top_k=int(os.getenv("RAGFLOW_RETRIEVAL_TOP_K", "20")),
+        page_size=int(os.getenv("RAGFLOW_RETRIEVAL_PAGE_SIZE", "20")),
+        metadata_condition=ragflow_metadata_condition(category),
+        similarity_threshold=float(os.getenv("RAGFLOW_SIMILARITY_THRESHOLD", "0.0")),
+        vector_similarity_weight=float(os.getenv("RAGFLOW_VECTOR_WEIGHT", "0.3")),
+        rerank_id=os.getenv("RAGFLOW_RERANK_ID"),
+    )
+    data = response.get("data") if isinstance(response, dict) else {}
+    raw_chunks = data.get("chunks") if isinstance(data, dict) else []
+    if not isinstance(raw_chunks, list):
+        raw_chunks = []
+    hits = [hit for chunk in raw_chunks if (hit := ragflow_chunk_to_search_hit(chunk))]
+    return hits[:20]
+
+
+def ragflow_metadata_condition(category: str | None = None) -> dict[str, object]:
+    conditions: list[dict[str, object]] = [
+        {"name": "status", "comparison_operator": "is", "value": "active"}
+    ]
+    department = os.getenv("RAGFLOW_RETRIEVAL_DEPARTMENT", "technical").strip()
+    if department:
+        conditions.append({"name": "department", "comparison_operator": "is", "value": department})
+    if category:
+        conditions.append({"name": "category", "comparison_operator": "is", "value": category})
+    return {"logic": "and", "conditions": conditions}
+
+
+def ragflow_chunk_to_search_hit(chunk: object) -> SearchHit | None:
+    if not isinstance(chunk, dict):
+        return None
+    metadata = chunk.get("document_metadata") or chunk.get("metadata") or chunk.get("meta_fields") or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    raw_text = (
+        chunk.get("content")
+        or chunk.get("content_with_weight")
+        or chunk.get("text")
+        or chunk.get("highlight")
+        or ""
+    )
+    text = clean_retrieval_text(str(raw_text))
+    if not text:
+        return None
+    doc_id = str(metadata.get("doc_id") or chunk.get("document_id") or chunk.get("doc_id") or "").strip()
+    if not doc_id:
+        return None
+    raw_score = chunk.get("similarity") or chunk.get("score") or chunk.get("rank_score") or 0
+    try:
+        numeric_score = float(raw_score)
+    except (TypeError, ValueError):
+        numeric_score = 0.0
+    score = int(numeric_score * 100) if 0 <= numeric_score <= 1 else int(numeric_score)
+    return SearchHit(
+        doc_id=doc_id,
+        version=str(metadata.get("version") or ""),
+        title=str(metadata.get("title") or chunk.get("document_name") or doc_id),
+        category=str(metadata.get("category") or ""),
+        chunk_id=str(chunk.get("id") or chunk.get("chunk_id") or ""),
+        text=text,
+        score=max(score, 1),
+        source_path=str(metadata.get("source_path") or chunk.get("url") or ""),
+        normalized_path=str(metadata.get("normalized_path") or ""),
+        display_code=str(metadata.get("display_code") or "") or None,
+        display_version=str(metadata.get("display_version") or metadata.get("source_revision") or "") or None,
+        source_role=str(metadata.get("source_role") or "") or None,
+        source_revision=str(metadata.get("source_revision") or "") or None,
+    )
 
 
 def infer_query_answer_style(query: str, selected_style: str = "brief") -> str:
@@ -263,8 +340,187 @@ def ask(
                         "llm_provider": None,
                         "llm_model": None,
                     }
+        elif config and config.dataset_id:
+            try:
+                category = infer_category(query)
+                ragflow_hits = ragflow_retrieval_hits(query, config, category=category)
+            except RAGFlowHTTPError as exc:
+                ragflow_error = str(exc)
+                if provider == "ragflow":
+                    latency_ms = int((time.perf_counter() - start) * 1000)
+                    log_id = db.log_query(
+                        stored_query,
+                        user_id,
+                        [],
+                        False,
+                        latency_ms,
+                        NO_SOURCE_ANSWER,
+                        answer_source=ANSWER_SOURCE_NO_ANSWER,
+                    )
+                    gap_id = db.create_gap(stored_query, "ragflow_retrieval_error", infer_category(query))
+                    return {
+                        "answer": NO_SOURCE_ANSWER,
+                        "citations": [],
+                        "query_log_id": log_id,
+                        "knowledge_gap_id": gap_id,
+                        "latency_ms": latency_ms,
+                        "provider": "ragflow",
+                        "ragflow_mode": "retrieval",
+                        "ragflow_error": ragflow_error,
+                        "llm_used": False,
+                        "llm_error": None,
+                        "answer_source": ANSWER_SOURCE_NO_ANSWER,
+                        "fallback_reason": "ragflow_retrieval_error",
+                        "llm_provider": None,
+                        "llm_model": None,
+                    }
+                if not local_fallback_enabled():
+                    latency_ms = int((time.perf_counter() - start) * 1000)
+                    log_id = db.log_query(
+                        stored_query,
+                        user_id,
+                        [],
+                        False,
+                        latency_ms,
+                        NO_SOURCE_ANSWER,
+                        answer_source=ANSWER_SOURCE_NO_ANSWER,
+                    )
+                    gap_id = db.create_gap(
+                        stored_query,
+                        "ragflow_retrieval_error_local_fallback_disabled",
+                        infer_category(query),
+                    )
+                    return {
+                        "answer": NO_SOURCE_ANSWER,
+                        "citations": [],
+                        "query_log_id": log_id,
+                        "knowledge_gap_id": gap_id,
+                        "latency_ms": latency_ms,
+                        "provider": "auto",
+                        "ragflow_mode": "retrieval",
+                        "ragflow_error": ragflow_error,
+                        "llm_used": False,
+                        "llm_error": None,
+                        "answer_source": ANSWER_SOURCE_NO_ANSWER,
+                        "fallback_reason": "ragflow_retrieval_error_local_fallback_disabled",
+                        "llm_provider": None,
+                        "llm_model": None,
+                    }
+            else:
+                if ragflow_hits:
+                    llm_error = None
+                    llm_used = False
+                    answer_source = ANSWER_SOURCE_FALLBACK
+                    fallback_reason = "use_llm_false"
+                    llm_provider = None
+                    llm_model = None
+                    if use_llm:
+                        llm_config = resolve_llm_config(root)
+                        if llm_config:
+                            try:
+                                client = OpenAICompatibleClient(llm_config)
+                                answer = client.answer(
+                                    query,
+                                    ragflow_hits,
+                                    answer_style=answer_style,
+                                )
+                                if contains_raw_markup(answer):
+                                    answer = client.answer(
+                                        query,
+                                        ragflow_hits,
+                                        answer_style=answer_style,
+                                        extra_instruction="clean_answer",
+                                    )
+                                llm_provider = client.config.provider
+                                llm_model = client.config.model
+                                if contains_raw_markup(answer):
+                                    llm_error = "LLM returned raw markup after retry"
+                                    answer = build_answer(ragflow_hits, answer_style=answer_style, query=query)
+                                    fallback_reason = "llm_dirty_answer"
+                                else:
+                                    llm_used = True
+                                    answer_source = ANSWER_SOURCE_LLM
+                                    fallback_reason = None
+                            except LLMError as exc:
+                                llm_error = str(exc)
+                                if 'client' in locals():
+                                    llm_provider = client.config.provider
+                                    llm_model = client.config.model
+                                else:
+                                    llm_provider = llm_config.provider
+                                    llm_model = llm_config.model
+                                answer = build_answer(ragflow_hits, answer_style=answer_style, query=query)
+                                fallback_reason = "llm_error"
+                        else:
+                            llm_error = "POC_LLM_MODEL and POC_LLM_API_KEY/OPENAI_API_KEY are required for --use-llm"
+                            answer = build_answer(ragflow_hits, answer_style=answer_style, query=query)
+                            fallback_reason = "llm_not_configured"
+                    else:
+                        answer = build_answer(ragflow_hits, answer_style=answer_style, query=query)
+                    latency_ms = int((time.perf_counter() - start) * 1000)
+                    doc_ids = sorted({hit.doc_id for hit in ragflow_hits})
+                    log_id = db.log_query(
+                        stored_query,
+                        user_id,
+                        doc_ids,
+                        True,
+                        latency_ms,
+                        answer,
+                        llm_used=llm_used,
+                        llm_error=llm_error,
+                        answer_source=answer_source,
+                        llm_provider=llm_provider,
+                        llm_model=llm_model,
+                    )
+                    return {
+                        "answer": answer,
+                        "citations": [citation_payload(hit) for hit in ragflow_hits],
+                        "query_log_id": log_id,
+                        "knowledge_gap_id": None,
+                        "latency_ms": latency_ms,
+                        "provider": "ragflow",
+                        "ragflow_mode": "retrieval",
+                        "ragflow_error": None,
+                        "llm_used": llm_used,
+                        "llm_error": llm_error,
+                        "answer_source": answer_source,
+                        "fallback_reason": fallback_reason,
+                        "llm_provider": llm_provider,
+                        "llm_model": llm_model,
+                    }
+                if provider == "ragflow":
+                    latency_ms = int((time.perf_counter() - start) * 1000)
+                    log_id = db.log_query(
+                        stored_query,
+                        user_id,
+                        [],
+                        False,
+                        latency_ms,
+                        NO_SOURCE_ANSWER,
+                        answer_source=ANSWER_SOURCE_NO_ANSWER,
+                    )
+                    gap_id = db.create_gap(stored_query, "ragflow_no_chunks", infer_category(query))
+                    return {
+                        "answer": NO_SOURCE_ANSWER,
+                        "citations": [],
+                        "query_log_id": log_id,
+                        "knowledge_gap_id": gap_id,
+                        "latency_ms": latency_ms,
+                        "provider": "ragflow",
+                        "ragflow_mode": "retrieval",
+                        "ragflow_error": None,
+                        "llm_used": False,
+                        "llm_error": None,
+                        "answer_source": ANSWER_SOURCE_NO_ANSWER,
+                        "fallback_reason": "ragflow_no_chunks",
+                        "llm_provider": None,
+                        "llm_model": None,
+                    }
         elif provider == "ragflow":
-            ragflow_error = "RAGFLOW_BASE_URL, RAGFLOW_API_KEY, and RAGFLOW_CHAT_ID or RAGFLOW_SEARCH_ID are required"
+            ragflow_error = (
+                "RAGFLOW_BASE_URL, RAGFLOW_API_KEY, and RAGFLOW_TECHNICAL_ACTIVE_DATASET_ID "
+                "or RAGFLOW_CHAT_ID or RAGFLOW_SEARCH_ID are required"
+            )
             latency_ms = int((time.perf_counter() - start) * 1000)
             log_id = db.log_query(
                 stored_query,
@@ -421,17 +677,18 @@ def ask(
     if use_llm:
         config = resolve_llm_config(root)
         if config:
-            llm_provider = config.provider
-            llm_model = config.model
             try:
-                answer = OpenAICompatibleClient(config).answer(query, hits, answer_style=answer_style)
+                client = OpenAICompatibleClient(config)
+                answer = client.answer(query, hits, answer_style=answer_style)
                 if contains_raw_markup(answer):
-                    answer = OpenAICompatibleClient(config).answer(
+                    answer = client.answer(
                         query,
                         hits,
                         answer_style=answer_style,
                         extra_instruction="clean_answer",
                     )
+                llm_provider = client.config.provider
+                llm_model = client.config.model
                 if contains_raw_markup(answer):
                     llm_error = "LLM returned raw markup after retry"
                     answer = build_answer(hits, answer_style=answer_style, query=query)
@@ -442,6 +699,12 @@ def ask(
                     fallback_reason = None
             except LLMError as exc:
                 llm_error = str(exc)
+                if 'client' in locals():
+                    llm_provider = client.config.provider
+                    llm_model = client.config.model
+                else:
+                    llm_provider = config.provider
+                    llm_model = config.model
                 answer = build_answer(hits, answer_style=answer_style, query=query)
                 fallback_reason = "llm_error"
         else:
@@ -690,6 +953,8 @@ def source_label_for_hit(hit: SearchHit) -> str:
 
 def is_technical_procedure_catalog_query(query: str) -> bool:
     normalized = normalized_text(query)
+    if is_procedure_step_count_query(normalized):
+        return False
     asks_catalog = any(
         term in normalized
         for term in [
@@ -705,6 +970,21 @@ def is_technical_procedure_catalog_query(query: str) -> bool:
         "tai lieu" in normalized or "danh sach" in normalized or "phong" in normalized or "bo phan" in normalized or "bao nhieu" in normalized or "so luong" in normalized
     )
     return asks_catalog and asks_procedure_docs
+
+
+def is_procedure_step_count_query(query: str) -> bool:
+    normalized = normalized_text(query)
+    return "quy trinh" in normalized and "buoc" in normalized and any(
+        term in normalized
+        for term in [
+            "bao nhieu buoc",
+            "may buoc",
+            "gom bao nhieu buoc",
+            "co bao nhieu buoc",
+            "gom nhung buoc",
+            "cac buoc",
+        ]
+    )
 
 
 def active_catalog_record(root: Path) -> ManifestRecord | None:

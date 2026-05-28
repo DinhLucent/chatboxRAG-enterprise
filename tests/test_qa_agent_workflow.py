@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from poc_workflow.chatbot import NO_SOURCE_ANSWER
+from poc_workflow.chatbot import NO_SOURCE_ANSWER, is_technical_procedure_catalog_query
 from poc_workflow import qa_agent_workflow as qa
 
 
@@ -155,7 +155,11 @@ def test_qa_agent_workflow_runs_multi_step_pipeline(tmp_path, monkeypatch) -> No
     assert result["answer_source"] == "qa_agent_llm"
     assert result["format_type"] == "table"
     assert result["format_plan"]["primary_format"] == "table"
+    assert result["response_contract_version"] == qa.RESPONSE_CONTRACT_VERSION
+    assert result["format_plan"]["block_plan"]["table"]["enabled"] is True
     assert result["structured_answer"]["answer_type"] == "table"
+    assert result["blocks"]
+    assert any(block["type"] == "table" for block in result["blocks"])
     assert "Ma | Ten | Phien ban | Trang thai" in result["structured_answer"]["markdown"]
     assert result["quality_decision"]["decision"] == "pass"
     assert result["procedure_compliance"]["final_decision"] == "release"
@@ -181,8 +185,148 @@ def test_qa_agent_workflow_runs_multi_step_pipeline(tmp_path, monkeypatch) -> No
     assert len(retrieval_calls) >= 3
     assert retrieval_calls[0]["dataset_ids"] == ["dataset-a", "dataset-b"]
     assert retrieval_calls[0]["kwargs"]["top_k"] == 40
-    assert retrieval_calls[0]["kwargs"]["metadata_condition"]["conditions"][0]["value"] == "active"
+    conditions = retrieval_calls[0]["kwargs"]["metadata_condition"]["conditions"]
+    assert conditions[0]["value"] == "active"
+    assert {"name": "department", "comparison_operator": "is", "value": "technical"} in conditions
+    assert {"name": "category", "comparison_operator": "is", "value": "procedure"} in conditions
     assert any(event.get("event") == "trace" for event in events)
+
+
+def test_qa_agent_uses_local_index_when_ragflow_is_not_configured(tmp_path, monkeypatch) -> None:
+    llm_system_prompts: list[str] = []
+
+    class FakeProcedureLLM:
+        def __init__(self, config) -> None:
+            self.config = config
+
+        def complete_messages(self, messages, **kwargs) -> str:
+            system = str(messages[0]["content"]).lower()
+            llm_system_prompts.append(system)
+            if "query analyzer" in system:
+                return json.dumps(
+                    {
+                        "intent": "procedure/detail",
+                        "entities": {"department": "technical", "document": "KT-QT-001"},
+                        "in_scope": True,
+                        "needs_clarification": False,
+                        "missing_context": [],
+                        "likely_category": "procedure",
+                        "answerability": "answerable",
+                        "structured_query": "quy trinh lap dat ky thuat cac buoc",
+                        "retrieval_queries": ["quy trinh lap dat ky thuat"],
+                        "out_of_scope": False,
+                        "confidence": "high",
+                    }
+                )
+            if "retrieval plan" in system:
+                return json.dumps({"queries": ["quy trinh lap dat ky thuat"], "required_evidence": ["procedure_steps"], "top_k": 10})
+            if "evidence extraction module" in system:
+                return json.dumps(
+                    {
+                        "verified_evidence": [
+                            {
+                                "claim": "Quy trinh lap dat co cac buoc tiep nhan, lap dat va nghiem thu.",
+                                "doc_id": "KT-QT-001",
+                                "version": "1.0",
+                                "evidence_type": "procedure_steps",
+                                "citation": "KT-QT-001-v1-0-c1",
+                                "confidence": 0.94,
+                            }
+                        ],
+                        "missing_evidence": [],
+                        "conflicts": [],
+                    }
+                )
+            if "response format planner" in system:
+                return json.dumps(
+                    {
+                        "primary_format": "step_by_step",
+                        "secondary_blocks": ["sources"],
+                        "render_hints": {"show_timeline": True, "show_checklist_button": True, "show_mermaid_button": False},
+                    }
+                )
+            if "internal procedure assistant" in system:
+                return json.dumps(
+                    {
+                        "answer_type": "step_by_step",
+                        "title": "Quy trinh lap dat",
+                        "summary": "Quy trinh lap dat gom 3 buoc chinh.",
+                        "steps": [
+                            {"step_no": 1, "title": "Tiep nhan", "description": "Tiep nhan yeu cau.", "source_anchor": "KT-QT-001-v1-0-c1"},
+                            {"step_no": 2, "title": "Lap dat", "description": "Thuc hien lap dat.", "source_anchor": "KT-QT-001-v1-0-c1"},
+                            {"step_no": 3, "title": "Nghiem thu", "description": "Kiem tra va nghiem thu.", "source_anchor": "KT-QT-001-v1-0-c1"},
+                        ],
+                        "responsibilities": [],
+                        "forms_records": [],
+                        "notes": [],
+                        "sources": [{"doc_id": "KT-QT-001", "version": "1.0", "title": "Quy trinh lap dat"}],
+                        "markdown": "",
+                    }
+                )
+            if "answer verification module" in system:
+                return json.dumps({"passed": True, "issues": [], "final_action": "render", "rationale": "grounded"})
+            if "citation critic" in system:
+                return json.dumps({"decision": "pass", "rationale": "grounded", "issues": []})
+            if "procedure compliance checker" in system:
+                return json.dumps({"procedure_compliance": "passed", "final_decision": "release", "citation_coverage": 1.0, "rationale": "ok"})
+            return "{}"
+
+    class FakeLocalIndex:
+        def __init__(self, root) -> None:
+            self.root = root
+
+        def search(self, query, **kwargs):
+            return [
+                qa.SearchHit(
+                    doc_id="KT-QT-001",
+                    version="1.0",
+                    title="Quy trinh lap dat",
+                    category="procedure",
+                    chunk_id="KT-QT-001_v1.0_c1",
+                    text=(
+                        "6. Noi dung cong viec\n"
+                        "1\nR\nTiep nhan yeu cau\n"
+                        "2\nR\nLap dat thiet bi\n"
+                        "3\nR\nNghiem thu va ban giao\n"
+                        "7. Ho so tai lieu dinh kem"
+                    ),
+                    score=42,
+                    source_path="",
+                    normalized_path="",
+                    display_code="PD-TECH-A-01",
+                    display_version="Rev 04",
+                    source_role="primary_pdf",
+                    anchor_id="KT-QT-001-v1-0-c1",
+                )
+            ]
+
+        def document_chunks(self, doc_id, **kwargs):
+            return self.search(doc_id, **kwargs)
+
+    monkeypatch.setenv("POC_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("POC_LLM_MODEL", "test-model")
+    monkeypatch.delenv("RAGFLOW_BASE_URL", raising=False)
+    monkeypatch.delenv("RAGFLOW_API_KEY", raising=False)
+    monkeypatch.delenv("RAGFLOW_DATASET_ALLOWLIST", raising=False)
+    monkeypatch.setattr(qa, "OpenAICompatibleClient", FakeProcedureLLM)
+    monkeypatch.setattr(qa, "LocalRagIndex", FakeLocalIndex)
+
+    result = qa.run_qa_agent_workflow(tmp_path, "quy trinh lap dat cua ky thuat gom bao nhieu buoc?")
+
+    assert result["answer_source"] == "qa_agent_llm"
+    assert result["llm_used"] is True
+    assert result["citations"][0]["doc_id"] == "KT-QT-001"
+    retrieval_plan_step = next(step for step in result["trace_steps"] if step["id"] == "retrieval_plan")
+    retrieve_step = next(step for step in result["trace_steps"] if step["id"] == "retrieve")
+    assert retrieval_plan_step["metadata"]["backend"] == "local_index"
+    assert retrieval_plan_step["metadata"]["fast_local_mode"] is True
+    assert retrieve_step["metadata"]["backend"] == "local_index"
+    assert "3 buoc" in result["answer"]
+    assert any("query analyzer" in prompt for prompt in llm_system_prompts)
+    assert not any("internal procedure assistant" in prompt for prompt in llm_system_prompts)
+    assert not any("retrieval plan" in prompt for prompt in llm_system_prompts)
+    assert not any("evidence extraction module" in prompt for prompt in llm_system_prompts)
+    assert not any("procedure compliance checker" in prompt for prompt in llm_system_prompts)
 
 
 def test_qa_agent_workflow_fails_closed_without_llm_config(tmp_path, monkeypatch) -> None:
@@ -196,6 +340,8 @@ def test_qa_agent_workflow_fails_closed_without_llm_config(tmp_path, monkeypatch
     assert result["format_type"] == "no_answer_card"
     assert result["format_plan"]["primary_format"] == "no_answer_card"
     assert result["structured_answer"]["answer_type"] == "no_answer"
+    assert result["response_contract_version"] == qa.RESPONSE_CONTRACT_VERSION
+    assert result["blocks"][0]["type"] == "scope_reject"
     assert result["citations"] == []
 
 
@@ -224,9 +370,35 @@ def test_analyzer_planner_and_critic_guardrails() -> None:
 
     missing = qa.deterministic_analysis("quy trinh nay", [], "brief")
     assert missing["missing_context"] == ["document_or_procedure_name"]
+    assert missing["needs_clarification"] is True
+    assert missing["structured_query"]
+
+    decision = qa.deterministic_analysis("toi nen dung bieu mau nao", [], "brief")
+    decision_plan = qa.deterministic_block_plan(decision, "brief")
+    assert decision_plan["decision_matrix"]["enabled"] is True
+    assert decision_plan["table"]["enabled"] is True
 
     out_of_scope = qa.deterministic_analysis("luong thuong phong ky thuat", [], "brief")
     assert out_of_scope["out_of_scope"] is True
+
+    step_count = qa.deterministic_analysis("quy trinh lap dat cua ky thuat gom bao nhieu buoc", [], "brief")
+    assert step_count["intent"] == "procedure/detail"
+    assert is_technical_procedure_catalog_query("quy trinh lap dat cua ky thuat gom bao nhieu buoc") is False
+    assert is_technical_procedure_catalog_query("co bao nhieu tai lieu quy trinh ky thuat") is True
+    overcautious_llm_analysis = {
+        **step_count,
+        "needs_clarification": True,
+        "missing_context": ["product_or_scope"],
+        "answerability": "needs_clarification",
+    }
+    guarded = qa.apply_analysis_guardrails(
+        "quy trinh lap dat cua ky thuat gom bao nhieu buoc",
+        step_count,
+        overcautious_llm_analysis,
+    )
+    assert guarded["needs_clarification"] is False
+    assert guarded["missing_context"] == []
+    assert guarded["answerability"] == "answerable"
 
     variants = qa.query_variants("cac quy trinh cua phong ky thuat", analysis)
     assert "danh sach quy trinh phong ky thuat" in variants
@@ -247,3 +419,7 @@ def test_analyzer_planner_and_critic_guardrails() -> None:
     assert evidence_pack["verified_evidence"][0]["doc_id"] == "KT-QT-001"
     compliance = qa.deterministic_procedure_compliance("Nguon KT-QT-001", evidence_pack)
     assert compliance["final_decision"] == "retrieve_more"
+
+    clarification = qa.clarification_structured_answer("Can them ten quy trinh.", ["document_or_procedure_name"])
+    verification = qa.deterministic_answer_verification(clarification, {"verified_evidence": []})
+    assert verification["final_action"] == "render"

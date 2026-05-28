@@ -1,0 +1,96 @@
+[
+  {
+    "name": "vague deictic question asks for context",
+    "tags": ["offline", "clarification"],
+    "session_id": "replay-vague",
+    "turns": [
+      {
+        "query": "Quy trinh nay lam sao?",
+        "use_llm": false,
+        "expected_action": "clarify",
+        "expected_blocks": ["clarification", "form"],
+        "forbidden_terms": ["khong tim thay can cu"]
+      }
+    ]
+  },
+  {
+    "name": "out of scope weather is rejected",
+    "tags": ["offline", "scope"],
+    "session_id": "replay-scope",
+    "turns": [
+      {
+        "query": "Thoi tiet hom nay the nao?",
+        "expected_action": "scope_reject",
+        "expected_blocks": ["scope_reject"],
+        "forbidden_terms": ["theo du bao"]
+      }
+    ]
+  },
+  {
+    "name": "technical catalog returns scannable table",
+    "tags": ["live_ragflow", "catalog", "table"],
+    "session_id": "replay-catalog",
+    "requires_env": {
+      "KB_QA_AGENT_WORKFLOW_ENABLED": "true",
+      "POC_LLM_MODEL": "set",
+      "RAGFLOW_BASE_URL": "set",
+      "RAGFLOW_DATASET_ALLOWLIST": "set"
+    },
+    "turns": [
+      {
+        "query": "Cac quy trinh cua phong ky thuat gom nhung tai lieu nao?",
+        "answer_style": "steps",
+        "expected_action": "answer",
+        "expected_blocks": ["summary", "table", "sources"],
+        "required_terms": ["quy trinh"],
+        "expected_doc_ids_any": ["KT-QT-215"]
+      }
+    ]
+  },
+  {
+    "name": "workflow answer keeps follow up context",
+    "tags": ["live_ragflow", "workflow", "multi_turn"],
+    "session_id": "replay-follow-up",
+    "requires_env": {
+      "KB_QA_AGENT_WORKFLOW_ENABLED": "true",
+      "POC_LLM_MODEL": "set",
+      "RAGFLOW_BASE_URL": "set",
+      "RAGFLOW_DATASET_ALLOWLIST": "set"
+    },
+    "turns": [
+      {
+        "query": "Flow quy trinh bao tri may nen tu tiep nhan den luu ho so",
+        "answer_style": "workflow",
+        "expected_action": "answer",
+        "expected_blocks": ["summary", "workflow", "sources"]
+      },
+      {
+        "query": "Buoc 2 ai duyet?",
+        "answer_style": "brief",
+        "expected_action": "answer",
+        "expected_blocks": ["summary", "sources"],
+        "required_terms": ["duyet"]
+      }
+    ]
+  },
+  {
+    "name": "decision style question shows comparison blocks",
+    "tags": ["live_ragflow", "decision"],
+    "session_id": "replay-decision",
+    "requires_env": {
+      "KB_QA_AGENT_WORKFLOW_ENABLED": "true",
+      "POC_LLM_MODEL": "set",
+      "RAGFLOW_BASE_URL": "set",
+      "RAGFLOW_DATASET_ALLOWLIST": "set"
+    },
+    "turns": [
+      {
+        "query": "Toi nen dung bieu mau nao khi phat sinh su co van hanh?",
+        "answer_style": "brief",
+        "expected_action": "answer_or_clarify",
+        "expected_blocks_any": ["decision_matrix", "table", "clarification", "form"],
+        "forbidden_terms": ["chac chan la"]
+      }
+    ]
+  }
+]

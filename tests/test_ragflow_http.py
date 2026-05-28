@@ -108,7 +108,7 @@ def test_retrieve_chunks_sends_dataset_allowlist_and_active_filter(monkeypatch) 
     assert calls == [
         (
             "POST",
-            "/api/v1/chunks/retrieval",
+                "/api/v1/retrieval",
             {
                 "dataset_ids": ["dataset-a", "dataset-b"],
                 "question": "danh sach quy trinh",

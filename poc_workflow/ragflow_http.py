@@ -228,7 +228,7 @@ class RAGFlowHTTPClient:
             payload["metadata_condition"] = metadata_condition
         if rerank_id:
             payload["rerank_id"] = rerank_id
-        return self._json_request("POST", "/api/v1/chunks/retrieval", payload)
+        return self._json_request("POST", "/api/v1/retrieval", payload)
 
     def health(self) -> dict:
         return self._json_request("GET", "/api/v1/system/healthz", None)

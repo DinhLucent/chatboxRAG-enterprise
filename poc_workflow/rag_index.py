@@ -246,6 +246,51 @@ class LocalRagIndex:
             )
         return sorted(hits, key=lambda hit: hit.score, reverse=True)[:limit]
 
+    def document_chunks(
+        self,
+        doc_id: str,
+        *,
+        version: str | None = None,
+        dataset: str = ACTIVE_DATASET,
+        department: str = "technical",
+        category: str | None = None,
+        limit: int = 40,
+    ) -> list[SearchHit]:
+        path = self.index_dir / f"{dataset}.jsonl"
+        if not path.exists():
+            return []
+        hits: list[SearchHit] = []
+        for entry in self._load_entries(path):
+            if entry.department != department or entry.status != "active":
+                continue
+            if entry.doc_id != doc_id:
+                continue
+            if version and entry.version != version:
+                continue
+            if category and not category_matches(entry, category):
+                continue
+            hits.append(
+                SearchHit(
+                    doc_id=entry.doc_id,
+                    version=entry.version,
+                    title=entry.title,
+                    category=entry.category,
+                    chunk_id=entry.chunk_id,
+                    text=entry.text,
+                    score=max(1, entry.content_hits + entry.base_quality_adjustment),
+                    source_path=entry.source_path,
+                    normalized_path=entry.normalized_path,
+                    display_code=entry.display_code,
+                    display_version=entry.display_version,
+                    source_role=entry.source_role,
+                    source_revision=entry.source_revision,
+                    anchor_id=entry.anchor_id,
+                    line_start=entry.line_start,
+                    line_end=entry.line_end,
+                )
+            )
+        return sorted(hits, key=lambda hit: (hit.line_start or 10**9, hit.chunk_id))[:limit]
+
     def _load_entries(self, path: Path) -> list[IndexEntry]:
         stat = path.stat()
         cache_key = path.resolve()

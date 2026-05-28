@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 from pathlib import Path
@@ -70,9 +71,10 @@ def run_user_chat_render_smoke(root: Path, *, browser_path: str | None = None) -
     checks = {
         "browser_exit_ok": completed.returncode == 0,
         "ready_marker_ok": 'data-smoke-ready="true"' in dom,
-        "structured_answer_ok": "structured-answer" in dom and ("structured-checklist" in dom or "structured-timeline" in dom),
+        "structured_answer_ok": "structured-answer" in dom and 'data-contract="answer_blocks.v1"' in dom,
         "table_ok": "markdown-table" in dom,
-        "workflow_ok": "structured-workflow" in dom,
+        "workflow_ok": "answer-block workflow" in dom and "structured-workflow" in dom,
+        "decision_matrix_ok": "answer-block decision-matrix" in dom,
         "source_summary_ok": "source-summary-card" in dom,
         "trace_ok": "trace-details" in dom,
         "evidence_claim_ok": "evidence-pack-card" in dom and "evidence-claim" in dom,
@@ -224,11 +226,19 @@ def sample_result_payload() -> dict[str, Any]:
     return {
         "answer": "Quy trinh bao tri may nen gom 3 buoc.",
         "citations": citations,
+        "response_contract_version": "answer_blocks.v1",
         "format_type": "mermaid",
         "format_plan": {
             "primary_format": "mermaid",
             "secondary_blocks": ["forms_records", "sources"],
             "render_hints": {"show_timeline": True, "show_checklist_button": True, "show_mermaid_button": True},
+            "block_plan": {
+                "summary": {"enabled": True, "reason": "show overview"},
+                "workflow": {"enabled": True, "reason": "primary format"},
+                "steps": {"enabled": True, "reason": "workflow steps"},
+                "form": {"enabled": True, "reason": "records are relevant"},
+                "sources": {"enabled": True, "reason": "grounded answer"},
+            },
         },
         "structured_answer": {
             "answer_type": "mermaid",
@@ -244,6 +254,43 @@ def sample_result_payload() -> dict[str, Any]:
             "notes": [],
             "sources": [{"doc_id": "KT-QT-CTX", "version": "1.0", "display_code": "PD-TECH-A-02", "display_version": "Rev 04", "title": "Quy trinh bao tri may nen"}],
             "markdown": "| Ho so | Trang thai |\\n| --- | --- |\\n| Bien ban bao tri | Bat buoc |",
+            "blocks": [
+                {"type": "summary", "content": "Quy trinh bao tri may nen gom 3 buoc chinh."},
+                {
+                    "type": "workflow",
+                    "items": [
+                        {"text": "Tiep nhan", "detail": "Tiep nhan yeu cau.", "source_anchor": "procedure-chunk-1"},
+                        {"text": "Kiem tra", "detail": "Kiem tra ap suat va lap bien ban.", "source_anchor": "procedure-chunk-1"},
+                        {"text": "Luu ho so", "detail": "Luu ho so bao tri.", "source_anchor": "procedure-chunk-1"},
+                    ],
+                },
+                {
+                    "type": "form",
+                    "items": [{"label": "Bien ban bao tri", "detail": "Lap sau buoc kiem tra.", "source_anchor": "procedure-chunk-1"}],
+                },
+                {
+                    "type": "sources",
+                    "items": [{"doc_id": "KT-QT-CTX", "version": "1.0", "display_code": "PD-TECH-A-02", "display_version": "Rev 04", "title": "Quy trinh bao tri may nen"}],
+                },
+            ],
+        },
+        "blocks": [
+            {"type": "summary", "content": "Quy trinh bao tri may nen gom 3 buoc chinh."},
+            {
+                "type": "workflow",
+                "items": [
+                    {"text": "Tiep nhan", "detail": "Tiep nhan yeu cau.", "source_anchor": "procedure-chunk-1"},
+                    {"text": "Kiem tra", "detail": "Kiem tra ap suat va lap bien ban.", "source_anchor": "procedure-chunk-1"},
+                    {"text": "Luu ho so", "detail": "Luu ho so bao tri.", "source_anchor": "procedure-chunk-1"},
+                ],
+            },
+        ],
+        "block_plan": {
+            "summary": {"enabled": True, "reason": "show overview"},
+            "workflow": {"enabled": True, "reason": "primary format"},
+            "steps": {"enabled": True, "reason": "workflow steps"},
+            "form": {"enabled": True, "reason": "records are relevant"},
+            "sources": {"enabled": True, "reason": "grounded answer"},
         },
         "evidence_summary": {"selected_chunks": 3, "claim_count": 3, "missing_evidence": [], "conflicts": []},
         "evidence_pack": {
@@ -333,11 +380,18 @@ def sample_table_result_payload() -> dict[str, Any]:
     return {
         "answer": "Phong Ky thuat co 3 quy trinh hien hanh.",
         "citations": citations,
+        "response_contract_version": "answer_blocks.v1",
         "format_type": "table",
         "format_plan": {
             "primary_format": "table",
-            "secondary_blocks": ["sources"],
+            "secondary_blocks": ["sources", "decision_matrix"],
             "render_hints": {"show_timeline": False, "show_checklist_button": False, "show_mermaid_button": False},
+            "block_plan": {
+                "summary": {"enabled": True, "reason": "show overview"},
+                "table": {"enabled": True, "reason": "primary format"},
+                "decision_matrix": {"enabled": True, "reason": "decision support rendering"},
+                "sources": {"enabled": True, "reason": "grounded answer"},
+            },
         },
         "structured_answer": {
             "answer_type": "table",
@@ -349,6 +403,37 @@ def sample_table_result_payload() -> dict[str, Any]:
             "notes": [],
             "sources": [{"doc_id": "KT-QT-215", "version": "1.0", "display_code": "PD-IC-A-001", "display_version": "Rev 10", "title": "Danh sach SOP"}],
             "markdown": "| Ma | Ten | Trang thai |\n| --- | --- | --- |\n| KT-QT-215 | Lap dat / Sua chua / Bao tri | active |",
+            "blocks": [
+                {"type": "summary", "content": "Phong Ky thuat co 3 quy trinh hien hanh."},
+                {
+                    "type": "table",
+                    "markdown": "| Ma | Ten | Trang thai |\n| --- | --- | --- |\n| KT-QT-215 | Lap dat / Sua chua / Bao tri | active |",
+                },
+                {
+                    "type": "decision_matrix",
+                    "title": "Chon quy trinh phu hop",
+                    "items": [{"label": "Lap dat / Sua chua / Bao tri", "detail": "Chon theo tinh huong van hanh.", "source_anchor": "catalog-chunk-1"}],
+                },
+                {"type": "sources", "items": [{"doc_id": "KT-QT-215", "version": "1.0", "display_code": "PD-IC-A-001", "display_version": "Rev 10", "title": "Danh sach SOP"}]},
+            ],
+        },
+        "blocks": [
+            {"type": "summary", "content": "Phong Ky thuat co 3 quy trinh hien hanh."},
+            {
+                "type": "table",
+                "markdown": "| Ma | Ten | Trang thai |\n| --- | --- | --- |\n| KT-QT-215 | Lap dat / Sua chua / Bao tri | active |",
+            },
+            {
+                "type": "decision_matrix",
+                "title": "Chon quy trinh phu hop",
+                "items": [{"label": "Lap dat / Sua chua / Bao tri", "detail": "Chon theo tinh huong van hanh.", "source_anchor": "catalog-chunk-1"}],
+            },
+        ],
+        "block_plan": {
+            "summary": {"enabled": True, "reason": "show overview"},
+            "table": {"enabled": True, "reason": "primary format"},
+            "decision_matrix": {"enabled": True, "reason": "decision support rendering"},
+            "sources": {"enabled": True, "reason": "grounded answer"},
         },
         "evidence_summary": {"selected_chunks": 1, "claim_count": 1, "missing_evidence": [], "conflicts": []},
         "evidence_pack": {
@@ -370,3 +455,21 @@ def sample_table_result_payload() -> dict[str, Any]:
         "answer_run": {"intent": "catalog/list_procedure", "final_confidence": 0.95},
         "trace_steps": [],
     }
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Render the user chat UI smoke harness in a headless browser.")
+    parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument("--browser-path", default=None)
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    report = run_user_chat_render_smoke(args.root, browser_path=args.browser_path)
+    print(json.dumps({"pass": report["pass"], "skipped": report["skipped"], "checks": report["checks"]}, ensure_ascii=False))
+    return 0 if report["pass"] or report["skipped"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

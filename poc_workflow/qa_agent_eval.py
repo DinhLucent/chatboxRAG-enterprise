@@ -273,7 +273,14 @@ def contract_analysis(query: str) -> dict[str, Any]:
         return {
             "intent": "ask_procedure",
             "entities": {"department": "technical"},
+            "in_scope": True,
+            "needs_clarification": False,
             "missing_context": [],
+            "likely_category": "procedure",
+            "answerability": "answerable",
+            "structured_query": "quy trinh khong ton tai phong ky thuat active technical source",
+            "retrieval_queries": ["quy trinh khong ton tai phong ky thuat", "missing procedure active source"],
+            "user_facing_clarifying_question": "",
             "out_of_scope": False,
             "confidence": "medium",
         }

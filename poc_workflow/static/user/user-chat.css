@@ -806,6 +806,79 @@ a:focus-visible {
   padding: 14px;
 }
 
+.block-answer {
+  gap: 10px;
+}
+
+.answer-block {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.answer-block h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.answer-block p {
+  margin: 0;
+  color: var(--ink);
+  line-height: 1.55;
+}
+
+.answer-block ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.answer-block li {
+  display: grid;
+  gap: 3px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.answer-block li:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.answer-block li strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.answer-block li span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.answer-block.summary {
+  background: #fffafa;
+  border-color: rgba(225, 29, 72, 0.14);
+}
+
+.answer-block.clarification {
+  background: #fff8e6;
+  border-color: rgba(217, 119, 6, 0.22);
+}
+
+.answer-block.scope-reject {
+  background: #fff7f7;
+  border-color: rgba(239, 68, 68, 0.22);
+}
+
+.answer-block.decision-matrix,
+.answer-block.table {
+  overflow-x: auto;
+}
+
 .structured-note {
   margin: 0;
   color: var(--muted);
@@ -870,6 +943,19 @@ a:focus-visible {
   font-weight: 800;
   line-height: 1;
   text-align: center;
+}
+
+.workflow-mermaid {
+  margin: 8px 0 0;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .workflow-source {
@@ -1965,30 +2051,105 @@ a:focus-visible {
   background: rgba(255, 255, 255, 0.2);
 }
 
+.trace-timeline-container {
+  position: relative;
+  padding-left: 4px;
+}
+
+.trace-timeline-connector {
+  position: absolute;
+  left: 15px; /* aligned with center of 24px icon wrapper */
+  top: 16px;
+  bottom: 16px;
+  width: 2px;
+  background: var(--line-strong);
+  z-index: 1;
+}
+
 .trace-step {
   display: grid;
-  grid-template-columns: 12px minmax(0, 1fr);
-  gap: 12px;
-  align-items: start;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 16px;
+  margin-bottom: 20px;
+  position: relative;
+  z-index: 2;
 }
 
-.trace-dot {
-  width: 10px;
-  height: 10px;
-  margin-top: 20px;
+.trace-icon-wrapper {
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
-  background: var(--green);
-  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.15);
+  background: #ffffff;
+  border: 2px solid var(--line-strong);
+  color: var(--muted);
+  display: grid;
+  place-items: center;
+  z-index: 3;
+  transition: all 0.3s ease;
 }
 
-.trace-dot.empty {
-  background: var(--amber);
-  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.15);
+.trace-icon-wrapper svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2.5;
+  display: block;
 }
 
-.trace-dot.warning {
-  background: var(--red-alert);
-  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.15);
+/* Status variants */
+.trace-icon-wrapper.done {
+  background: #f0fdf4; /* green soft */
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.trace-icon-wrapper.warning {
+  background: rgba(245, 158, 11, 0.1);
+  border-color: var(--amber);
+  color: #d97706;
+}
+
+.trace-icon-wrapper.empty {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: var(--red-alert);
+  color: #dc2626;
+}
+
+.trace-icon-wrapper.running {
+  background: rgba(37, 99, 235, 0.08);
+  border-color: #2563eb;
+  color: #2563eb;
+  animation: trace-pulse 1.8s infinite ease-in-out;
+  box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.3);
+}
+
+@keyframes trace-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.4);
+  }
+  70% {
+    box-shadow: 0 0 0 6px rgba(37, 99, 235, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0);
+  }
+}
+
+.trace-card.expandable {
+  cursor: pointer;
+}
+
+.trace-metadata-accordion {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease-out, margin-top 0.3s ease;
+  margin-top: 0;
+}
+
+.trace-metadata-accordion.expanded {
+  max-height: 500px;
+  margin-top: 10px;
+  border-top: 1px dashed var(--line);
+  padding-top: 10px;
 }
 
 /* Toast Alerts */
@@ -2308,4 +2469,3 @@ blockquote p {
   border-radius: var(--radius);
   background: rgba(239, 68, 68, 0.02);
 }
-
