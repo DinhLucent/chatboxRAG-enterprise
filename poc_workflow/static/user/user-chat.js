@@ -8,6 +8,7 @@ const state = {
   drawerHidden: isCompactLayout(),
   heartbeatTimer: null,
   selectedCitation: null,
+  loadingChartJS: null,
 };
 
 const qs = (selector) => document.querySelector(selector);
@@ -88,12 +89,19 @@ function parseMarkdown(text) {
   let inCode = false;
   let codeLang = "";
   let codeLines = [];
+  let inBlockquote = false;
+  let currentCalloutType = "";
   
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
     const line = lines[lineIndex];
     const trimmed = line.trim();
 
     if (trimmed.startsWith("```")) {
+      if (inBlockquote) {
+        result.push(currentCalloutType ? "</div>" : "</blockquote>");
+        inBlockquote = false;
+        currentCalloutType = "";
+      }
       if (inCode) {
         result.push(renderCodeBlock(codeLang, codeLines.join("\n")));
         inCode = false;
@@ -118,6 +126,52 @@ function parseMarkdown(text) {
     if (inCode) {
       codeLines.push(line);
       continue;
+    }
+
+    // Handle blockquotes / callouts (escaped > is &gt;)
+    if (trimmed.startsWith("&gt;")) {
+      if (inUl) {
+        result.push("</ul>");
+        inUl = false;
+      }
+      if (inOl) {
+        result.push("</ol>");
+        inOl = false;
+      }
+      
+      const quoteContent = line.substring(line.indexOf("&gt;") + 4).trim();
+      
+      if (!inBlockquote) {
+        const calloutMatch = quoteContent.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i);
+        if (calloutMatch) {
+          currentCalloutType = calloutMatch[1].toUpperCase();
+          const innerText = quoteContent.substring(calloutMatch[0].length).trim();
+          result.push(`<div class="callout callout-${currentCalloutType.toLowerCase()}">`);
+          result.push(getCalloutHeader(currentCalloutType));
+          if (innerText) {
+            result.push(`<p class="callout-body">${formatInlineMarkdown(innerText)}</p>`);
+          }
+        } else {
+          currentCalloutType = "";
+          result.push(`<blockquote>`);
+          result.push(`<p>${formatInlineMarkdown(quoteContent)}</p>`);
+        }
+        inBlockquote = true;
+      } else {
+        if (currentCalloutType) {
+          result.push(`<p class="callout-body">${formatInlineMarkdown(quoteContent)}</p>`);
+        } else {
+          result.push(`<p>${formatInlineMarkdown(quoteContent)}</p>`);
+        }
+      }
+      continue;
+    }
+
+    // Close blockquote if we hit a non-blockquote line
+    if (inBlockquote) {
+      result.push(currentCalloutType ? "</div>" : "</blockquote>");
+      inBlockquote = false;
+      currentCalloutType = "";
     }
 
     if (isMarkdownTableStart(lines, lineIndex)) {
@@ -192,6 +246,9 @@ function parseMarkdown(text) {
   
   if (inUl) result.push("</ul>");
   if (inOl) result.push("</ol>");
+  if (inBlockquote) {
+    result.push(currentCalloutType ? "</div>" : "</blockquote>");
+  }
   if (inCode) result.push(renderCodeBlock(codeLang, codeLines.join("\n")));
   
   return result.join("\n");
@@ -509,6 +566,12 @@ function renderCodeBlock(lang, code) {
   if (lang === "mermaid") {
     return renderMermaidWorkflow(code);
   }
+  if (lang === "chart" || lang === "echarts") {
+    const trimmed = code.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      return `<div class="chat-chart-container" data-chart-config="${escapeHtml(trimmed)}"></div>`;
+    }
+  }
   return `<pre class="markdown-code"><code>${code}</code></pre>`;
 }
 
@@ -557,6 +620,90 @@ function toast(message) {
   window.setTimeout(() => target.classList.remove("show"), 2800);
 }
 
+function getCalloutHeader(type) {
+  const titles = {
+    NOTE: "Ghi chú",
+    TIP: "Mẹo / Gợi ý",
+    IMPORTANT: "Quan trọng",
+    WARNING: "Cảnh báo",
+    CAUTION: "Lưu ý đặc biệt"
+  };
+  const title = titles[type] || type;
+  
+  let iconSvg = "";
+  if (type === "NOTE") {
+    iconSvg = `<svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`;
+  } else if (type === "TIP") {
+    iconSvg = `<svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2v2M4.22 4.22l1.42 1.42M18.36 4.22l-1.42 1.42M1 12h2M21 12h2M12 6a6 6 0 0 0-6 6c0 1.66.83 3.12 2.1 4H15.9a4 4 0 0 0 2.1-4c0-3.31-2.69-6-6-6z"/></svg>`;
+  } else if (type === "IMPORTANT") {
+    iconSvg = `<svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`;
+  } else if (type === "WARNING") {
+    iconSvg = `<svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`;
+  } else if (type === "CAUTION") {
+    iconSvg = `<svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`;
+  }
+  
+  return `
+    <div class="callout-title">
+      ${iconSvg}
+      <span>${title}</span>
+    </div>
+  `;
+}
+
+function loadChartJS() {
+  if (window.Chart) {
+    return Promise.resolve(window.Chart);
+  }
+  if (state.loadingChartJS) {
+    return state.loadingChartJS;
+  }
+  state.loadingChartJS = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/chart.js";
+    script.onload = () => {
+      resolve(window.Chart);
+    };
+    script.onerror = (err) => {
+      reject(err);
+    };
+    document.head.appendChild(script);
+  });
+  return state.loadingChartJS;
+}
+
+async function hydrateCharts(container = document) {
+  const chartContainers = container.querySelectorAll(".chat-chart-container:not(.initialized)");
+  if (!chartContainers.length) return;
+  
+  try {
+    const Chart = await loadChartJS();
+    chartContainers.forEach((el) => {
+      el.classList.add("initialized");
+      const configStr = el.getAttribute("data-chart-config");
+      try {
+        const config = JSON.parse(configStr);
+        const canvas = document.createElement("canvas");
+        el.appendChild(canvas);
+        
+        canvas.style.maxWidth = "100%";
+        canvas.style.height = "250px";
+        
+        config.options = config.options || {};
+        config.options.responsive = true;
+        config.options.maintainAspectRatio = false;
+        
+        new Chart(canvas, config);
+      } catch (err) {
+        console.error("Failed to render chart:", err);
+        el.innerHTML = `<p class="chart-error">Lỗi hiển thị biểu đồ: ${escapeHtml(err.message)}</p>`;
+      }
+    });
+  } catch (err) {
+    console.error("Failed to load Chart.js:", err);
+  }
+}
+
 // Spotlight cursor tracking function
 function handleSpotlightMove(e) {
   const card = e.currentTarget;
@@ -596,6 +743,10 @@ async function api(path, options = {}) {
 }
 
 function chatPayload(query) {
+  const categorySelect = document.getElementById("docCategorySelect");
+  const categoryValue = categorySelect ? categorySelect.value : "";
+  const variables = categoryValue ? { category: categoryValue } : null;
+
   return {
     query,
     template_id: state.templateId,
@@ -603,6 +754,7 @@ function chatPayload(query) {
     session_id: state.sessionId,
     device_id: state.deviceId,
     use_llm: true,
+    variables: variables,
   };
 }
 
@@ -636,6 +788,7 @@ async function streamChat(payload) {
       if (!parsed) continue;
       if (parsed.event === "trace") {
         renderTrace(parsed.data.trace_steps || []);
+        updateLoadingStepsUI(state.pendingBubble, parsed.data.trace_steps || []);
       } else if (parsed.event === "final") {
         finalResult = parsed.data.result;
       } else if (parsed.event === "error") {
@@ -844,11 +997,40 @@ async function submitChat(event) {
   qs("#sendBtn").disabled = true;
   appendMessage("user", escapeHtml(query));
   const pending = appendMessage("assistant", renderLoadingMessage());
+  state.pendingBubble = pending;
+
   if (!isCompactLayout()) {
     ensureDrawerVisible();
   }
   switchDrawerTab("trace");
   renderTrace(LOADING_STEPS.map((label) => ({ label, status: "empty", detail: "" })));
+
+  // Setup loading animation interval for active step representation
+  let activeStepIdx = 0;
+  const loadingInterval = setInterval(() => {
+    if (!pending) return;
+    const steps = pending.querySelectorAll(".loading-step");
+    if (!steps.length) {
+      clearInterval(loadingInterval);
+      return;
+    }
+    steps.forEach((stepEl, idx) => {
+      stepEl.classList.remove("active");
+      if (idx < activeStepIdx) {
+        stepEl.style.color = "var(--muted)";
+        stepEl.style.opacity = "0.5";
+        const dot = stepEl.querySelector(".loading-step-dot");
+        if (dot) {
+          dot.style.background = "var(--green)";
+          dot.style.boxShadow = "none";
+          dot.style.animation = "none";
+        }
+      } else if (idx === activeStepIdx) {
+        stepEl.classList.add("active");
+      }
+    });
+    activeStepIdx = (activeStepIdx + 1) % steps.length;
+  }, 1200);
 
   try {
     const payload = chatPayload(query);
@@ -858,6 +1040,7 @@ async function submitChat(event) {
           method: "POST",
           body: JSON.stringify(payload),
         });
+    clearInterval(loadingInterval);
     state.lastResponse = result;
     if (result.session?.session_id) {
       state.sessionId = result.session.session_id;
@@ -870,31 +1053,84 @@ async function submitChat(event) {
     pending.insertAdjacentHTML("beforeend", renderFeedbackActions(result.log_id || result.query_log_id));
     wireFeedback(pending);
     wireAnswerSourceLinks(pending, result.citations || []);
+    hydrateCharts(pending);
     renderSources(result.citations || [], result);
-    renderTrace(result.trace_steps || result.trace?.steps || []);
+    renderTrace(result.trace_steps || result.trace?.steps || [], result.trace);
     switchDrawerTab("sources");
     qs("#drawerMeta").textContent = drawerMetaLabel(result);
     qs("#queryInput").value = "";
     autoGrowTextarea();
   } catch (error) {
+    clearInterval(loadingInterval);
     pending.querySelector(".message-body").textContent = displayAlias(error.message || "Hệ thống chưa sẵn sàng.");
     toast(error.message);
   } finally {
+    clearInterval(loadingInterval);
     qs("#sendBtn").disabled = false;
+    state.pendingBubble = null;
   }
 }
 
 function renderLoadingMessage() {
   return `
+    <div class="loading-indicator-wrapper">
+      <div class="modern-loading-spinner"></div>
+      <div class="loading-title">OrientSOP đang suy nghĩ...</div>
+    </div>
     <div class="loading-list">
-      ${LOADING_STEPS.map((step) => `
-        <div class="loading-step">
+      ${LOADING_STEPS.map((step, idx) => `
+        <div class="loading-step${idx === 0 ? " active" : ""}">
           <span class="loading-step-dot"></span>
           <span>${escapeHtml(step)}</span>
         </div>
       `).join("")}
     </div>
   `;
+}
+
+function updateLoadingStepsUI(pendingElement, traceSteps) {
+  if (!pendingElement) return;
+  const steps = pendingElement.querySelectorAll(".loading-step");
+  if (!steps.length) return;
+  
+  if (Array.isArray(traceSteps) && traceSteps.length > 0) {
+    steps.forEach((stepEl, idx) => {
+      const traceStep = traceSteps[idx];
+      if (traceStep) {
+        stepEl.classList.remove("active");
+        if (traceStep.status === "done") {
+          stepEl.style.color = "var(--muted)";
+          stepEl.style.opacity = "0.5";
+          const dot = stepEl.querySelector(".loading-step-dot");
+          if (dot) {
+            dot.style.background = "var(--green)";
+            dot.style.boxShadow = "none";
+            dot.style.animation = "none";
+          }
+        } else if (traceStep.status === "running") {
+          stepEl.classList.add("active");
+        }
+      }
+    });
+  }
+}
+
+function renderSimilarityBadge(score) {
+  if (score === null || score === undefined) return "";
+  let val = parseFloat(score);
+  if (isNaN(val)) return "";
+  let percent = val;
+  if (val <= 1.0 && val >= 0.0) {
+    percent = val * 100;
+  }
+  percent = Math.round(percent);
+  let matchClass = "match-low";
+  if (percent >= 80) {
+    matchClass = "match-high";
+  } else if (percent >= 50) {
+    matchClass = "match-medium";
+  }
+  return `<span class="similarity-badge ${matchClass}">Độ khớp: ${percent}%</span>`;
 }
 
 function renderSources(citations, result = null) {
@@ -916,7 +1152,10 @@ function renderSources(citations, result = null) {
     .map(
       (citation, index) => `
         <article class="source-card citation-source-card" data-citation-index="${index}">
-          <div class="source-title">${index + 1}. ${displayText(citation.title || citation.doc_id || "Nguồn")}</div>
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 8px;">
+            <div class="source-title">${index + 1}. ${displayText(citation.title || citation.doc_id || "Nguồn")}</div>
+            ${renderSimilarityBadge(citation.score)}
+          </div>
           <div class="source-meta">
             ${displayText(citation.display_code || citation.doc_id || "-")} | ${displayText(citation.display_version || `v${citation.version || "-"}`)}
             ${citation.display_code && citation.doc_id ? ` | ${displayText(citation.doc_id)}` : ""}
@@ -1401,14 +1640,42 @@ function renderCitationPreview(payload) {
   });
 }
 
-function renderTrace(steps) {
+function renderTrace(steps, trace = null) {
   const target = qs("#tracePanel");
   const rows = Array.isArray(steps) ? steps : [];
   if (!rows.length) {
     target.innerHTML = `<div class="empty-state">Chưa có quá trình xử lý.</div>`;
     return;
   }
-  target.innerHTML = rows
+  
+  let summaryHtml = "";
+  if (trace && typeof trace === "object") {
+    const latency = trace.latency_ms !== undefined ? `${trace.latency_ms}ms` : "-";
+    const promptTokens = trace.tokens_prompt !== undefined ? trace.tokens_prompt : "-";
+    const completionTokens = trace.tokens_completion !== undefined ? trace.tokens_completion : "-";
+    
+    summaryHtml = `
+      <article class="trace-summary-card" style="margin-bottom: 16px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface-solid); padding: 16px; box-shadow: var(--shadow-sm);">
+        <div class="source-summary-title" style="font-size: 13px; font-weight: 700; color: var(--ink); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Thống kê hiệu năng</div>
+        <div class="source-summary-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; font-size: 11px;">
+          <div>
+            <span style="display: block; color: var(--muted); font-weight: 600; margin-bottom: 4px;">Độ trễ xử lý</span>
+            <strong style="color: var(--ink); font-size: 13px; font-weight: 700;">${latency}</strong>
+          </div>
+          <div>
+            <span style="display: block; color: var(--muted); font-weight: 600; margin-bottom: 4px;">Token Input</span>
+            <strong style="color: var(--ink); font-size: 13px; font-weight: 700;">${promptTokens}</strong>
+          </div>
+          <div>
+            <span style="display: block; color: var(--muted); font-weight: 600; margin-bottom: 4px;">Token Output</span>
+            <strong style="color: var(--ink); font-size: 13px; font-weight: 700;">${completionTokens}</strong>
+          </div>
+        </div>
+      </article>
+    `;
+  }
+  
+  target.innerHTML = summaryHtml + rows
     .map(
       (step) => `
         <article class="trace-step">
@@ -1507,6 +1774,13 @@ function syncDrawer() {
   drawer.classList.toggle("hidden", state.drawerHidden);
 }
 
+function syncSidebar() {
+  const sidebar = qs("#chatSidebar");
+  const shell = qs(".user-shell");
+  const isHidden = sidebar.classList.contains("hidden");
+  shell.classList.toggle("sidebar-open", !isHidden);
+}
+
 function ensureDrawerVisible() {
   state.drawerHidden = false;
   syncDrawer();
@@ -1525,9 +1799,9 @@ function resetChat() {
   qs("#messages").innerHTML = `
     <div id="welcomeState" class="welcome-state">
       <div class="welcome-hero">
-        <div class="welcome-badge">Hệ thống tri thức thông minh</div>
+        <div class="welcome-badge">Hệ thống tri thức Quy trình Phương Đông</div>
         <p class="welcome-eyebrow">Tôi có thể giúp gì cho bạn hôm nay?</p>
-        <p class="welcome-sub">Tìm kiếm nhanh chóng, trích dẫn chính xác từ kho quy trình nội bộ của doanh nghiệp.</p>
+        <p class="welcome-sub">Tìm kiếm nhanh chóng, trích dẫn chính xác từ kho tài liệu và quy trình hiệu lực của Phương Đông.</p>
       </div>
       <div id="welcomeCards" class="welcome-cards" aria-label="Gợi ý bắt đầu"></div>
     </div>
@@ -1569,6 +1843,122 @@ function startHeartbeat() {
   });
 }
 
+async function loadHistorySessions() {
+  const panel = qs("#historyList");
+  if (!panel) return;
+  panel.innerHTML = `<div class="loading-indicator-wrapper" style="padding: 20px; justify-content: center;"><div class="modern-loading-spinner"></div></div>`;
+  try {
+    const sessions = await api(`/api/user/sessions?device_id=${encodeURIComponent(state.deviceId)}`);
+    if (!sessions || !sessions.length) {
+      panel.innerHTML = `
+        <div class="history-empty">
+          <svg class="history-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/>
+            <polyline points="12 6 12 12 16 14"/>
+          </svg>
+          <p>Chưa có lịch sử trò chuyện nào trên thiết bị này.</p>
+        </div>
+      `;
+      return;
+    }
+    panel.innerHTML = sessions.map(session => {
+      const activeClass = session.session_id === state.sessionId ? " active" : "";
+      const dateText = formatDateTime(session.last_seen_at);
+      const title = session.title || "Cuộc trò chuyện mới";
+      return `
+        <div class="history-card${activeClass}" data-session-id="${escapeHtml(session.session_id)}">
+          <div class="history-card-header">
+            <div class="history-card-title">${escapeHtml(title)}</div>
+            <button class="history-card-delete" type="button" title="Xóa lịch sử" data-session-id="${escapeHtml(session.session_id)}">
+              <svg style="width: 14px; height: 14px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="3 6 5 6 21 6"/>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              </svg>
+            </button>
+          </div>
+          <div class="history-card-meta">
+            <span>${escapeHtml(dateText)}</span>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+    panel.querySelectorAll(".history-card").forEach(card => {
+      card.addEventListener("click", (e) => {
+        if (e.target.closest(".history-card-delete")) return;
+        const sessionId = card.dataset.sessionId;
+        restoreSession(sessionId);
+      });
+    });
+
+    panel.querySelectorAll(".history-card-delete").forEach(btn => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const sessionId = btn.dataset.sessionId;
+        if (confirm("Bạn có chắc chắn muốn xóa cuộc trò chuyện này?")) {
+          try {
+            await api(`/api/user/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+            toast("Đã xóa cuộc trò chuyện");
+            if (sessionId === state.sessionId) {
+              resetChat();
+            } else {
+              loadHistorySessions();
+            }
+          } catch (err) {
+            toast(err.message);
+          }
+        }
+      });
+    });
+
+  } catch (err) {
+    panel.innerHTML = `<div class="history-empty"><p style="color: var(--red-alert);">Lỗi khi tải lịch sử: ${escapeHtml(err.message)}</p></div>`;
+  }
+}
+
+async function restoreSession(sessionId) {
+  try {
+    const turns = await api(`/api/user/sessions/${encodeURIComponent(sessionId)}/turns`);
+    state.sessionId = sessionId;
+    localStorage.setItem("kbUserChatSessionId", sessionId);
+    
+    document.querySelectorAll(".history-card").forEach(card => {
+      card.classList.toggle("active", card.dataset.sessionId === sessionId);
+    });
+
+    const messagesContainer = qs("#messages");
+    messagesContainer.innerHTML = "";
+    
+    if (!turns || !turns.length) {
+      resetChat();
+      return;
+    }
+
+    turns.forEach(turn => {
+      appendMessage("user", escapeHtml(turn.query));
+      const msgEl = appendMessage("assistant", parseMarkdown(turn.answer));
+      if (turn.query_log_id) {
+        msgEl.insertAdjacentHTML("beforeend", renderFeedbackActions(turn.query_log_id));
+        wireFeedback(msgEl);
+      }
+    });
+    
+    state.templateId = null;
+    state.templateLabel = null;
+    qs("#selectedTemplate").textContent = "Không dùng mẫu";
+    document.querySelectorAll(".template-chip").forEach((item) => item.classList.remove("active"));
+    
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+
+    if (isCompactLayout()) {
+      qs("#chatSidebar")?.classList.add("hidden");
+      syncSidebar();
+    }
+  } catch (err) {
+    toast("Lỗi khi khôi phục cuộc trò chuyện: " + err.message);
+  }
+}
+
 async function init() {
   window.addEventListener("mousemove", (e) => {
     document.body.style.setProperty("--global-mouse-x", `${e.clientX}px`);
@@ -1577,6 +1967,18 @@ async function init() {
 
   qs("#chatForm").addEventListener("submit", submitChat);
   qs("#newChatBtn").addEventListener("click", resetChat);
+  qs("#historyBtn")?.addEventListener("click", () => {
+    const sidebar = qs("#chatSidebar");
+    sidebar.classList.toggle("hidden");
+    syncSidebar();
+    if (!sidebar.classList.contains("hidden")) {
+      loadHistorySessions();
+    }
+  });
+  qs("#closeSidebarBtn")?.addEventListener("click", () => {
+    qs("#chatSidebar")?.classList.add("hidden");
+    syncSidebar();
+  });
   qs("#toggleDrawerBtn").addEventListener("click", () => {
     state.drawerHidden = !state.drawerHidden;
     syncDrawer();
@@ -1589,7 +1991,6 @@ async function init() {
     button.addEventListener("click", () => switchDrawerTab(button.dataset.tab));
   });
   
-  // Custom textarea resize and shortcuts
   const queryInput = qs("#queryInput");
   queryInput.addEventListener("input", autoGrowTextarea);
   queryInput.addEventListener("keydown", (event) => {
@@ -1611,6 +2012,7 @@ async function init() {
     toast(error.message);
   }
   syncDrawer();
+  syncSidebar();
 }
 
 init();

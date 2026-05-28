@@ -3,7 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Trợ lý quy trình nội bộ</title>
+    <title>OrientSOP | Trợ lý Quy trình Phương Đông</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -22,11 +23,11 @@
           </div>
         </div>
         <nav class="nav" aria-label="Primary">
-          <button class="nav-item active" data-view="chat">
+          <button class="nav-item admin-only" data-view="chat">
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
-            <span>Hỏi đáp</span>
+            <span>Kiểm thử LLM <span class="maintenance-badge">Bảo trì</span></span>
           </button>
-          <button class="nav-item" data-view="documents">
+          <button class="nav-item active" data-view="documents">
             <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line><polyline points="10 9 9 9 8 9"></polyline></svg>
             <span>Tài liệu</span>
           </button>
@@ -52,7 +53,7 @@
       <main class="content">
         <section class="topbar">
           <div>
-            <h1>Trợ lý quy trình nội bộ</h1>
+            <h1>OrientSOP | Trợ lý Quy trình Phương Đông</h1>
             <p>Tra cứu có dẫn nguồn, kiểm soát vòng đời tài liệu và duyệt vận hành trong một màn hình gọn.</p>
           </div>
           <div class="topbar-actions">
@@ -78,7 +79,26 @@
           </div>
         </section>
 
-        <section class="view active" id="view-chat">
+        <section class="view admin-only under-maintenance" id="view-chat">
+          <!-- Khung thông báo bảo trì chuyên nghiệp -->
+          <div class="maintenance-overlay">
+            <div class="maintenance-card">
+              <div class="maintenance-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="3"></circle>
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                </svg>
+              </div>
+              <h3 class="maintenance-title">Kiểm Thử LLM Đang Bảo Trì</h3>
+              <div class="maintenance-badge-pill">
+                <span class="maintenance-dot"></span> ĐANG BẢO TRÌ
+              </div>
+              <p class="maintenance-desc">
+                Tính năng gửi câu hỏi kiểm thử và xem nguồn trích dẫn dữ liệu hiện đang bảo trì để tối ưu hóa hiệu năng.
+              </p>
+            </div>
+          </div>
+
           <div class="split">
             <section class="panel chat-panel">
               <div class="panel-header">
@@ -87,11 +107,11 @@
               <div id="chatHistory" class="chat-history">
                 <div class="chat-welcome">
                   <div class="welcome-icon">💬</div>
-                  <h3>Trợ lý Quy trình Nội bộ sẵn sàng!</h3>
-                  <p>Đặt câu hỏi về các quy trình, tài liệu kỹ thuật hoặc biểu mẫu trong kho tri thức hiệu lực.</p>
+                  <h3>Trợ lý Quy trình Phương Đông sẵn sàng!</h3>
+                  <p>Đặt câu hỏi về các quy trình Phương Đông, tài liệu vận hành hoặc biểu mẫu trong kho tri thức hiệu lực.</p>
                   <div class="suggested-questions-grid">
-                    <button class="suggested-question-card" data-query="Quy trình xử lý sự cố kỹ thuật gồm những bước nào?" type="button">
-                      <span class="suggested-question-title">Quy trình xử lý sự cố kỹ thuật</span>
+                    <button class="suggested-question-card" data-query="Quy trình xử lý sự cố vận hành gồm những bước nào?" type="button">
+                      <span class="suggested-question-title">Quy trình xử lý sự cố vận hành</span>
                       <small class="suggested-question-desc">Xem các bước xử lý sự cố chuẩn</small>
                     </button>
                     <button class="suggested-question-card" data-query="Làm thế nào để cập nhật phiên bản tài liệu mới?" type="button">
@@ -107,8 +127,8 @@
               </div>
               <form id="chatForm" class="chat-form">
                 <div class="chat-input-wrapper">
-                  <textarea id="queryInput" placeholder="Nhập câu hỏi của bạn về quy trình kỹ thuật... (Nhấn Enter để gửi)"></textarea>
-                  <button class="chat-send-btn" type="submit" aria-label="Gửi câu hỏi">
+                  <textarea id="queryInput" placeholder="Nhập câu hỏi của bạn về quy trình kỹ thuật... (Nhấn Enter để gửi)" disabled></textarea>
+                  <button class="chat-send-btn" type="submit" aria-label="Gửi câu hỏi" disabled>
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="width: 16px; height: 16px;"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
                   </button>
                 </div>
@@ -293,7 +313,7 @@
           </section>
         </section>
 
-        <section class="view" id="view-documents">
+        <section class="view active" id="view-documents">
           <div class="documents-layout">
             <aside class="document-category-panel" aria-label="Danh mục tài liệu">
               <div class="category-panel-title">Danh mục</div>
@@ -385,7 +405,7 @@
                     <ul class="arch-list">
                       <li><strong>Application Backend</strong> tiếp nhận yêu cầu tại cổng <code>:8088</code>.</li>
                       <li><strong>Tầng Truy xuất (Retrieval)</strong> sẽ kiểm tra và chỉ lấy dữ liệu từ các tài liệu có trạng thái <code>active</code> trong <code>manifest/records.json</code>.</li>
-                      <li>Hệ thống ưu tiên sử dụng KnowledgeCore thông qua API nếu được cấu hình. Nếu không, hệ thống sẽ tự động dùng <strong>Index JSONL cục bộ</strong> tại <code>knowledge_index/</code> làm phương án dự phòng (fallback) để tránh gián đoạn dịch vụ.</li>
+                      <li>Hệ thống ưu tiên sử dụng KnowledgeCore thông qua API nếu được cấu hình. Nếu không, hệ thống sẽ tự động dùng <strong>Index JSONL cục bộ</strong> tại <code>ragflow_index/</code> làm phương án dự phòng (fallback) để tránh gián đoạn dịch vụ.</li>
                       <li>Sau khi lấy các đoạn trích (chunks), câu hỏi cùng văn cảnh được gửi tới LLM thông qua <strong>LLM Gateway</strong> ở cổng <code>:3001</code> để tổng hợp câu trả lời cuối cùng, tuyệt đối không gửi toàn bộ file lên Cloud.</li>
                     </ul>
                   </div>
@@ -522,7 +542,7 @@ Respond with a clear list of files scanned, details of changes identified, and a
                 </div>
                 <h3>Knowledge Engine & Index</h3>
                 <div class="bento-status-badge"></div>
-                <p class="bento-meta">Index: <code>knowledge_index/</code> | API KnowledgeCore: <code>:9380</code></p>
+                <p class="bento-meta">Index: <code>ragflow_index/</code> | API KnowledgeCore: <code>:9380</code></p>
                 <p>Tầng tìm kiếm thông minh. Đồng bộ tài liệu đã duyệt sang dataset của KnowledgeCore. Tự động chuyển đổi sang Local JSONL Index nếu kết nối KnowledgeCore lỗi.</p>
               </div>
 
@@ -678,6 +698,13 @@ Respond with a clear list of files scanned, details of changes identified, and a
                 <div id="queryList" class="list"></div>
               </section>
             </div>
+
+            <section class="panel" style="margin-top: var(--space-4);">
+              <div class="panel-header">
+                <h2>Kho câu hỏi chuẩn (RAG Annotations)</h2>
+              </div>
+              <div id="annotationList" class="list"></div>
+            </section>
           </section>
 
           <div class="split system-lower">
@@ -691,8 +718,9 @@ Respond with a clear list of files scanned, details of changes identified, and a
               <div class="panel-header">
                 <h2>Chẩn đoán</h2>
               </div>
+              <div id="diagnosticsLogList" class="list" style="margin-bottom: var(--space-4);"></div>
               <div class="diagnostic-stack">
-                <details>
+                <details style="margin-bottom: var(--space-2);">
                   <summary>Tóm tắt chẩn đoán</summary>
                   <pre id="diagnosticsBox" class="json-box compact"></pre>
                 </details>
@@ -772,6 +800,48 @@ Respond with a clear list of files scanned, details of changes identified, and a
             </div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Annotation Dialog / Modal -->
+    <div id="annotationModalOverlay" class="drawer-overlay" hidden style="background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(4px); z-index: 1000; position: fixed; top: 0; left: 0; right: 0; bottom: 0;"></div>
+    <div id="annotationModal" class="panel" hidden style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 90%; max-width: 600px; max-height: 90vh; background: var(--surface-solid); border: 1px solid var(--line-strong); border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); z-index: 1001; display: flex; flex-direction: column; overflow: hidden; padding: 24px; gap: 16px;">
+      <div class="panel-header" style="border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+        <h2 id="annotationModalTitle" style="font-size: 16px; font-weight: 800; color: var(--ink); margin: 0;">Ghim câu hỏi chuẩn</h2>
+        <button id="closeAnnotationModalBtn" class="button secondary compact" type="button" style="border: none; padding: 4px 8px; font-size: 12px;">Đóng</button>
+      </div>
+      <form id="annotationForm" style="display: flex; flex-direction: column; gap: 12px;">
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+          <label style="font-size: 12px; font-weight: 700; color: var(--ink);">Câu hỏi chuẩn</label>
+          <input type="text" id="annotationQueryInput" required style="width: 100%; padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface); color: var(--ink);" />
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+          <label style="font-size: 12px; font-weight: 700; color: var(--ink);">Câu trả lời của Admin (Sẽ hiển thị lập tức không qua LLM)</label>
+          <textarea id="annotationAnswerInput" rows="6" required style="width: 100%; padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface); color: var(--ink); font-family: inherit; resize: vertical;"></textarea>
+        </div>
+        <div class="split" style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <label style="font-size: 12px; font-weight: 700; color: var(--ink);">Mã tài liệu liên kết (Doc ID - Tùy chọn)</label>
+            <input type="text" id="annotationDocIdInput" placeholder="Ví dụ: PD-TECH-A-02" style="width: 100%; padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface); color: var(--ink);" />
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 4px;">
+            <label style="font-size: 12px; font-weight: 700; color: var(--ink);">Phiên bản (Tùy chọn)</label>
+            <input type="text" id="annotationVersionInput" placeholder="Ví dụ: 1.0" style="width: 100%; padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface); color: var(--ink);" />
+          </div>
+        </div>
+        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px;">
+          <button id="cancelAnnotationBtn" class="button secondary" type="button">Hủy</button>
+          <button type="submit" class="button">Lưu câu hỏi chuẩn</button>
+        </div>
+      </form>
+    </div>
+
+    <!-- Floating Operations Action Bar -->
+    <div id="operationsActionBar" class="floating-action-bar" hidden>
+      <div class="action-bar-content">
+        <span class="selected-count">Đã chọn: <strong id="operationsSelectedCount">0</strong> mục</span>
+        <div class="action-buttons-group" id="operationsActionBarButtons"></div>
+        <button id="operationsClearSelectionBtn" class="button secondary compact" type="button" style="min-height: 32px; font-size: 12px; padding: 4px 12px;">Bỏ chọn</button>
       </div>
     </div>
 

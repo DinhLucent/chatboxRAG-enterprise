@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import shutil
 from dataclasses import dataclass
@@ -8,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .agent_prompt_queue import list_upload_queue, record_upload_workflow_event
-from .config import ALLOWED_CATEGORIES
+from .config import ALLOWED_CATEGORIES, ALLOWED_DEPARTMENTS, DEPARTMENT_DISPLAY_NAMES
 from .converter import ConversionError, MinerUConverter, find_mineru_artifact_index
 from .data_workflow import (
     append_workflow_handoff,
@@ -30,7 +31,8 @@ from .utils import content_hash, copy_file, safe_filename, utc_now, write_json
 
 
 UPLOAD_RUN_SCHEMA_VERSION = "upload_agent_run_v1"
-SUPPORTED_GROUP_SUFFIXES = {".pdf", ".xlsx"}
+SOURCE_PRIORITY = ("xlsx", "xls", "pdf", "docx", "doc")
+SUPPORTED_GROUP_SUFFIXES = {f".{source_type}" for source_type in SOURCE_PRIORITY}
 SYNTHETIC_HEADINGS = {
     "fixing metadata",
     "incident response",
@@ -67,11 +69,14 @@ class UploadSource:
 class UploadDocumentGroup:
     business_key: str
     canonical_business_code: str
+    code_detected: bool
     display_code: str
     source_revision: str
     revision_slug: str
     doc_id: str
     title: str
+    department: str
+    department_name: str
     category: str
     artifact_stem: str
     sources: dict[str, UploadSource]
@@ -155,7 +160,9 @@ def list_upload_document_groups(root: Path, *, category: str | None = "procedure
         if suffix not in SUPPORTED_GROUP_SUFFIXES:
             continue
         identity = business_document_identity(str(item.get("file_name") or ""))
-        grouped.setdefault(identity["business_key"], []).append(item)
+        item_category = str(item.get("suggested_type") or "procedure")
+        department = department_from_queue_item(item, item_category)
+        grouped.setdefault(queue_group_key(department, identity["business_key"]), []).append(item)
 
     groups: list[UploadDocumentGroup] = []
     for business_key, items in grouped.items():
@@ -177,17 +184,24 @@ def list_upload_document_groups(root: Path, *, category: str | None = "procedure
         if not sources:
             continue
         identity = business_document_identity(items[0]["file_name"])
+        item_category = str(items[0].get("suggested_type") or "procedure")
+        department = department_from_queue_item(items[0], item_category)
+        document_business_key = document_business_key_for_department(department, identity["business_key"])
+        doc_id = internal_doc_id(identity["code"], department)
         groups.append(
             UploadDocumentGroup(
-                business_key=business_key,
+                business_key=document_business_key,
                 canonical_business_code=identity["code"],
+                code_detected=bool(identity["code_detected"]),
                 display_code=identity["code"],
                 source_revision=identity["revision"],
                 revision_slug=identity["revision_slug"],
-                doc_id=internal_doc_id(identity["code"]),
+                doc_id=doc_id,
                 title=identity["title"],
-                category=str(items[0].get("suggested_type") or "procedure"),
-                artifact_stem=f"{internal_doc_id(identity['code'])}_{identity['revision_slug']}",
+                department=department,
+                department_name=department_display_name(department),
+                category=item_category,
+                artifact_stem=f"{safe_filename(doc_id)}_{identity['revision_slug']}",
                 sources=sources,
             )
         )
@@ -201,12 +215,17 @@ def process_upload_document_group(
     converter: MinerUConverter,
     primary_source: str = "auto",
 ) -> dict[str, Any]:
-    if group.category not in ALLOWED_CATEGORIES["technical"]:
+    if group.department not in ALLOWED_DEPARTMENTS:
+        raise UploadProcessingError(f"Unsupported Upload department: {group.department}")
+    if group.category not in ALLOWED_CATEGORIES[group.department]:
         raise UploadProcessingError(f"Unsupported Upload category: {group.category}")
     paths = upload_run_paths(root, group)
     create_upload_run_dirs(paths)
     run_id = workflow_run_id(group.doc_id, group.revision_slug)
     source_id = group.artifact_stem
+
+    if not group.code_detected:
+        return terminal_missing_business_code_failure(root=root, group=group, paths=paths, run_id=run_id)
 
     record_upload_workflow_event(
         root,
@@ -237,7 +256,7 @@ def process_upload_document_group(
             quality_gates={
                 "single_business_document_group": True,
                 "source_count": len(staged_sources),
-                "pdf_xlsx_dedupe_required": {"pdf", "xlsx"}.issubset(staged_sources),
+                "multi_source_dedupe_required": len(staged_sources) > 1,
             },
             next_skill="mineru-source-converter",
         ),
@@ -258,7 +277,7 @@ def process_upload_document_group(
 
     probe = build_upload_source_probe_report(group, staged_sources)
     conversions: dict[str, CandidateConversion] = {}
-    for source_type in ("xlsx", "pdf"):
+    for source_type in SOURCE_PRIORITY:
         if source_type not in staged_sources:
             continue
         conversions[source_type] = convert_upload_candidate(
@@ -286,7 +305,7 @@ def process_upload_document_group(
         "selected": selected,
         "reason": primary_source_decision_reason(probe, conversions, selected, primary_source),
         "decided_at": utc_now(),
-        "decided_by": "human" if primary_source in {"xlsx", "pdf"} else "system",
+        "decided_by": "human" if primary_source != "auto" else "system",
         "probe_report_path": str(paths.source_probe_report),
     }
     probe["recommended_primary_source"] = selected
@@ -578,14 +597,43 @@ def process_upload_document_group(
 def business_document_identity(file_name: str) -> dict[str, str]:
     stem = Path(file_name).stem
     normalized = re.sub(r"[_]+", " ", stem)
-    code_match = re.search(r"([A-Z]{2,5}-[A-Z]{2,8}(?:-[A-Z])?-\d{1,4})", normalized, flags=re.IGNORECASE)
-    code = code_match.group(1).upper() if code_match else safe_filename(stem).upper()
+    code_match = re.search(
+        r"\b([A-Z]{2,5})[\s._-]+([A-Z]{1,8})[\s._-]+([A-Z])[\s._-]*(\d{1,4})\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    short_code_match = None if code_match else re.search(
+        r"\b([A-Z]{2,5})[\s._-]+([A-Z]{1,8})[\s._-]*(\d{1,4})\b",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    bm_match = None if code_match or short_code_match else re.search(
+        r"\b(BM|MS|PL)[\s._-]*0*(\d{1,3})(?:[.\s_-]+0*(\d{1,3}))?",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if code_match:
+        number = _canonical_code_number(code_match.group(4))
+        code = f"{code_match.group(1).upper()}-{code_match.group(2).upper()}-{code_match.group(3).upper()}-{number}"
+        code_detected = True
+    elif short_code_match:
+        number = _canonical_code_number(short_code_match.group(3))
+        code = f"{short_code_match.group(1).upper()}-{short_code_match.group(2).upper()}-{number}"
+        code_detected = True
+    elif bm_match:
+        code = f"{bm_match.group(1).upper()}-{int(bm_match.group(2)):03d}"
+        if bm_match.group(3):
+            code += f".{int(bm_match.group(3)):02d}"
+        code_detected = True
+    else:
+        code = safe_filename(stem).upper()
+        code_detected = False
     rev_match = re.search(r"\bRev\.?\s*0*(\d{1,3})\b", normalized, flags=re.IGNORECASE)
     rev_number = int(rev_match.group(1)) if rev_match else 1
     revision = f"Rev {rev_number:02d}"
     revision_slug = f"rev{rev_number:02d}"
     title_start = max(
-        code_match.end() if code_match else 0,
+        code_match.end() if code_match else short_code_match.end() if short_code_match else bm_match.end() if bm_match else 0,
         rev_match.end() if rev_match else 0,
     )
     title = normalized[title_start:]
@@ -599,10 +647,40 @@ def business_document_identity(file_name: str) -> dict[str, str]:
         "revision_slug": revision_slug,
         "title": title,
         "business_key": business_key,
+        "code_detected": code_detected,
     }
 
 
-def internal_doc_id(display_code: str) -> str:
+def _canonical_code_number(raw_number: str) -> str:
+    width = 3 if len(raw_number) >= 3 else 2
+    return f"{int(raw_number):0{width}d}"
+
+
+def department_from_queue_item(item: dict[str, Any], category: str) -> str:
+    relative_path = str(item.get("original_relative_path") or item.get("relative_path") or "")
+    parts = Path(relative_path).parts
+    if len(parts) >= 3 and parts[0] == category:
+        candidate = safe_filename(parts[1]).replace("-", "_").lower()
+        if candidate in ALLOWED_DEPARTMENTS:
+            return candidate
+    return "technical"
+
+
+def department_display_name(department: str) -> str:
+    return DEPARTMENT_DISPLAY_NAMES.get(department, department.replace("_", " ").title())
+
+
+def queue_group_key(department: str, business_key: str) -> str:
+    return business_key if department == "technical" else f"{department}/{business_key}"
+
+
+def document_business_key_for_department(department: str, business_key: str) -> str:
+    return business_key if department == "technical" else f"{department}_{business_key}"
+
+
+def internal_doc_id(display_code: str, department: str = "technical") -> str:
+    if department != "technical":
+        return safe_filename(display_code.upper())
     match = re.search(r"(\d{1,4})$", display_code)
     if not match:
         return safe_filename(display_code).upper()
@@ -610,36 +688,50 @@ def internal_doc_id(display_code: str) -> str:
 
 
 def upload_run_paths(root: Path, group: UploadDocumentGroup) -> UploadRunPaths:
-    group_slug = safe_filename(group.business_key)
-    artifact_root = root / ".Workplace" / "artifacts" / group.category / group.artifact_stem
+    group_slug = short_path_component(safe_filename(group.business_key), max_chars=96)
+    path_stem = short_path_component(group.artifact_stem, max_chars=96)
+    if group.department == "technical":
+        artifact_root = root / ".Workplace" / "artifacts" / group.category / path_stem
+    else:
+        artifact_root = root / ".Workplace" / "artifacts" / group.department / group.category / path_stem
     if (artifact_root / "workflow" / "handoffs.jsonl").exists():
         retry_stamp = safe_filename(utc_now().replace(":", "").replace("+", "Z"))
-        artifact_root = artifact_root.with_name(f"{group.artifact_stem}_{retry_stamp}")
+        artifact_root = artifact_root.with_name(short_path_component(f"{path_stem}_{retry_stamp}", max_chars=110))
     indexes = root / "indexes"
-    rag_ready_root = root / "rag_ready" / "technical" / group.category / group.artifact_stem
+    rag_ready_root = root / "rag_ready" / group.department / group.category / path_stem
     return UploadRunPaths(
         artifact_root=artifact_root,
         converted_raw=root / "converted_raw" / "upload" / group_slug,
         staging=root / "staging" / "upload" / group_slug,
-        normalized=root / "normalized" / "technical" / group.category / f"{group.artifact_stem}.md",
+        normalized=root / "normalized" / group.department / group.category / f"{path_stem}.md",
         indexes=indexes,
         review=root / "review" / "upload" / group_slug,
         reports=artifact_root / "reports",
         source_probe_report=artifact_root / "reports" / "source_probe_report.json",
-        quality_report=indexes / f"{group.artifact_stem}_quality_report.json",
+        quality_report=indexes / f"{path_stem}_quality_report.json",
         repair_handoff=artifact_root / "reports" / "repair_handoff.json",
         repair_log=artifact_root / "reports" / "repair_log.json",
         review_report=root / "review" / "upload" / group_slug / "human_review.json",
         run_report=artifact_root / "reports" / "run_report.md",
         evolution_report=artifact_root / "reports" / "evolution_report.md",
-        metadata_json=indexes / f"{group.artifact_stem}_metadata.json",
-        section_index=indexes / f"{group.artifact_stem}_section_index.json",
-        chunk_plan=indexes / f"{group.artifact_stem}_chunk_plan.json",
-        citation_map=indexes / f"{group.artifact_stem}_citation_map.json",
+        metadata_json=indexes / f"{path_stem}_metadata.json",
+        section_index=indexes / f"{path_stem}_section_index.json",
+        chunk_plan=indexes / f"{path_stem}_chunk_plan.json",
+        citation_map=indexes / f"{path_stem}_citation_map.json",
         schema_manifest=rag_ready_root / "schema_manifest.json",
         citation_manifest=rag_ready_root / "citation_manifest.json",
         index_manifest=rag_ready_root / "index_manifest.json",
     )
+
+
+def short_path_component(value: str, *, max_chars: int = 96) -> str:
+    cleaned = safe_filename(value)
+    if len(cleaned) <= max_chars:
+        return cleaned
+    digest = hashlib.sha256(value.encode("utf-8", errors="ignore")).hexdigest()[:10]
+    prefix_length = max(16, max_chars - len(digest) - 1)
+    prefix = cleaned[:prefix_length].rstrip("._-") or "document"
+    return f"{prefix}-{digest}"
 
 
 def create_upload_run_dirs(paths: UploadRunPaths) -> None:
@@ -660,7 +752,8 @@ def group_metadata(group: UploadDocumentGroup) -> dict[str, Any]:
     return {
         "doc_id": group.doc_id,
         "title": group.title,
-        "department": "technical",
+        "department": group.department,
+        "department_name": group.department_name,
         "category": group.category,
         "source_type": "internal_procedure",
         "language": "vi",
@@ -670,9 +763,10 @@ def group_metadata(group: UploadDocumentGroup) -> dict[str, Any]:
         "display_version": group.source_revision,
         "display_code": group.display_code,
         "canonical_business_code": group.canonical_business_code,
+        "business_document_code_detected": group.code_detected,
         "dedupe_group": group.business_key,
-        "owner": "Phong Ky thuat",
-        "access_group": "technical",
+        "owner": group.department_name,
+        "access_group": group.department,
         "effective_from": utc_now()[:10],
         "review_at": utc_now()[:10],
     }
@@ -700,18 +794,26 @@ def stage_group_sources(sources: dict[str, Path], source_dir: Path) -> dict[str,
 
 
 def build_upload_source_probe_report(group: UploadDocumentGroup, sources: dict[str, Path]) -> dict[str, Any]:
-    xlsx_probe = probe_xlsx_source(sources["xlsx"], group.display_code) if "xlsx" in sources else missing_probe("xlsx")
-    pdf_probe = probe_pdf_source(sources["pdf"], group.display_code) if "pdf" in sources else missing_probe("pdf")
-    recommended = recommended_primary_source(xlsx_probe, pdf_probe)
+    source_probes = {
+        source_type: probe_source_candidate(source_type, path, group.display_code)
+        for source_type, path in sources.items()
+    }
+    for source_type in SOURCE_PRIORITY:
+        source_probes.setdefault(source_type, missing_probe(source_type))
+    recommended = recommended_primary_source(source_probes)
     return {
         "schema_version": UPLOAD_RUN_SCHEMA_VERSION,
         "doc_id": group.doc_id,
         "doc_code": group.display_code,
         "source_revision": group.source_revision,
-        "xlsx_probe": xlsx_probe,
-        "pdf_probe": pdf_probe,
+        "source_probes": source_probes,
+        "xlsx_probe": source_probes["xlsx"],
+        "xls_probe": source_probes["xls"],
+        "pdf_probe": source_probes["pdf"],
+        "docx_probe": source_probes["docx"],
+        "doc_probe": source_probes["doc"],
         "recommended_primary_source": recommended,
-        "reason": primary_probe_reason(xlsx_probe, pdf_probe, recommended),
+        "reason": primary_probe_reason(source_probes, recommended),
         "created_at": utc_now(),
     }
 
@@ -722,6 +824,20 @@ def missing_probe(source_type: str) -> dict[str, Any]:
         "source_type": source_type,
         "issues": [f"{source_type}_source_missing"],
     }
+
+
+def probe_source_candidate(source_type: str, path: Path, display_code: str) -> dict[str, Any]:
+    if source_type == "xlsx":
+        return probe_xlsx_source(path, display_code)
+    if source_type == "xls":
+        return probe_legacy_office_source(path, display_code, "xls")
+    if source_type == "pdf":
+        return probe_pdf_source(path, display_code)
+    if source_type == "docx":
+        return probe_docx_source(path, display_code)
+    if source_type == "doc":
+        return probe_legacy_office_source(path, display_code, "doc")
+    return missing_probe(source_type)
 
 
 def probe_xlsx_source(path: Path, display_code: str) -> dict[str, Any]:
@@ -806,20 +922,77 @@ def probe_pdf_source(path: Path, display_code: str) -> dict[str, Any]:
     }
 
 
-def recommended_primary_source(xlsx_probe: dict[str, Any], pdf_probe: dict[str, Any]) -> str:
+def probe_docx_source(path: Path, display_code: str) -> dict[str, Any]:
+    issues: list[str] = []
+    text = ""
+    try:
+        from .document_qa import extract_source_text
+
+        text, extraction = extract_source_text(path)
+        if extraction.get("error"):
+            issues.append(f"docx_text_probe_failed: {extraction['error']}")
+    except Exception as exc:
+        issues.append(f"docx_text_probe_failed: {exc}")
+    paragraphs = sum(1 for line in text.splitlines() if line.strip())
+    text_key = ascii_key(text)
+    structure_hits = sum(1 for term in ("muc dich", "pham vi", "trach nhiem", "quy trinh", "ho so", "bieu mau") if term in text_key)
+    text_quality = "good" if len(text) >= 1200 else "medium" if len(text) >= 250 else "bad"
+    structure_quality = "good" if structure_hits >= 3 else "medium" if structure_hits else "bad"
+    score = 0.20
+    score += {"good": 0.35, "medium": 0.18, "bad": 0.0}[text_quality]
+    score += {"good": 0.25, "medium": 0.12, "bad": 0.0}[structure_quality]
+    score += 0.10 if paragraphs >= 5 else 0.0
+    if safe_ascii_code(display_code) not in safe_ascii_code(path.name) and safe_ascii_code(display_code) not in text_key:
+        issues.append("doc_code_not_detected_in_docx")
+        score -= 0.10
+    return {
+        "parse_score": round(max(0.0, min(1.0, score)), 2),
+        "source_type": "docx",
+        "paragraph_count": paragraphs,
+        "text_quality": text_quality,
+        "structure_quality": structure_quality,
+        "issues": issues,
+    }
+
+
+def probe_legacy_office_source(path: Path, display_code: str, source_type: str) -> dict[str, Any]:
+    issues: list[str] = [f"{source_type}_binary_text_probe_limited"]
+    score = 0.20 if path.exists() and path.stat().st_size > 0 else 0.0
+    if safe_ascii_code(display_code) in safe_ascii_code(path.name):
+        score += 0.15
+    else:
+        issues.append(f"doc_code_not_detected_in_{source_type}")
+        score -= 0.05
+    return {
+        "parse_score": round(max(0.0, min(1.0, score)), 2),
+        "source_type": source_type,
+        "file_size_bytes": path.stat().st_size if path.exists() else 0,
+        "text_probe_quality": "limited",
+        "issues": issues,
+    }
+
+
+def recommended_primary_source(source_probes: dict[str, dict[str, Any]]) -> str:
+    available = [source_type for source_type in SOURCE_PRIORITY if float((source_probes.get(source_type) or {}).get("parse_score") or 0.0) > 0.0]
+    if not available:
+        return SOURCE_PRIORITY[0]
+    xlsx_probe = source_probes.get("xlsx") or {}
+    pdf_probe = source_probes.get("pdf") or {}
     xlsx_score = float(xlsx_probe.get("parse_score") or 0.0)
     pdf_score = float(pdf_probe.get("parse_score") or 0.0)
-    if xlsx_probe.get("step_extraction_quality") == "good" and xlsx_score >= pdf_score - 0.10:
+    if "xlsx" in available and xlsx_probe.get("step_extraction_quality") == "good" and xlsx_score >= pdf_score - 0.10:
         return "xlsx"
-    return "xlsx" if xlsx_score >= pdf_score else "pdf"
+    return max(available, key=lambda source_type: (float((source_probes.get(source_type) or {}).get("parse_score") or 0.0), -SOURCE_PRIORITY.index(source_type)))
 
 
-def primary_probe_reason(xlsx_probe: dict[str, Any], pdf_probe: dict[str, Any], selected: str) -> str:
-    xlsx_score = float(xlsx_probe.get("parse_score") or 0.0)
-    pdf_score = float(pdf_probe.get("parse_score") or 0.0)
+def primary_probe_reason(source_probes: dict[str, dict[str, Any]], selected: str) -> str:
+    scores = {
+        source_type: float((source_probes.get(source_type) or {}).get("parse_score") or 0.0)
+        for source_type in SOURCE_PRIORITY
+    }
     if selected == "xlsx":
-        return f"XLSX selected by probe because score {xlsx_score} is competitive with PDF score {pdf_score} and table/step extraction is preferred."
-    return f"PDF selected by probe because score {pdf_score} is higher than XLSX score {xlsx_score}."
+        return f"XLSX selected by probe because score {scores['xlsx']} is competitive and table/step extraction is preferred. Candidate scores: {scores}."
+    return f"{selected.upper()} selected by probe. Candidate scores: {scores}."
 
 
 def convert_upload_candidate(
@@ -870,9 +1043,10 @@ def select_upload_primary_source(
     conversions: dict[str, CandidateConversion],
     primary_source: str,
 ) -> str | None:
-    if primary_source not in {"auto", "xlsx", "pdf"}:
-        raise UploadProcessingError("primary_source must be auto, xlsx, or pdf")
-    if primary_source in {"xlsx", "pdf"}:
+    allowed = {"auto", *SOURCE_PRIORITY}
+    if primary_source not in allowed:
+        raise UploadProcessingError(f"primary_source must be one of: {', '.join(sorted(allowed))}")
+    if primary_source != "auto":
         candidate = conversions.get(primary_source)
         return primary_source if candidate and candidate.status == "passed" else None
     passed = [source_type for source_type, candidate in conversions.items() if candidate.status == "passed"]
@@ -890,7 +1064,7 @@ def primary_source_decision_reason(
     selected: str,
     requested: str,
 ) -> str:
-    if requested in {"xlsx", "pdf"}:
+    if requested != "auto":
         return f"{requested.upper()} selected by explicit operator override after MinerU conversion passed."
     conversion_status = {source_type: candidate.status for source_type, candidate in conversions.items()}
     return f"{selected.upper()} selected by source probe and MinerU conversion status: {conversion_status}. {probe.get('reason')}"
@@ -940,7 +1114,14 @@ def build_initial_upload_audit(
     for source_type, candidate in conversions.items():
         summary = candidate_summary(candidate)
         if candidate.status != "passed":
-            issues.append({"type": "candidate_mineru_conversion_blocked", "severity": "medium", "source_type": source_type, "text": candidate.error})
+            issues.append(
+                {
+                    "type": "candidate_mineru_conversion_blocked",
+                    "severity": "high" if source_type == selected else "low",
+                    "source_type": source_type,
+                    "text": candidate.error,
+                }
+            )
             continue
         if not summary.get("raw_markdown_non_empty"):
             issues.append({"type": "empty_mineru_raw_markdown", "severity": "high", "source_type": source_type})
@@ -1025,7 +1206,8 @@ def normalize_mineru_markdown_for_upload(group: UploadDocumentGroup, raw_markdow
         f"internal_version: \"1.0\"",
         f"source_revision: {json.dumps(group.source_revision, ensure_ascii=False)}",
         f"display_version: {json.dumps(group.source_revision, ensure_ascii=False)}",
-        "department: technical",
+        f"department: {group.department}",
+        f"department_name: {json.dumps(group.department_name, ensure_ascii=False)}",
         f"category: {group.category}",
         "status: pending_review",
         "ragflow_ingestion: not_run",
@@ -1176,7 +1358,7 @@ def is_step_noise(line: str) -> bool:
         return True
     if normalized in {"r", "a", "i", "c", "ra", "ic", "ri", "ia"}:
         return True
-    if normalized in {"hangthang", "khicophatsinh", "theolichbaoduong"}:
+    if normalized in {"hangnam", "hangthang", "khiphatsinh", "khicophatsinh", "theokehoach", "theolichbaoduong"}:
         return True
     if normalized in {"stt", "raci", "ketqua", "tansuat", "bieumau"}:
         return True
@@ -1384,6 +1566,12 @@ def verify_upload_rag_readiness(
     text = paths.normalized.read_text(encoding="utf-8", errors="replace")
     citations = rag_ready.get("citations") or []
     issues: list[dict[str, Any]] = []
+    rich_summary = {}
+    if primary.mineru_artifact_index_path and primary.mineru_artifact_index_path.exists():
+        try:
+            rich_summary = json.loads(primary.mineru_artifact_index_path.read_text(encoding="utf-8")).get("summary") or {}
+        except Exception:
+            rich_summary = {}
     issues.extend(normalized_title_quality_issues(group, text))
     summary_count = generated_rag_summary_count(text)
     if summary_count > 1:
@@ -1392,7 +1580,16 @@ def verify_upload_rag_readiness(
         if is_synthetic_heading(heading):
             issues.append({"type": "synthetic_heading_not_in_source", "severity": "high", "text": heading})
     if qa_report.get("status") == "fail":
-        issues.append({"type": "source_output_qa_failed", "severity": "high", "details": qa_report.get("issues") or []})
+        if source_text_unavailable_but_mineru_ocr_evidence_is_rich(qa_report, primary, rich_summary, citations):
+            issues.append(
+                {
+                    "type": "source_text_unavailable_validated_by_mineru_sidecars",
+                    "severity": "low",
+                    "details": qa_report.get("issues") or [],
+                }
+            )
+        else:
+            issues.append({"type": "source_output_qa_failed", "severity": "high", "details": qa_report.get("issues") or []})
     if not citations:
         issues.append({"type": "missing_citation_anchor", "severity": "high"})
     locator_coverage = source_locator_coverage(citations)
@@ -1405,12 +1602,6 @@ def verify_upload_rag_readiness(
     )
     if weak_citation_count:
         issues.append({"type": "citation_locator_needs_review", "severity": "low", "count": weak_citation_count})
-    rich_summary = {}
-    if primary.mineru_artifact_index_path and primary.mineru_artifact_index_path.exists():
-        try:
-            rich_summary = json.loads(primary.mineru_artifact_index_path.read_text(encoding="utf-8")).get("summary") or {}
-        except Exception:
-            rich_summary = {}
     if not (rich_summary.get("has_content_list") or rich_summary.get("has_content_list_v2") or rich_summary.get("has_middle_json")):
         issues.append({"type": "mineru_rich_metadata_missing", "severity": "high"})
     canonical_paths = {
@@ -1497,7 +1688,7 @@ def upsert_upload_manifest_record(
     record = ManifestRecord(
         doc_id=group.doc_id,
         title=group.title,
-        department="technical",
+        department=group.department,
         category=group.category,
         source_type="internal_procedure",
         language="vi",
@@ -1506,8 +1697,8 @@ def upsert_upload_manifest_record(
         status_reason="Awaiting human review after Upload agent processing",
         effective_from=str(metadata["effective_from"]),
         review_at=str(metadata["review_at"]),
-        owner="Phong Ky thuat",
-        access_group="technical",
+        owner=group.department_name,
+        access_group=group.department,
         source_path=str(primary.staged_source_path),
         normalized_path=str(paths.normalized),
         content_hash=content_hash(primary.staged_source_path),
@@ -1519,6 +1710,22 @@ def upsert_upload_manifest_record(
     QualityDatabase(root).log_ingestion("pending_review", group.doc_id, group.revision_slug)
     rebuild_indexes(root)
     return record
+
+
+def source_text_unavailable_but_mineru_ocr_evidence_is_rich(
+    qa_report: dict[str, Any],
+    primary: CandidateConversion,
+    rich_summary: dict[str, Any],
+    citations: list[dict[str, Any]],
+) -> bool:
+    issues = set(str(issue) for issue in (qa_report.get("issues") or []))
+    if issues != {"source_text_unavailable"}:
+        return False
+    if not (rich_summary.get("has_content_list") or rich_summary.get("has_content_list_v2")):
+        return False
+    if not rich_summary.get("has_middle_json"):
+        return False
+    return source_locator_coverage(citations) >= 0.8
 
 
 def build_human_review_packet(group: UploadDocumentGroup, paths: UploadRunPaths, quality: dict[str, Any]) -> dict[str, Any]:
@@ -1591,7 +1798,7 @@ def write_terminal_reports(
         "",
         "- auto_modify_skills: `false`",
         "- recommendation: keep MinerU sidecars in citation evidence and preserve source locator coverage checks.",
-        "- rule_candidate: if PDF/XLSX pair shares `canonical_business_code`, convert/probe both but create exactly one pending review record.",
+        "- rule_candidate: if PDF/XLS/XLSX/DOC/DOCX candidates share `canonical_business_code`, convert/probe them but create exactly one pending review record.",
         f"- generated_at: `{utc_now()}`",
     ]
     paths.evolution_report.write_text("\n".join(evolution_report) + "\n", encoding="utf-8")
@@ -1635,6 +1842,90 @@ def terminal_upload_failure(
     )
     write_terminal_reports(paths, group, run_id, "none", {"reason": reason}, quality, status="blocked")
     return finalize_upload_queue_state(root, group, paths, status="failed", detail=reason)
+
+
+def terminal_missing_business_code_failure(
+    *,
+    root: Path,
+    group: UploadDocumentGroup,
+    paths: UploadRunPaths,
+    run_id: str,
+) -> dict[str, Any]:
+    reason = "missing_or_unrecognized_business_document_code"
+    source_id = group.artifact_stem
+    sources = resolve_processing_sources(root, group)
+    staged_sources = stage_group_sources(sources, paths.staging / "sources")
+    quality = {
+        "schema_version": UPLOAD_RUN_SCHEMA_VERSION,
+        "doc_id": group.doc_id,
+        "display_code": group.display_code,
+        "quality_status": "needs_human_input",
+        "quality_score": 0.0,
+        "issues": [
+            {
+                "type": reason,
+                "severity": "high",
+                "text": "No canonical business document code such as PD-XXX-A-000, BM-000, MS-000, or PL-000 was detected from the source filename.",
+            }
+        ],
+        "quality_gates": {
+            "business_document_code_detected": False,
+            "mineru_conversion_not_started": True,
+            "ragflow_ingestion_not_run": True,
+        },
+        "checked_at": utc_now(),
+    }
+    repair_handoff = {
+        "schema_version": UPLOAD_RUN_SCHEMA_VERSION,
+        "run_id": run_id,
+        "doc_id": group.doc_id,
+        "display_code": group.display_code,
+        "task": "needs_human_classification_before_conversion",
+        "reason": reason,
+        "source_paths": [str(path) for path in staged_sources.values()],
+        "required_human_action": "Confirm the canonical document code and whether this file is a standalone procedure or supporting/display attachment.",
+        "next_action_after_human_input": "requeue_with_sidecar_metadata_or_keep_failed_as_supporting_attachment",
+    }
+    write_json(paths.quality_report, quality)
+    write_json(paths.repair_handoff, repair_handoff)
+    handoff_path = append_workflow_handoff(
+        root,
+        paths.artifact_root,
+        make_handoff(
+            run_id=run_id,
+            step="plan",
+            status="blocked",
+            source_id=source_id,
+            artifacts=[
+                *[
+                    artifact_record(path, artifact_id=f"source_{source_type}_{source_id}", artifact_type="raw", source_id=source_id)
+                    for source_type, path in staged_sources.items()
+                ],
+                artifact_record(paths.quality_report, artifact_id=f"quality_report_{source_id}", artifact_type="audit", source_id=source_id),
+                artifact_record(paths.repair_handoff, artifact_id=f"repair_handoff_{source_id}", artifact_type="audit", source_id=source_id),
+            ],
+            quality_gates=quality["quality_gates"],
+            next_skill="human-review",
+        ),
+    )
+    record_upload_workflow_event(
+        root,
+        group.relative_paths,
+        status="failed",
+        step="failed",
+        detail="Business document code is missing; human classification is required before MinerU conversion.",
+        metadata=group_metadata(group),
+        artifact_path=str(paths.artifact_root),
+        handoff_path=str(handoff_path),
+        qa_report_path=str(paths.quality_report),
+        qa_status="needs_human_input",
+        qa_issues=[reason],
+        checkpoint="plan",
+        quality_gates=quality["quality_gates"],
+        next_skill="human-review",
+    )
+    write_terminal_reports(paths, group, run_id, "none", {"reason": reason}, quality, status="needs_human_input")
+    return finalize_upload_queue_state(root, group, paths, status="failed", detail="Needs human classification before conversion")
 
 
 def finalize_upload_queue_state(
@@ -1681,11 +1972,21 @@ def supporting_sources(staged_sources: dict[str, Path], selected: str) -> list[d
             {
                 "type": source_type,
                 "path": str(path),
-                "role": "display_print_version" if source_type == "pdf" else "supporting_workbook",
+                "role": supporting_source_role(source_type),
                 "used_for_retrieval": False,
             }
         )
     return supporting
+
+
+def supporting_source_role(source_type: str) -> str:
+    if source_type == "pdf":
+        return "display_print_version"
+    if source_type in {"xlsx", "xls"}:
+        return "supporting_workbook"
+    if source_type in {"docx", "doc"}:
+        return "supporting_word_document"
+    return "supporting_source"
 
 
 def source_locator_coverage(citations: list[dict[str, Any]]) -> float:

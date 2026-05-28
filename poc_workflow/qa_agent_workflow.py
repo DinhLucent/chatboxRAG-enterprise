@@ -83,12 +83,15 @@ def ragflow_dataset_allowlist(config: RAGFlowConfig | None = None) -> list[str]:
     return deduped
 
 
-def approved_latest_metadata_condition() -> dict[str, Any]:
+def approved_latest_metadata_condition(variables: dict[str, Any] | None = None) -> dict[str, Any]:
+    conditions = [
+        {"name": "status", "comparison_operator": "is", "value": "active"},
+    ]
+    if variables and variables.get("category"):
+        conditions.append({"name": "category", "comparison_operator": "is", "value": variables["category"]})
     return {
         "logic": "and",
-        "conditions": [
-            {"name": "status", "comparison_operator": "is", "value": "active"},
-        ],
+        "conditions": conditions,
     }
 
 
@@ -98,10 +101,10 @@ def scope_guard(query: str) -> dict[str, Any]:
         return {
             "in_scope": False,
             "scope": "technical_procedure",
-            "reason": "Cau hoi khong lien quan den quy trinh/tai lieu Phong Ky thuat dang hieu luc.",
+            "reason": "Cau hoi khong lien quan den quy trinh/tai lieu Phuong Dong dang hieu luc.",
             "next_action": "stop",
             "safe_reply": (
-                "Nội dung này nằm ngoài phạm vi chatbot quy trình Phòng Kỹ thuật. "
+                "Nội dung này nằm ngoài phạm vi chatbot quy trình Phương Đông. "
                 "Tôi chỉ có thể hỗ trợ các câu hỏi dựa trên tài liệu quy trình đang hiệu lực."
             ),
         }
@@ -131,10 +134,10 @@ def scope_guard(query: str) -> dict[str, Any]:
         return {
             "in_scope": False,
             "scope": "technical_procedure",
-            "reason": "Cau hoi khong co dau hieu lien quan den quy trinh/tai lieu Phong Ky thuat dang hieu luc.",
+            "reason": "Cau hoi khong co dau hieu lien quan den quy trinh/tai lieu Phuong Dong dang hieu luc.",
             "next_action": "stop",
             "safe_reply": (
-                "Nội dung này nằm ngoài phạm vi chatbot quy trình Phòng Kỹ thuật. "
+                "Nội dung này nằm ngoài phạm vi chatbot quy trình Phương Đông. "
                 "Tôi chỉ có thể hỗ trợ các câu hỏi dựa trên tài liệu quy trình đang hiệu lực."
             ),
         }
@@ -194,7 +197,7 @@ def no_answer_structured_answer(answer: str, reason: str) -> dict[str, Any]:
     }
 
 
-def run_qa_agent_workflow(
+def _run_qa_agent_workflow_impl(
     root: Path,
     query: str,
     *,
@@ -203,6 +206,7 @@ def run_qa_agent_workflow(
     answer_style: str = "brief",
     use_llm: bool = True,
     emit: TraceEmitter | None = None,
+    variables: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     start = time.perf_counter()
     answer_run_id = f"run_{uuid.uuid4().hex}"
@@ -428,7 +432,7 @@ def run_qa_agent_workflow(
                 datasets,
                 retrieve_queries,
                 top_k=int(retrieval_plan.get("top_k") or DEFAULT_TOP_K),
-                metadata_condition=approved_latest_metadata_condition(),
+                metadata_condition=approved_latest_metadata_condition(variables),
             )
         except (RAGFlowHTTPError, ValueError) as exc:
             return failed("ragflow_error", str(exc))
@@ -713,6 +717,40 @@ def run_qa_agent_workflow(
     if retrieval_errors:
         return failed("ragflow_error", "; ".join(retrieval_errors))
     return failed("no_active_source", "Khong tim thay chunk approved/latest/active phu hop trong RAGFlow.")
+
+
+def run_qa_agent_workflow(
+    root: Path,
+    query: str,
+    *,
+    history: list[dict[str, Any]] | None = None,
+    conversation_context: dict[str, Any] | None = None,
+    answer_style: str = "brief",
+    use_llm: bool = True,
+    emit: TraceEmitter | None = None,
+    variables: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    from .llm import llm_usage_tracker
+    token = llm_usage_tracker.set([])
+    try:
+        res = _run_qa_agent_workflow_impl(
+            root,
+            query,
+            history=history,
+            conversation_context=conversation_context,
+            answer_style=answer_style,
+            use_llm=use_llm,
+            emit=emit,
+            variables=variables,
+        )
+        tracker = llm_usage_tracker.get()
+        prompt_tokens = sum(item["prompt_tokens"] for item in tracker)
+        completion_tokens = sum(item["completion_tokens"] for item in tracker)
+        res["tokens_prompt"] = prompt_tokens
+        res["tokens_completion"] = completion_tokens
+        return res
+    finally:
+        llm_usage_tracker.reset(token)
 
 
 def analyze_query(

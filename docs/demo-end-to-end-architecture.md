@@ -48,14 +48,14 @@ flowchart LR
 
         API --> POLICY["Runtime policy<br/>active-only, citation required"]
         POLICY --> RET["Retrieval layer"]
-        RET --> LIDX["Local active index<br/>POC fallback"]
-        RET -. "future production" .-> RAG["RAG engine<br/>technical_active"]
+        RET --> LIDX["Local active index<br/>(ragflow_index/)"]
+        RET -. "future production" .-> RAG["RAG engine<br/>technical_active (Port :9380)"]
 
         API --> LLM["LLM answer client<br/>OpenAI-compatible"]
-        LLM --> FLLM["Local LLM proxy<br/>FreeLLMAPI on :3001"]
+        LLM --> FLLM["Local LLM proxy<br/>(LLM Gateway on :3001)"]
         FLLM --> EXT["External AI providers<br/>free-tier or paid"]
 
-        API --> QDB["Quality database<br/>query logs, feedback, gaps"]
+        API --> QDB["Quality database<br/>(data/poc_quality.db)"]
         API --> RESP["Answer payload<br/>answer + citations + log id"]
     end
 
@@ -73,15 +73,15 @@ flowchart TD
     B --> C["AI agent prepares inbox"]
     C --> D["Draft metadata<br/>doc_id, category, version"]
     D --> E["source/technical/category"]
-    E --> F["Document converter<br/>PDF, Excel, image, Word to Markdown/JSON"]
+    E --> F["Document converter (Port :8010)<br/>PDF, Excel, image, Word to Markdown/JSON"]
     F --> G["normalized/"]
     G --> H["Validation<br/>metadata, taxonomy, content, version"]
     H --> I["pending_review"]
     I --> J{"Human approval"}
     J -->|approve| K["active"]
     J -->|reject| L["failed_review"]
-    K --> M["active retrieval index"]
-    K -. "sync when configured" .-> N["Production RAG dataset"]
+    K --> M["active retrieval index<br/>(ragflow_index/)"]
+    K -. "sync when configured" .-> N["Production RAG dataset (Port :9380)"]
     L --> B
 ```
 

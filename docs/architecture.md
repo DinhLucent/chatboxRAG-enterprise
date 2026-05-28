@@ -10,16 +10,16 @@ Only approved active documents can be used for user answers.
 
 ```mermaid
 flowchart LR
-    U["Internal user"] --> WEB["Chatbot dashboard<br/>FastAPI + static UI"]
+    U["Internal user"] --> WEB["Chatbot dashboard<br/>FastAPI (Port :8088) + static UI"]
     WEB --> APP["poc_workflow API<br/>policy, logs, feedback"]
     APP --> RET["Retrieval layer"]
-    RET --> LOCAL["Local JSONL index<br/>dev fallback"]
-    RET --> RAG["RAGFlow technical_active<br/>production RAG"]
+    RET --> LOCAL["Local JSONL index<br/>(ragflow_index/ fallback)"]
+    RET --> RAG["RAGFlow technical_active<br/>(Port :9380)"]
     APP --> LLM["OpenAI-compatible LLM endpoint"]
-    LLM --> FREE["FreeLLMAPI proxy<br/>optional free-tier router"]
+    LLM --> FREE["LLM Gateway proxy<br/>(Port :3001)"]
     FREE --> P1["LLM7 / Pollinations<br/>anonymous or free tier"]
     FREE --> P2["Google / Groq / OpenRouter<br/>bring free-tier keys"]
-    APP --> QDB["SQLite quality DB<br/>query logs, feedback, gaps"]
+    APP --> QDB["SQLite quality DB<br/>(data/poc_quality.db)"]
     APP --> UI["Answer with citations"]
     UI --> U
 ```
@@ -30,15 +30,15 @@ flowchart LR
 flowchart TD
     A["User uploads or drops files into inbox"] --> B["AI agent prepares inbox"]
     B --> C["source/technical/category"]
-    C --> D["MinerU or text converter"]
+    C --> D["MinerU OCR (Port :8010)<br/>or text converter"]
     D --> E["normalized Markdown/JSON"]
     E --> F["Validate metadata, taxonomy, version, content"]
     F --> G["pending_review"]
     G --> H{"Human approval"}
     H -->|approve| I["active"]
     H -->|reject| J["failed_review"]
-    I --> K["technical_active index"]
-    I --> L["RAGFlow sync"]
+    I --> K["technical_active index<br/>(ragflow_index/)"]
+    I --> L["RAGFlow sync (Port :9380)"]
     J --> B
     I --> M["archived or retired when superseded"]
 ```

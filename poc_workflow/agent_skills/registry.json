@@ -23,13 +23,13 @@
       "step": "convert",
       "skill": "mineru-source-converter",
       "input_artifacts": ["batch_manifest", "raw_sources"],
-      "output_artifacts": ["conversion_manifest", "converted_outputs", "mineru_artifact_index", "content_list_v2", "middle_json", "model_json", "images", "conversion_log"],
+      "output_artifacts": ["conversion_manifest", "converted_outputs", "mineru_artifact_index", "all_mineru_sidecars", "content_list_v2", "middle_json", "model_json", "images", "conversion_log"],
       "next": "audit"
     },
     {
       "step": "audit",
       "skill": "source-output-quality-auditor",
-      "input_artifacts": ["raw_sources", "conversion_manifest", "converted_outputs", "mineru_artifact_index", "content_list_v2", "middle_json", "images"],
+      "input_artifacts": ["raw_sources", "conversion_manifest", "converted_outputs", "mineru_artifact_index", "all_mineru_sidecars", "content_list_v2", "middle_json", "images"],
       "output_artifacts": ["audit_report", "issue_list", "repair_request"],
       "next": "repair_or_index"
     },
@@ -129,7 +129,7 @@
   },
   "quality_gate_summary": [
     "Source files are processed sequentially and every output links back to source_id.",
-    "MinerU ZIP sidecars are indexed: content_list_v2/content_list, middle.json, model.json, images, and selected Markdown.",
+    "MinerU ZIP/folder outputs are preserved and indexed completely; content_list_v2/content_list, middle.json, model.json, images, origin PDF, selected Markdown, and extra JSON/log/other sidecars remain linked by checksum.",
     "QA compares converted output and MinerU sidecars against original PDF/Excel, not only against derived text.",
     "Markdown repairs preserve citations, tables, headings, page/sheet references, MinerU block ids, bbox, and image refs.",
     "RAG-ready folder contains schema_manifest.json, citation_manifest.json, index_manifest.json, and normalized Markdown chunks.",

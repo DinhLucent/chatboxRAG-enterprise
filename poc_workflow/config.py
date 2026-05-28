@@ -2,16 +2,36 @@ from __future__ import annotations
 
 from pathlib import Path
 
-ALLOWED_DEPARTMENTS = {"technical"}
-
-ALLOWED_CATEGORIES = {
-    "technical": {
-        "procedure",
-        "vendor_document",
-        "form_checklist",
-        "faq_troubleshooting",
-    }
+COMMON_CATEGORIES = {
+    "procedure",
+    "vendor_document",
+    "form_checklist",
+    "faq_troubleshooting",
 }
+
+DEPARTMENT_DISPLAY_NAMES = {
+    "general": "Tai lieu chung",
+    "internal_control": "Phong Kiem soat noi bo",
+    "administration": "Phong Hanh chinh",
+    "human_resources": "Phong Nhan su",
+    "accounting": "Phong Ke toan",
+    "sales": "Phong Ban hang",
+    "tender_legal": "Phong Thau Phap che",
+    "marcom": "Phong Marcom",
+    "regulatory_affairs": "Phong RA",
+    "customer_service": "Phong Dich vu khach hang",
+    "app": "Phong APP",
+    "technical": "Phong Ky thuat",
+    "procurement_import_export": "Phong Xuat nhap khau Mua hang",
+    "it": "Phong IT",
+    "marketing": "Phong Marketing",
+    "governance": "Phong Quan tri",
+    "warehouse_gdp": "Kho GDP",
+}
+
+ALLOWED_DEPARTMENTS = set(DEPARTMENT_DISPLAY_NAMES)
+
+ALLOWED_CATEGORIES = {department: set(COMMON_CATEGORIES) for department in ALLOWED_DEPARTMENTS}
 
 ALLOWED_STATUSES = {
     "new",
@@ -53,8 +73,10 @@ SUPPORTED_SOURCE_SUFFIXES = {
     ".markdown",
     ".txt",
     ".pdf",
+    ".doc",
     ".docx",
     ".pptx",
+    ".xls",
     ".xlsx",
     ".png",
     ".jpg",

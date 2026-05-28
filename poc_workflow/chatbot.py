@@ -561,13 +561,13 @@ def build_catalog_answer(root: Path, query: str, answer_style: str = "brief") ->
         body = "\n".join(f"- [ ] {line}" for line in body_lines)
     else:
         body = "\n".join(f"{index}. {line}" for index, line in enumerate(body_lines, start=1))
-    summary = f"Phòng Kỹ thuật có {len(rows)} tài liệu quy trình trong danh mục hiện hành."
+    summary = f"Hệ thống Phương Đông có {len(rows)} tài liệu quy trình trong danh mục hiện hành."
     answer = (
         f"Tóm tắt:\n{summary}\n\n"
         f"Các bước / Nội dung chính:\n{body}\n\n"
         f"Nguồn:\n{record.doc_id} v{record.version}"
     )
-    excerpt = "Danh sách SOP - Kỹ thuật: " + "; ".join(body_lines)
+    excerpt = "Danh sách SOP - Phương Đông: " + "; ".join(body_lines)
     hit = SearchHit(
         doc_id=record.doc_id,
         version=record.version,
@@ -633,8 +633,8 @@ def build_active_scope_catalog_answer(
         lines.append(f"{index}. {display_code}: {primary.title} - {len(items)} file ({role_names})")
 
     summary = (
-        f"Phòng Kỹ thuật hiện có {len(records)} file active thuộc "
-        f"{len(groups)} nhóm quy trình chính trong phạm vi Quy trình Kỹ Thuật."
+        f"Hệ thống Phương Đông hiện có {len(records)} file active thuộc "
+        f"{len(groups)} nhóm quy trình chính trong phạm vi Quy trình Phương Đông."
     )
     if answer_style == "checklist":
         body = "\n".join(line.replace(f"{index}. ", "- [ ] ", 1) for index, line in enumerate(lines, start=1))

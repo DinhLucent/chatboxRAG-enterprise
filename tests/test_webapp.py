@@ -218,10 +218,10 @@ def test_user_chat_app_public_api_safe_citations_policy_and_feedback(tmp_path: P
     assert boot["ui"]["show_policy_debug"] is False
     assert {style["id"] for style in boot["answer_styles"]} == {"brief", "steps", "checklist", "workflow"}
     assert [card["label"] for card in boot["welcome_cards"]] == [
-        "Quy trình kỹ thuật",
-        "Biểu mẫu kỹ thuật",
+        "Quy trình Phương Đông",
+        "Biểu mẫu quy trình",
         "Xử lý sự cố",
-        "Tài liệu hãng",
+        "Tài liệu quy trình",
     ]
     assert "policy_id" not in boot["policy"]
     assert {group["id"] for group in boot["templates"]["groups"]} == {
@@ -514,6 +514,7 @@ def test_user_chat_qa_agent_flag_on_returns_public_payload(tmp_path: Path, monke
         "display_version",
         "excerpt",
         "anchor_id",
+        "score",
     }
     assert body["format_type"] == "table"
     assert body["quality_decision"]["decision"] == "pass"
@@ -836,7 +837,7 @@ def test_user_chat_lists_technical_department_procedures_from_active_catalog(tmp
         assert response.status_code == 200
         body = response.json()
         assert body["citations"][0]["doc_id"] == "KT-QT-215"
-        assert "Phòng Kỹ thuật có 3 tài liệu quy trình" in body["answer"]
+        assert "Hệ thống Phương Đông có 3 tài liệu quy trình" in body["answer"]
         assert "Quy trình lắp đặt máy móc, thiết bị" in body["answer"]
         assert "Quy trình Sửa chữa máy móc, thiết bị" in body["answer"]
         assert "Quy trình bảo dưỡng thiết bị" in body["answer"]
@@ -853,7 +854,7 @@ def test_user_chat_lists_technical_department_procedures_from_active_catalog(tmp
     assert count_variant.status_code == 200
     count_body = count_variant.json()
     assert count_body["citations"][0]["doc_id"] == "KT-QT-215"
-    assert "Phòng Kỹ thuật có 3 tài liệu quy trình" in count_body["answer"]
+    assert "Hệ thống Phương Đông có 3 tài liệu quy trình" in count_body["answer"]
 
 
 def test_user_session_heartbeat_and_stale_cleanup(tmp_path: Path) -> None:
@@ -890,6 +891,47 @@ def test_user_session_heartbeat_and_stale_cleanup(tmp_path: Path) -> None:
     assert cleanup["deleted_turns"] == 1
     assert db.get_user_chat_session("cleanup-session") is None
     assert db.recent_user_chat_turns("cleanup-session") == []
+
+
+def test_user_session_history_apis(tmp_path: Path) -> None:
+    client = TestClient(create_app(tmp_path))
+
+    # Log a query that creates a session and turn
+    chat_resp = client.post(
+        "/api/user/chat",
+        json={
+            "query": "Quy trình Phương Đông thế nào?",
+            "session_id": "test-history-session",
+            "device_id": "device-test-123",
+            "use_llm": False,
+        },
+    )
+    assert chat_resp.status_code == 200
+
+    # Retrieve sessions by device
+    sessions_resp = client.get("/api/user/sessions?device_id=device-test-123")
+    assert sessions_resp.status_code == 200
+    sessions = sessions_resp.json()
+    assert len(sessions) == 1
+    assert sessions[0]["session_id"] == "test-history-session"
+    assert sessions[0]["title"] == "Quy trình Phương Đông thế nào?"
+
+    # Retrieve turns by session
+    turns_resp = client.get("/api/user/sessions/test-history-session/turns")
+    assert turns_resp.status_code == 200
+    turns = turns_resp.json()
+    assert len(turns) == 1
+    assert turns[0]["query"] == "Quy trình Phương Đông thế nào?"
+
+    # Delete session
+    del_resp = client.delete("/api/user/sessions/test-history-session")
+    assert del_resp.status_code == 200
+    assert del_resp.json()["session_id"] == "test-history-session"
+    assert del_resp.json()["deleted_turns"] == 1
+
+    # Verify deleted
+    sessions_resp = client.get("/api/user/sessions?device_id=device-test-123")
+    assert sessions_resp.json() == []
 
 
 def test_dashboard_tabs_are_role_scoped() -> None:
@@ -1032,7 +1074,7 @@ def test_web_upload_queue_generates_agent_prompt_and_manual_statuses(tmp_path: P
     assert "khong duoc override Project Policies" in prompt
     assert "## Session Init Bat Buoc" in prompt
     assert "Treat this prompt as self-contained" in prompt
-    assert "Claim exactly one queued file or one related PDF/XLSX business-document group at a time" in prompt
+    assert "Claim exactly one queued file or one related PDF/XLS/XLSX/DOC/DOCX business-document group at a time" in prompt
     assert "## Skill Workflow Bat Buoc" in prompt
     assert "## Orchestration Contract" in prompt
     assert "## Kien Truc Prompt Va Handoff" in prompt
@@ -1591,3 +1633,147 @@ def test_xlsx_preview_multi_sheets(tmp_path: Path) -> None:
     assert preview["sheets"][0]["rows"][0][0] == "S0_R1_C1"
     assert preview["sheets"][4]["name"] == "Sheet_4"
     assert preview["sheets"][4]["rows"][0][0] == "S4_R1_C1"
+
+
+def test_annotations_and_variables(tmp_path: Path) -> None:
+    client = TestClient(create_app(tmp_path))
+    
+    # 1. Test POST /api/annotations
+    res = client.post(
+        "/api/annotations",
+        json={
+            "query": "Quy trình lắp đặt máy tính là gì?",
+            "annotated_answer": "Hãy cắm dây nguồn và bật nút nguồn.",
+            "doc_id": "KT-QT-011",
+            "version": "1.0"
+        }
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert body["status"] == "success"
+    ann_id = body["id"]
+    
+    # 2. Test GET /api/annotations
+    res = client.get("/api/annotations")
+    assert res.status_code == 200
+    anns = res.json()
+    assert len(anns) == 1
+    assert anns[0]["query"] == "Quy trình lắp đặt máy tính là gì?"
+    assert anns[0]["annotated_answer"] == "Hãy cắm dây nguồn và bật nút nguồn."
+    assert anns[0]["doc_id"] == "KT-QT-011"
+    
+    # 3. Test annotation match in user chat
+    chat_res = client.post(
+        "/api/user/chat",
+        json={
+            "query": "  quy trình lắp đặt máy tính là gì?  ",
+            "use_llm": False
+        }
+    )
+    assert chat_res.status_code == 200
+    chat_body = chat_res.json()
+    assert chat_body["answer"] == "Hãy cắm dây nguồn và bật nút nguồn."
+    assert chat_body["citations"][0]["doc_id"] == "KT-QT-011"
+    assert chat_body["trace"]["latency_ms"] == 0
+    assert chat_body["trace"]["tokens_prompt"] == 0
+    
+    # 4. Test DELETE /api/annotations/{id}
+    del_res = client.delete(f"/api/annotations/{ann_id}")
+    assert del_res.status_code == 200
+    
+    # Verify deleted
+    res = client.get("/api/annotations")
+    assert len(res.json()) == 0
+
+
+def test_bulk_operations(tmp_path: Path) -> None:
+    db = QualityDatabase(tmp_path)
+    client = TestClient(create_app(tmp_path))
+
+    # 1. Test Gaps bulk status & bulk delete
+    gap_id1 = db.create_gap("gap query 1", "missing_doc", "owner1")
+    gap_id2 = db.create_gap("gap query 2", "outdated_doc", "owner2")
+    
+    # Verify created
+    gaps = db.list_gaps()
+    assert len(gaps) == 2
+
+    # Bulk status update
+    res = client.post("/api/gaps/bulk-status", json={"ids": [gap_id1, gap_id2], "status": "resolved"})
+    assert res.status_code == 200
+    assert db.list_gaps()[0]["status"] == "resolved"
+
+    # Bulk delete
+    res = client.post("/api/gaps/bulk-delete", json={"ids": [gap_id1, gap_id2]})
+    assert res.status_code == 200
+    assert len(db.list_gaps()) == 0
+
+
+    # 2. Test Queries feedback & bulk delete
+    q_id1 = db.log_query("query 1", None, [], True, 100, "answer 1")
+    q_id2 = db.log_query("query 2", None, [], False, 150, "answer 2")
+
+    # Bulk feedback update
+    res = client.post("/api/queries/bulk-feedback", json={"ids": [q_id1, q_id2], "feedback": "wrong_source"})
+    assert res.status_code == 200
+    queries = db.list_queries()
+    assert queries[0]["feedback"] == "wrong_source"
+
+    # Bulk delete
+    res = client.post("/api/queries/bulk-delete", json={"ids": [q_id1, q_id2]})
+    assert res.status_code == 200
+    assert len(db.list_queries()) == 0
+
+
+    # 3. Test Ingestion Runs bulk delete
+    db.log_ingestion("started", "doc-1", "1.0", None, "run-1")
+    db.log_ingestion("finished", "doc-2", "1.0", None, "run-2")
+    runs = db.list_ingestion_runs()
+    run_id1 = runs[1]["id"]
+    run_id2 = runs[0]["id"]
+
+    # Bulk delete
+    res = client.post("/api/ingestion-runs/bulk-delete", json={"ids": [run_id1, run_id2]})
+    assert res.status_code == 200
+    assert len(db.list_ingestion_runs()) == 0
+
+
+    # 4. Test Incidents bulk resolve & bulk delete
+    inc_id1 = db.create_incident("warning", "component1", "title1", "detail1")
+    inc_id2 = db.create_incident("critical", "component2", "title2", "detail2")
+
+    # Bulk resolve
+    res = client.post("/api/incidents/bulk-resolve", json={"ids": [inc_id1, inc_id2], "status": "resolved"})
+    assert res.status_code == 200
+    incidents = db.list_incidents()
+    assert incidents[0]["status"] == "resolved"
+
+    # Bulk delete
+    res = client.post("/api/incidents/bulk-delete", json={"ids": [inc_id1, inc_id2]})
+    assert res.status_code == 200
+    assert len(db.list_incidents()) == 0
+
+
+
+def test_clear_diagnostics_logs(tmp_path: Path) -> None:
+    client = TestClient(create_app(tmp_path))
+
+    # Create dummy log files
+    log_dir = tmp_path / ".runtime"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file1 = log_dir / "test-1.log"
+    log_file2 = log_dir / "test-2.log"
+    log_file1.write_text("log line 1\nlog line 2", encoding="utf-8")
+    log_file2.write_text("another log line", encoding="utf-8")
+
+    assert log_file1.exists()
+    assert log_file2.exists()
+
+    # Clear logs endpoint call
+    res = client.post("/api/diagnostics/clear-logs", json={"files": [".runtime/test-1.log", ".runtime/test-2.log"]})
+    assert res.status_code == 200
+    
+    # Verify unlinked
+    assert not log_file1.exists()
+    assert not log_file2.exists()
+

@@ -9,13 +9,17 @@ from poc_workflow.agent_prompt_queue import list_upload_queue
 from poc_workflow.manifest import ManifestError, validate_record_for_approval
 from poc_workflow.manifest import ManifestStore
 from poc_workflow.upload_processing import (
+    CandidateConversion,
     UploadDocumentGroup,
+    business_document_identity,
     build_rag_summary_section,
     list_upload_document_groups,
     looks_like_corrupted_metadata_text,
     normalized_title_quality_issues,
     process_upload_queue,
+    source_text_unavailable_but_mineru_ocr_evidence_is_rich,
     strip_generated_rag_summary_blocks,
+    upload_run_paths,
 )
 from poc_workflow.webapp import create_app
 
@@ -111,18 +115,18 @@ class FakeUploadMinerUConverter:
         return output_md
 
 
-def write_upload_pair(root: Path) -> tuple[Path, Path]:
+def write_upload_pair(root: Path, *, inbox_subdir: str = "procedure", code: str = "PD-TECH-A-02") -> tuple[Path, Path]:
     from openpyxl import Workbook
 
-    inbox = root / "inbox" / "procedure"
+    inbox = root / "inbox" / Path(inbox_subdir)
     inbox.mkdir(parents=True, exist_ok=True)
-    xlsx = inbox / "PD-TECH-A-02. Rev 04. Quy trinh bao duong.xlsx"
-    pdf = inbox / "PD-TECH-A-02. Rev 04. Quy trinh bao duong.pdf"
+    xlsx = inbox / f"{code}. Rev 04. Quy trinh bao duong.xlsx"
+    pdf = inbox / f"{code}. Rev 04. Quy trinh bao duong.pdf"
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "QT"
     rows = [
-        ["PD-TECH-A-02", "Rev 04", "Quy trinh bao duong"],
+        [code, "Rev 04", "Quy trinh bao duong"],
         ["Muc dich", "Dam bao thiet bi duoc bao duong theo ke hoach"],
         ["Trach nhiem", "Phong Ky thuat"],
         ["Quy trinh thuc hien", "Buoc", "Noi dung", "Ho so"],
@@ -232,6 +236,151 @@ def test_upload_queue_groups_pdf_xlsx_and_processes_one_primary_source(tmp_path:
     review_path.write_text(json.dumps(review), encoding="utf-8")
     validate_record_for_approval(record)
     assert (tmp_path / "rag_ready" / "technical" / "procedure" / artifact_stem / "schema_manifest.json").exists()
+
+
+def test_upload_queue_preserves_non_technical_department_paths(tmp_path: Path) -> None:
+    write_upload_pair(tmp_path, inbox_subdir="procedure/human_resources", code="PD-HR-A-02")
+
+    groups = list_upload_document_groups(tmp_path)
+
+    assert len(groups) == 1
+    group = groups[0]
+    assert group.department == "human_resources"
+    assert group.department_name == "Phong Nhan su"
+    assert group.display_code == "PD-HR-A-02"
+    assert group.doc_id == "PD-HR-A-02"
+    assert group.artifact_stem == "PD-HR-A-02_rev04"
+
+    result = process_upload_queue(tmp_path, converter=FakeUploadMinerUConverter(), limit_groups=1)
+
+    assert result[0]["status"] == "pending_review"
+    record = ManifestStore(tmp_path).load()[0]
+    assert record.department == "human_resources"
+    assert record.access_group == "human_resources"
+    assert record.extra["department_name"] == "Phong Nhan su"
+    assert (tmp_path / "normalized" / "human_resources" / "procedure" / "PD-HR-A-02_rev04.md").exists()
+    assert (tmp_path / "rag_ready" / "human_resources" / "procedure" / "PD-HR-A-02_rev04" / "schema_manifest.json").exists()
+    queue = list_upload_queue(tmp_path)
+    assert queue["summary"]["pending_review"] == 2
+    assert (tmp_path / "inbox" / "procedure" / "done" / "human_resources" / "PD-HR-A-02. Rev 04. Quy trinh bao duong.xlsx").exists()
+
+
+def test_upload_queue_groups_doc_docx_xls_candidates(tmp_path: Path) -> None:
+    inbox = tmp_path / "inbox" / "procedure" / "accounting"
+    inbox.mkdir(parents=True)
+    for suffix in ("doc", "docx", "xls"):
+        (inbox / f"PD-ACC-A-09. Rev 02. Quy trinh thanh toan.{suffix}").write_bytes(b"fake office source")
+
+    groups = list_upload_document_groups(tmp_path)
+
+    assert len(groups) == 1
+    group = groups[0]
+    assert group.department == "accounting"
+    assert group.doc_id == "PD-ACC-A-09"
+    assert group.source_revision == "Rev 02"
+    assert set(group.sources) == {"doc", "docx", "xls"}
+
+
+def test_upload_queue_blocks_missing_business_code_before_mineru(tmp_path: Path) -> None:
+    inbox = tmp_path / "inbox" / "procedure" / "accounting"
+    inbox.mkdir(parents=True)
+    source = inbox / "Thoa thuan PĐ-TA.pdf"
+    source.write_bytes(b"%PDF-1.4")
+
+    groups = list_upload_document_groups(tmp_path)
+
+    assert len(groups) == 1
+    assert groups[0].code_detected is False
+
+    fake = FakeUploadMinerUConverter()
+    result = process_upload_queue(tmp_path, converter=fake, limit_groups=1)
+
+    assert fake.calls == []
+    assert result[0]["status"] == "failed"
+    quality = json.loads(Path(result[0]["quality_report_path"]).read_text(encoding="utf-8"))
+    assert quality["quality_status"] == "needs_human_input"
+    assert quality["issues"][0]["type"] == "missing_or_unrecognized_business_document_code"
+    assert (tmp_path / "inbox" / "procedure" / "failed" / "accounting" / source.name).exists()
+
+
+def test_business_document_identity_normalizes_underscore_codes_and_forms() -> None:
+    assert business_document_identity("PD_ACC_A_02. Rev 01. Quy trình hủy hàng.pdf")["code"] == "PD-ACC-A-02"
+    assert business_document_identity("PD-ACC-A-018-Rev04 Quy trình kiểm kê kho.xlsx")["code"] == "PD-ACC-A-018"
+    assert business_document_identity("PD-HR-051. Rev 06. Quy trình xin nghỉ việc.pdf")["code"] == "PD-HR-051"
+    assert business_document_identity("BM-029.01_Rev 03. Báo cáo hạn dùng.docx")["code"] == "BM-029.01"
+    assert business_document_identity("PL-092.01 Rev 04. Quy trình đăng ký đối tác.pdf")["code"] == "PL-092.01"
+
+
+def test_upload_run_paths_shorten_long_missing_code_business_keys(tmp_path: Path) -> None:
+    long_key = (
+        "tender_legal_"
+        + ("0_REGULATION_TERUMO-GROUP-THIRD-PARTY-ANTI-CORRUPTION-AND-ANTI-BRIBERY-POLICY_" * 2)
+        + "rev01"
+    )
+    group = UploadDocumentGroup(
+        business_key=long_key,
+        canonical_business_code="LONG-FALLBACK-CODE",
+        code_detected=False,
+        display_code="LONG-FALLBACK-CODE",
+        source_revision="Rev 01",
+        revision_slug="rev01",
+        doc_id="LONG-FALLBACK-CODE",
+        title="Long tender policy",
+        department="tender_legal",
+        department_name="Tender Legal",
+        category="procedure",
+        artifact_stem=long_key,
+        sources={},
+    )
+
+    paths = upload_run_paths(tmp_path, group)
+
+    assert len(paths.staging.name) <= 96
+    assert len(paths.converted_raw.name) <= 96
+    assert len(paths.artifact_root.name) <= 96
+    assert paths.staging.name == paths.converted_raw.name
+
+
+def test_pdf_ocr_source_text_unavailable_can_use_rich_mineru_evidence(tmp_path: Path) -> None:
+    source = tmp_path / "source.pdf"
+    source.write_bytes(b"%PDF-1.4")
+    primary = CandidateConversion(
+        source_type="pdf",
+        source_path=source,
+        staged_source_path=source,
+        raw_markdown_path=tmp_path / "raw.md",
+        artifact_root=tmp_path / "mineru",
+        mineru_artifact_index_path=tmp_path / "mineru" / "mineru_artifact_index.json",
+        status="passed",
+    )
+
+    assert source_text_unavailable_but_mineru_ocr_evidence_is_rich(
+        {"issues": ["source_text_unavailable"]},
+        primary,
+        {"has_content_list_v2": True, "has_middle_json": True},
+        [{"locator_status": "resolved"}, {"locator_status": "resolved"}],
+    )
+
+
+def test_legacy_office_source_text_unavailable_can_use_rich_mineru_evidence(tmp_path: Path) -> None:
+    source = tmp_path / "source.xls"
+    source.write_bytes(b"legacy workbook")
+    primary = CandidateConversion(
+        source_type="xls",
+        source_path=source,
+        staged_source_path=source,
+        raw_markdown_path=tmp_path / "raw.md",
+        artifact_root=tmp_path / "mineru",
+        mineru_artifact_index_path=tmp_path / "mineru" / "mineru_artifact_index.json",
+        status="passed",
+    )
+
+    assert source_text_unavailable_but_mineru_ocr_evidence_is_rich(
+        {"issues": ["source_text_unavailable"]},
+        primary,
+        {"has_content_list": True, "has_middle_json": True},
+        [{"locator_status": "resolved"}] * 5,
+    )
 
 
 def test_upload_approval_gate_requires_quality_and_primary_source_contract(tmp_path: Path) -> None:
@@ -371,11 +520,14 @@ def test_upload_quality_flags_corrupted_title_text() -> None:
     group = UploadDocumentGroup(
         business_key="PD-TECH-A-02_rev04",
         canonical_business_code="PD-TECH-A-02",
+        code_detected=True,
         display_code="PD-TECH-A-02",
         source_revision="Rev 04",
         revision_slug="rev04",
         doc_id="KT-QT-002",
         title="Quy tr?nh b?o d??ng",
+        department="technical",
+        department_name="Phong Ky thuat",
         category="procedure",
         artifact_stem="KT-QT-002_rev04",
         sources={},
@@ -408,6 +560,10 @@ def test_build_rag_summary_section_extracts_steps_responsibilities_and_records()
         "Lịch bảo dưỡng định kỳ",
         "*NV CSKH làm lịch bảo dưỡng chi tiết",
         "PD-TECH-A-02/BM-06",
+        "3",
+        "Khi phát sinh",
+        "Đối chiếu dữ liệu kiểm kê thực tế",
+        "BM-018.03",
         "7. Hồ sơ, tài liệu đính kèm",
         "7.1. PD-TECH-A-02/BM-05",
         ": Kế hoạch bảo dưỡng",
@@ -418,6 +574,8 @@ def test_build_rag_summary_section_extracts_steps_responsibilities_and_records()
     assert "## Tóm tắt cấu trúc phục vụ RAG" in summary
     assert "Bước 1: Kế hoạch bảo dưỡng" in summary
     assert "Bước 2: Lịch bảo dưỡng định kỳ" in summary
+    assert "Bước 3: Đối chiếu dữ liệu kiểm kê thực tế" in summary
+    assert "Bước 3: Khi phát sinh" not in summary
     assert "5.1. Phòng Kỹ thuật" in summary
     assert "PD-TECH-A-02/BM-05" in summary
 

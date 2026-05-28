@@ -24,8 +24,8 @@ Dung skill nay khi co `batch_manifest` tu orchestrator va can convert PDF/XLSX g
 2. Xac minh file goc, checksum neu co, va quyen doc.
 3. Chay MinerU cho PDF/XLSX theo tung file; khong dung native parser thay the trong workflow chinh neu MinerU fail.
 4. Giu nguyen ZIP/folder output MinerU lam bang chung convert; khong chi copy `.md`.
-5. Trich co kiem soat cac artifact giau ngu canh vao `mineru_artifacts/`: `content_list.json`, `content_list_v2.json`, `middle.json`, `model.json`, `images/`, va `_origin.pdf` neu co.
-6. Tao `mineru_artifact_index.json` lien ket selected Markdown, sidecar JSON, image refs, checksum, count block/page/image va duong dan ZIP goc.
+5. Bao toan toan bo file MinerU xuat ra vao `mineru_artifacts/`; cac artifact giau ngu canh duoc gan nhan rieng gom `content_list.json`, `content_list_v2.json`, `middle.json`, `model.json`, `images/`, va `_origin.pdf` neu co.
+6. Tao `mineru_artifact_index.json` lien ket selected Markdown, tat ca sidecar JSON/Markdown/log/other files, image refs, checksum, count block/page/image va duong dan ZIP goc.
 7. Ghi output vao `converted/<source_id>/` hoac `.Workplace/artifacts/.../mineru_raw/`.
 8. Tao `conversion_manifest.json` voi mapping source -> output Markdown, MinerU artifact index, images, tables, logs.
 9. Handoff sang `source-output-quality-auditor`.
@@ -91,7 +91,7 @@ Dung skill nay khi co `batch_manifest` tu orchestrator va can convert PDF/XLSX g
 
 - Moi source chi duoc convert mot lan trong mot slot tuan tu.
 - `content.md` ton tai va khong rong.
-- `mineru_artifact_index.json` ton tai va tro toi ZIP/folder MinerU goc.
+- `mineru_artifact_index.json` ton tai va tro toi ZIP/folder MinerU goc; index phai co ca artifact quen thuoc va sidecar la/khac neu MinerU sinh ra.
 - `content_list_v2.json` duoc uu tien; neu khong co thi dung `content_list.json`; `middle.json` duoc dung cho bbox/page locator khi co.
 - Images/flowchart/table snapshots trong `images/` phai duoc giu ref, khong xoa im lang.
 - PDF output co page anchors dang `page:<number>` hoac tuong duong.

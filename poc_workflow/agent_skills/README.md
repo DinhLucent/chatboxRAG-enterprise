@@ -23,7 +23,7 @@ Thu muc nay chua bo skill noi bo cho workflow xu ly du lieu RAGFlow tu file goc 
 ## Artifact mac dinh
 
 - `raw/`: PDF, XLSX va metadata goc.
-- `converted/`: MinerU ZIP/folder, selected Markdown, `mineru_artifact_index.json`, `content_list_v2/content_list`, `middle.json`, `model.json`, images va table/flowchart snapshots.
+- `converted/`: MinerU ZIP/folder day du, selected Markdown, `mineru_artifact_index.json`, `content_list_v2/content_list`, `middle.json`, `model.json`, images, origin PDF, extra JSON/log/sidecar khac va table/flowchart snapshots.
 - `audit/`: bao cao doi chieu, issue list, bang chung.
 - `repaired/`: Markdown da sua, citation anchors, table fixes.
 - `rag_ready/`: schema, index, manifest va chunks san sang ingest vao RAGFlow.

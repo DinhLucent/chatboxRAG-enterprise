@@ -49,30 +49,30 @@ ANSWER_STYLES = [
 WELCOME_CARDS = [
     {
         "id": "welcome_procedure",
-        "label": "Quy trình kỹ thuật",
+        "label": "Quy trình Phương Đông",
         "template_id": "procedure_steps",
-        "question": "Quy trình kỹ thuật gồm những bước nào?",
+        "question": "Quy trình Phương Đông gồm những bước nào?",
         "answer_style": "steps",
     },
     {
         "id": "welcome_form",
-        "label": "Biểu mẫu kỹ thuật",
+        "label": "Biểu mẫu quy trình",
         "template_id": "form_usage",
-        "question": "Trường hợp này cần dùng biểu mẫu kỹ thuật nào?",
+        "question": "Trường hợp này cần dùng biểu mẫu quy trình nào?",
         "answer_style": "brief",
     },
     {
         "id": "welcome_incident",
         "label": "Xử lý sự cố",
         "template_id": "incident_first_response",
-        "question": "Khi phát sinh sự cố kỹ thuật, cần xử lý ban đầu thế nào?",
+        "question": "Khi phát sinh sự cố vận hành, cần xử lý ban đầu thế nào?",
         "answer_style": "checklist",
     },
     {
         "id": "welcome_vendor",
-        "label": "Tài liệu hãng",
+        "label": "Tài liệu quy trình",
         "template_id": "vendor_requirement",
-        "question": "Tài liệu hãng nêu yêu cầu kỹ thuật nào?",
+        "question": "Tài liệu quy trình nêu yêu cầu thế nào?",
         "answer_style": "brief",
     },
 ]
@@ -154,10 +154,108 @@ def user_chat_response(
     use_llm: bool = True,
     user_id: str | None = "anonymous-user-chat",
     stream_callback: Callable[[dict[str, Any]], None] | None = None,
+    variables: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    db = QualityDatabase(root)
+    # Check for annotated standard QA
+    annotation = db.get_annotation(query)
+    if annotation:
+        active_session_id = normalize_session_id(session_id)
+        session = db.touch_user_chat_session(
+            active_session_id,
+            device_id=device_id,
+            ttl_seconds=user_session_ttl_seconds(),
+        )
+        
+        # Build mock citations if doc_id is available
+        citations = []
+        doc_id = annotation.get("doc_id")
+        version = annotation.get("version")
+        if doc_id:
+            citations.append({
+                "title": f"Tài liệu ghim: {doc_id}",
+                "doc_id": doc_id,
+                "version": version or "1.0",
+                "display_code": doc_id,
+                "display_version": f"v{version}" if version else "",
+                "excerpt": annotation.get("annotated_answer"),
+                "anchor_id": ""
+            })
+            
+        # Log to query_logs (0 latency, 0 tokens, answer_source="annotations")
+        log_id = db.log_query(
+            query,
+            user_id,
+            [doc_id] if doc_id else [],
+            bool(citations),
+            0,
+            annotation.get("annotated_answer"),
+            llm_used=False,
+            answer_source="annotations",
+            tokens_prompt=0,
+            tokens_completion=0,
+        )
+        
+        # Log session turn
+        db.log_user_chat_turn(
+            active_session_id,
+            query=query,
+            effective_query=query,
+            answer=annotation.get("annotated_answer"),
+            citation_doc_ids=[doc_id] if doc_id else [],
+            query_log_id=log_id,
+            template_id=template_id
+        )
+        
+        # Build trace steps
+        trace_steps = [
+            {
+                "id": "annotations",
+                "label": "Kho câu hỏi chuẩn",
+                "status": "done",
+                "detail": "Khớp câu trả lời chuẩn đã được phê duyệt bởi Quản trị viên."
+            }
+        ]
+        
+        trace = {
+            "source_count": len(citations),
+            "generated_at": utc_now(),
+            "steps": trace_steps,
+            "tokens_prompt": 0,
+            "tokens_completion": 0,
+            "latency_ms": 0,
+            "context": {
+                "session_id": active_session_id,
+                "turns_available": 0,
+                "turns_used": 0,
+                "context_used": False,
+                "expires_at": session["expires_at"],
+            }
+        }
+        
+        return {
+            "answer": annotation.get("annotated_answer"),
+            "citations": citations,
+            "trace": trace,
+            "trace_steps": trace_steps,
+            "query_log_id": log_id,
+            "log_id": log_id,
+            "policy": public_policy_summary(load_policy_pack(root)),
+            "template_id": template_id,
+            "answer_style": answer_style or "brief",
+            "needs_clarification": False,
+            "session_id": active_session_id,
+            "session": {
+                "session_id": active_session_id,
+                "device_id": session.get("device_id"),
+                "last_seen_at": session.get("last_seen_at"),
+                "expires_at": session.get("expires_at"),
+                "ttl_seconds": user_session_ttl_seconds(),
+            }
+        }
+
     policy = load_policy_pack(root)
     active_answer_style = infer_answer_style(query, normalize_answer_style(answer_style))
-    db = QualityDatabase(root)
     active_session_id = normalize_session_id(session_id)
     session = db.touch_user_chat_session(
         active_session_id,
@@ -193,6 +291,7 @@ def user_chat_response(
             use_llm=use_llm,
             user_id=user_id,
             stream_callback=stream_callback,
+            variables=variables,
         )
     effective_query = contextual_query(query, history, session_context)
     result = ask(
@@ -295,6 +394,7 @@ def qa_agent_chat_response(
     use_llm: bool,
     user_id: str | None,
     stream_callback: Callable[[dict[str, Any]], None] | None = None,
+    variables: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     effective_query = contextual_query(query, history, session_context)
     context_info = conversation_context_payload(query, effective_query, history, session_context)
@@ -306,6 +406,7 @@ def qa_agent_chat_response(
         answer_style=answer_style,
         use_llm=use_llm,
         emit=stream_callback,
+        variables=variables,
     )
     citations = sanitize_public_citations(
         root,
@@ -317,18 +418,25 @@ def qa_agent_chat_response(
     else:
         answer = format_user_answer(str(result.get("answer") or ""), citations, answer_style)
     citation_doc_ids = sorted({str(citation.get("doc_id")) for citation in citations if citation.get("doc_id")})
+    
+    tokens_prompt = result.get("tokens_prompt") or 0
+    tokens_completion = result.get("tokens_completion") or 0
+    latency_ms = int(result.get("latency_ms") or 0)
+    
     log_id = db.log_query(
         query,
         user_id,
         citation_doc_ids,
         bool(citations),
-        int(result.get("latency_ms") or 0),
+        latency_ms,
         answer,
         llm_used=bool(result.get("llm_used")),
         llm_error=result.get("llm_error"),
         answer_source=str(result.get("answer_source") or ""),
         llm_provider=result.get("llm_provider"),
         llm_model=result.get("llm_model"),
+        tokens_prompt=tokens_prompt,
+        tokens_completion=tokens_completion,
     )
     gap_id = None
     fallback_reason = str(result.get("fallback_reason") or "")
@@ -385,6 +493,9 @@ def qa_agent_chat_response(
         "source_count": len(citations),
         "generated_at": utc_now(),
         "steps": trace_steps,
+        "tokens_prompt": tokens_prompt,
+        "tokens_completion": tokens_completion,
+        "latency_ms": latency_ms,
         "context": {
             "session_id": active_session_id,
             "turns_available": len(history),
@@ -747,9 +858,9 @@ def has_context_reference(normalized_query: str) -> bool:
 
 def public_policy_summary(policy: dict[str, Any]) -> dict[str, Any]:
     return {
-        "label": "Trợ lý phòng Kỹ thuật",
+        "label": "Trợ lý Tri thức Quy trình Phương Đông",
         "summary": [
-            "Trợ lý chỉ trả lời dựa trên tài liệu đang hiệu lực của phòng Kỹ thuật.",
+            "Trợ lý chỉ trả lời dựa trên tài liệu quy trình đang hiệu lực của Phương Đông.",
             "Nếu không tìm thấy căn cứ, trợ lý sẽ nói rõ là chưa tìm thấy trong tài liệu hiện hành.",
         ],
         "debug_visible": False,
@@ -787,17 +898,24 @@ def sanitize_public_citations(
             or ""
         )
         title = citation.get("title") or (record.title if record else doc_id)
-        safe.append(
-            {
-                "title": public_excerpt(clean_retrieval_text(title or doc_id or "Nguồn"), 160),
-                "doc_id": doc_id,
-                "version": version,
-                "display_code": display_code,
-                "display_version": display_version,
-                "excerpt": public_excerpt(clean_excerpt(citation.get("excerpt") or citation.get("text") or "")),
-                "anchor_id": str(citation.get("anchor_id") or ""),
-            }
-        )
+        score = citation.get("score") or citation.get("similarity") or citation.get("rank_score")
+        try:
+            score_float = float(score) if score is not None else None
+        except (TypeError, ValueError):
+            score_float = None
+
+        safe_dict = {
+            "title": public_excerpt(clean_retrieval_text(title or doc_id or "Nguồn"), 160),
+            "doc_id": doc_id,
+            "version": version,
+            "display_code": display_code,
+            "display_version": display_version,
+            "excerpt": public_excerpt(clean_excerpt(citation.get("excerpt") or citation.get("text") or "")),
+            "anchor_id": str(citation.get("anchor_id") or ""),
+        }
+        if score_float is not None:
+            safe_dict["score"] = score_float
+        safe.append(safe_dict)
     return safe
 
 

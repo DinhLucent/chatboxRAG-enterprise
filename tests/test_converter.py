@@ -9,6 +9,7 @@ import pytest
 from poc_workflow.converter import (
     ConversionError,
     MinerUConverter,
+    collect_mineru_directory_artifacts,
     collect_mineru_zip_artifacts,
     find_mineru_artifact_index,
 )
@@ -122,6 +123,33 @@ def test_converter_reads_mineru_options_from_env(monkeypatch) -> None:
     assert converter.max_pages == 300
 
 
+def test_mineru_input_staging_defaults_to_ascii_filename(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("MINERU_ASCII_STAGE_INPUT", raising=False)
+    monkeypatch.delenv("MINERU_STAGE_STEM_MAX_CHARS", raising=False)
+    source = tmp_path / "PD-ADM-A-064 Rev02. Quy trình lưu trữ tài liệu.xlsx"
+    source.write_bytes(b"fake workbook")
+
+    staged = MinerUConverter(command="missing-mineru")._stage_input_for_mineru(source, tmp_path / "raw")
+
+    assert staged.name.endswith(".xlsx")
+    assert all(ord(char) < 128 for char in staged.name)
+    assert staged.read_bytes() == b"fake workbook"
+
+
+def test_mineru_input_staging_shortens_long_filenames_for_windows_temp_paths(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("MINERU_ASCII_STAGE_INPUT", raising=False)
+    monkeypatch.delenv("MINERU_STAGE_STEM_MAX_CHARS", raising=False)
+    source = tmp_path / "PD-IC-D-004_Rev 03. Quy định về chống hối lộ và chống tham nhũng ABAC rất dài.pdf"
+    source.write_bytes(b"%PDF-1.4")
+
+    staged = MinerUConverter(command="missing-mineru")._stage_input_for_mineru(source, tmp_path / "raw")
+
+    assert staged.suffix == ".pdf"
+    assert len(staged.stem) <= 48
+    assert "-" in staged.stem
+    assert staged.read_bytes() == b"%PDF-1.4"
+
+
 def test_collect_mineru_zip_artifacts_indexes_sidecars_and_images(tmp_path: Path) -> None:
     zip_path = tmp_path / "mineru_result.zip"
     with zipfile.ZipFile(zip_path, "w") as archive:
@@ -142,6 +170,9 @@ def test_collect_mineru_zip_artifacts_indexes_sidecars_and_images(tmp_path: Path
         )
         archive.writestr("doc/auto/doc_middle.json", json.dumps({"pdf_info": [{"preproc_blocks": []}]}))
         archive.writestr("doc/auto/doc_model.json", json.dumps({"layout": "test"}))
+        archive.writestr("doc/auto/doc_layout_extra.json", json.dumps({"extra": "kept"}))
+        archive.writestr("doc/auto/doc_notes.md", "secondary markdown")
+        archive.writestr("doc/auto/debug.log", "mineru warning")
         archive.writestr("doc/auto/images/figure.jpg", b"image-bytes")
         archive.writestr("doc/auto/doc_origin.pdf", b"%PDF-1.4")
 
@@ -162,5 +193,38 @@ def test_collect_mineru_zip_artifacts_indexes_sidecars_and_images(tmp_path: Path
     assert index["summary"]["has_middle_json"] is True
     assert index["summary"]["has_model_json"] is True
     assert index["summary"]["image_count"] == 1
+    assert index["summary"]["generic_json_count"] == 1
+    assert index["summary"]["other_artifact_count"] == 1
+    assert index["summary"]["markdown_count"] == 2
     assert any(item["type"] == "content_list_v2" and Path(item["path"]).exists() for item in index["artifacts"])
+    assert any(item["type"] == "json" and item.get("json_summary", {}).get("parseable") is True for item in index["artifacts"])
+    assert any(item["type"] == "other" and Path(item["path"]).exists() for item in index["artifacts"])
     assert find_mineru_artifact_index(tmp_path / "raw", output_md) == index_path
+
+
+def test_collect_mineru_directory_artifacts_preserves_unrecognized_sidecars(tmp_path: Path) -> None:
+    source_root = tmp_path / "mineru_dir"
+    auto_root = source_root / "doc" / "auto"
+    auto_root.mkdir(parents=True)
+    selected = auto_root / "doc.md"
+    selected.write_text("# Doc\n\nBody\n", encoding="utf-8")
+    (auto_root / "doc_content_list.json").write_text(json.dumps([{"type": "text", "text": "Body"}]), encoding="utf-8")
+    (auto_root / "trace.json").write_text(json.dumps({"trace": "kept"}), encoding="utf-8")
+    (auto_root / "notes.txt").write_text("diagnostic", encoding="utf-8")
+
+    output_md = tmp_path / "out.md"
+    output_md.write_text("# Doc\n\nBody\n", encoding="utf-8")
+
+    index_path = collect_mineru_directory_artifacts(
+        source_root=source_root,
+        output_md=output_md,
+        selected_markdown_path=selected,
+        source_path=tmp_path / "source.pdf",
+    )
+
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    assert index["summary"]["has_content_list"] is True
+    assert index["summary"]["generic_json_count"] == 1
+    assert index["summary"]["other_artifact_count"] == 1
+    assert any(item["type"] == "json" and Path(item["path"]).exists() for item in index["artifacts"])
+    assert any(item["type"] == "other" and Path(item["path"]).exists() for item in index["artifacts"])

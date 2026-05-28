@@ -33,6 +33,7 @@ from .qa_test_eval import run_qa_test
 from .pilot_pdtech_a02 import run_pdtech_a02_agent_sandbox, run_pdtech_a02_pilot
 from .ragflow_http import bootstrap_ragflow_resources, sync_active_to_ragflow
 from .readiness import deployment_readiness
+from .source_inventory import enqueue_phuong_dong_procedures, inventory_phuong_dong_procedures
 from .upload_processing import process_upload_queue
 from .user_chat_render_smoke import run_user_chat_render_smoke
 
@@ -69,13 +70,30 @@ def build_parser() -> argparse.ArgumentParser:
             "QA/repair, RAG-ready packaging, and pending human review. Does not sync RAGFlow."
         ),
     )
-    upload_process.add_argument("--limit-groups", type=int, help="Process at most this many PDF/XLSX business-document groups.")
+    upload_process.add_argument("--limit-groups", type=int, help="Process at most this many PDF/XLS/XLSX/DOC/DOCX business-document groups.")
     upload_process.add_argument(
         "--category",
         default="procedure",
         choices=["procedure", "vendor_document", "form_checklist", "faq_troubleshooting", "all"],
         help="Upload category to process. Default procedure; use all for mixed queues.",
     )
+
+    inventory_pd = sub.add_parser(
+        "inventory-phuong-dong-procedures",
+        help="Inventory Phuong Dong procedure source files by department without mutating root_source.",
+    )
+    inventory_pd.add_argument("--source-root", help="Override root_source/Quy Trình Phương Đông.")
+    inventory_pd.add_argument("--include-technical", action="store_true", help="Include 12. QUY TRÌNH KỸ THUẬT instead of excluding it.")
+    inventory_pd.add_argument("--no-report", action="store_true", help="Do not write manifest/all_departments_source_inventory.json.")
+
+    enqueue_pd = sub.add_parser(
+        "enqueue-phuong-dong-procedures",
+        help="Copy non-Technical Phuong Dong procedure sources into inbox/procedure/<department> for Upload processing.",
+    )
+    enqueue_pd.add_argument("--source-root", help="Override root_source/Quy Trình Phương Đông.")
+    enqueue_pd.add_argument("--include-technical", action="store_true", help="Include 12. QUY TRÌNH KỸ THUẬT instead of excluding it.")
+    enqueue_pd.add_argument("--dry-run", action="store_true", help="Preview enqueue without copying files.")
+    enqueue_pd.add_argument("--limit", type=int, help="Copy at most this many source files.")
 
     pilot = sub.add_parser(
         "pilot-pdtech-a02",
@@ -279,6 +297,21 @@ def main(argv: list[str] | None = None) -> int:
                     category=category,
                 )
             }
+        elif args.command == "inventory-phuong-dong-procedures":
+            result = inventory_phuong_dong_procedures(
+                root,
+                source_root=Path(args.source_root) if args.source_root else None,
+                include_technical=args.include_technical,
+                write_report=not args.no_report,
+            )
+        elif args.command == "enqueue-phuong-dong-procedures":
+            result = enqueue_phuong_dong_procedures(
+                root,
+                source_root=Path(args.source_root) if args.source_root else None,
+                include_technical=args.include_technical,
+                dry_run=args.dry_run,
+                limit=args.limit,
+            )
         elif args.command == "pilot-pdtech-a02":
             result = run_pdtech_a02_pilot(
                 root,

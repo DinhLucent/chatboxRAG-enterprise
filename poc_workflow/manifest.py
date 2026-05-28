@@ -110,8 +110,8 @@ def validate_record_for_approval(record: ManifestRecord) -> None:
         if not extra.get("citation_map_path"):
             raise ManifestError("Primary-source-only Upload records require citation_map_path before approval")
         decision = extra.get("primary_source_decision")
-        if not isinstance(decision, dict) or decision.get("selected") not in {"xlsx", "pdf"}:
-            raise ManifestError("Primary-source-only Upload records require a selected PDF/XLSX primary source")
+        if not isinstance(decision, dict) or decision.get("selected") not in {"xlsx", "xls", "pdf", "docx", "doc"}:
+            raise ManifestError("Primary-source-only Upload records require a selected primary source")
         review_path = extra.get("human_review_path") or extra.get("review_report_path")
         if not review_path:
             raise ManifestError("Primary-source-only Upload records require human_review_path before approval")

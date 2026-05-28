@@ -9,6 +9,7 @@ from typing import Any
 
 from .config import VALID_FEEDBACK
 from .utils import utc_now
+from .text_cleaning import normalized_text
 
 VALID_INCIDENT_SEVERITIES = {"info", "warning", "error", "critical"}
 VALID_INCIDENT_STATUSES = {"open", "resolved", "ignored"}
@@ -61,6 +62,21 @@ class QualityDatabase:
             self._ensure_column(conn, "query_logs", "answer_source", "TEXT")
             self._ensure_column(conn, "query_logs", "llm_provider", "TEXT")
             self._ensure_column(conn, "query_logs", "llm_model", "TEXT")
+            self._ensure_column(conn, "query_logs", "tokens_prompt", "INTEGER DEFAULT 0")
+            self._ensure_column(conn, "query_logs", "tokens_completion", "INTEGER DEFAULT 0")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS rag_annotations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    query TEXT NOT NULL,
+                    query_normalized TEXT NOT NULL UNIQUE,
+                    annotated_answer TEXT NOT NULL,
+                    doc_id TEXT,
+                    version TEXT,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS knowledge_gaps (
@@ -202,6 +218,8 @@ class QualityDatabase:
         answer_source: str | None = None,
         llm_provider: str | None = None,
         llm_model: str | None = None,
+        tokens_prompt: int = 0,
+        tokens_completion: int = 0,
     ) -> int:
         self.init()
         with self.connect() as conn:
@@ -209,9 +227,9 @@ class QualityDatabase:
                 """
                 INSERT INTO query_logs (
                     query, user_id, retrieved_doc_ids, answer_has_citation, latency_ms, answer, created_at,
-                    llm_used, llm_error, answer_source, llm_provider, llm_model
+                    llm_used, llm_error, answer_source, llm_provider, llm_model, tokens_prompt, tokens_completion
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     query,
@@ -226,6 +244,8 @@ class QualityDatabase:
                     answer_source,
                     llm_provider,
                     llm_model,
+                    tokens_prompt,
+                    tokens_completion,
                 ),
             )
             return int(cursor.lastrowid)
@@ -254,6 +274,129 @@ class QualityDatabase:
             )
             updated = conn.execute("SELECT * FROM query_logs WHERE id = ?", (log_id,)).fetchone()
             return dict(updated)
+
+    def get_annotation(self, query: str) -> dict[str, Any] | None:
+        self.init()
+        norm = normalized_text(query).strip()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM rag_annotations WHERE query_normalized = ?",
+                (norm,),
+            ).fetchone()
+            if row:
+                return dict(row)
+        return None
+
+    def add_or_update_annotation(
+        self,
+        query: str,
+        annotated_answer: str,
+        doc_id: str | None = None,
+        version: str | None = None,
+    ) -> int:
+        self.init()
+        norm = normalized_text(query).strip()
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM rag_annotations WHERE query_normalized = ?",
+                (norm,),
+            ).fetchone()
+            if row:
+                conn.execute(
+                    """
+                    UPDATE rag_annotations
+                    SET query = ?, annotated_answer = ?, doc_id = ?, version = ?, created_at = ?
+                    WHERE id = ?
+                    """,
+                    (query, annotated_answer, doc_id, version, utc_now(), row["id"]),
+                )
+                return int(row["id"])
+            else:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO rag_annotations (query, query_normalized, annotated_answer, doc_id, version, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (query, norm, annotated_answer, doc_id, version, utc_now()),
+                )
+                return int(cursor.lastrowid)
+
+    def list_annotations(self) -> list[dict[str, Any]]:
+        self.init()
+        with self.connect() as conn:
+            rows = conn.execute("SELECT * FROM rag_annotations ORDER BY id DESC").fetchall()
+            return [dict(row) for row in rows]
+
+    def delete_annotation(self, annotation_id: int) -> None:
+        self.init()
+        with self.connect() as conn:
+            conn.execute("DELETE FROM rag_annotations WHERE id = ?", (annotation_id,))
+
+    def delete_gaps(self, gap_ids: list[int]) -> None:
+        self.init()
+        if not gap_ids:
+            return
+        placeholders = ",".join("?" for _ in gap_ids)
+        with self.connect() as conn:
+            conn.execute(f"DELETE FROM knowledge_gaps WHERE id IN ({placeholders})", gap_ids)
+
+    def delete_queries(self, query_ids: list[int]) -> None:
+        self.init()
+        if not query_ids:
+            return
+        placeholders = ",".join("?" for _ in query_ids)
+        with self.connect() as conn:
+            conn.execute(f"DELETE FROM query_logs WHERE id IN ({placeholders})", query_ids)
+
+    def delete_ingestion_runs(self, run_ids: list[int]) -> None:
+        self.init()
+        if not run_ids:
+            return
+        placeholders = ",".join("?" for _ in run_ids)
+        with self.connect() as conn:
+            conn.execute(f"DELETE FROM ingestion_runs WHERE id IN ({placeholders})", run_ids)
+
+    def delete_incidents(self, incident_ids: list[int]) -> None:
+        self.init()
+        if not incident_ids:
+            return
+        placeholders = ",".join("?" for _ in incident_ids)
+        with self.connect() as conn:
+            conn.execute(f"DELETE FROM incidents WHERE id IN ({placeholders})", incident_ids)
+
+    def bulk_update_gaps_status(self, gap_ids: list[int], status: str) -> None:
+        self.init()
+        if not gap_ids:
+            return
+        placeholders = ",".join("?" for _ in gap_ids)
+        with self.connect() as conn:
+            conn.execute(
+                f"UPDATE knowledge_gaps SET status = ? WHERE id IN ({placeholders})",
+                [status] + gap_ids,
+            )
+
+    def bulk_update_queries_feedback(self, query_ids: list[int], feedback: str) -> None:
+        self.init()
+        if not query_ids:
+            return
+        placeholders = ",".join("?" for _ in query_ids)
+        with self.connect() as conn:
+            conn.execute(
+                f"UPDATE query_logs SET feedback = ? WHERE id IN ({placeholders})",
+                [feedback] + query_ids,
+            )
+
+    def bulk_resolve_incidents(self, incident_ids: list[int], status: str) -> None:
+        self.init()
+        if not incident_ids:
+            return
+        placeholders = ",".join("?" for _ in incident_ids)
+        now_text = utc_now() if status in {"resolved", "ignored"} else None
+        with self.connect() as conn:
+            conn.execute(
+                f"UPDATE incidents SET status = ?, resolved_at = ? WHERE id IN ({placeholders})",
+                [status, now_text] + incident_ids,
+            )
 
     def touch_user_chat_session(
         self,
@@ -605,6 +748,34 @@ class QualityDatabase:
                 "open_incident_count": open_incidents,
                 "critical_incident_count": critical_incidents,
             }
+
+    def list_user_sessions_by_device(self, device_id: str) -> list[dict[str, Any]]:
+        self.init()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT s.*,
+                       (SELECT t.query FROM user_chat_turns t WHERE t.session_id = s.session_id ORDER BY t.id ASC LIMIT 1) as title
+                FROM user_chat_sessions s
+                WHERE s.device_id = ?
+                ORDER BY s.last_seen_at DESC
+                """,
+                (device_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def get_user_chat_turns(self, session_id: str) -> list[dict[str, Any]]:
+        self.init()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM user_chat_turns
+                WHERE session_id = ?
+                ORDER BY id ASC
+                """,
+                (session_id,),
+            ).fetchall()
+            return [self._user_chat_turn_row(row) for row in rows]
 
     def _incident_row(self, row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)

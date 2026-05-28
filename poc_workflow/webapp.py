@@ -101,6 +101,13 @@ class FeedbackRequest(BaseModel):
     feedback: str
 
 
+class AnnotationRequest(BaseModel):
+    query: str
+    annotated_answer: str
+    doc_id: str | None = None
+    version: str | None = None
+
+
 class UserChatRequest(BaseModel):
     query: str
     template_id: str | None = None
@@ -108,6 +115,7 @@ class UserChatRequest(BaseModel):
     session_id: str | None = None
     device_id: str | None = None
     use_llm: bool = True
+    variables: dict[str, Any] | None = None
 
 
 class UserFeedbackRequest(BaseModel):
@@ -230,6 +238,25 @@ class IncidentRequest(BaseModel):
 class ResolveIncidentRequest(BaseModel):
     incident_id: int
     status: str = "resolved"
+
+
+class BulkDeleteRequest(BaseModel):
+    ids: list[int]
+
+
+class BulkStatusRequest(BaseModel):
+    ids: list[int]
+    status: str
+
+
+class BulkFeedbackRequest(BaseModel):
+    ids: list[int]
+    feedback: str
+
+
+class BulkDiagnosticsRequest(BaseModel):
+    files: list[str]
+
 
 
 class LLMConfigRequest(BaseModel):
@@ -427,14 +454,27 @@ def _xlsx_preview(path: Path, *, max_rows: int = 40, max_cols: int = 12) -> dict
             sheets = _xlsx_sheet_paths(archive)
             previews = []
             for sheet in sheets[:15]:
-                rows = _xlsx_sheet_rows(
-                    archive,
-                    sheet["path"],
-                    shared_strings=shared_strings,
-                    max_rows=max_rows,
-                    max_cols=max_cols,
-                )
-                previews.append({"name": sheet["name"], "rows": rows, "truncated": len(rows) >= max_rows})
+                try:
+                    rows = _xlsx_sheet_rows(
+                        archive,
+                        sheet["path"],
+                        shared_strings=shared_strings,
+                        max_rows=max_rows,
+                        max_cols=max_cols,
+                    )
+                    previews.append({
+                        "name": sheet["name"],
+                        "rows": rows,
+                        "truncated": len(rows) >= max_rows,
+                        "error": None
+                    })
+                except Exception as sheet_exc:
+                    previews.append({
+                        "name": sheet["name"],
+                        "rows": [],
+                        "truncated": False,
+                        "error": str(sheet_exc)
+                    })
             return {"sheets": previews, "sheet_count": len(sheets), "error": None}
     except Exception as exc:
         return {"sheets": [], "sheet_count": 0, "error": str(exc)}
@@ -1182,6 +1222,7 @@ def create_app(root: Path | None = None) -> FastAPI:
             session_id=payload.session_id,
             device_id=payload.device_id,
             use_llm=payload.use_llm,
+            variables=payload.variables,
         )
 
     @app.post("/api/user/chat/stream")
@@ -1216,6 +1257,7 @@ def create_app(root: Path | None = None) -> FastAPI:
                         device_id=payload.device_id,
                         use_llm=payload.use_llm,
                         stream_callback=emit,
+                        variables=payload.variables,
                     )
                     queue.put({"event": "final", "result": result})
                 except Exception as exc:  # pragma: no cover - surfaced to client as SSE
@@ -1250,6 +1292,25 @@ def create_app(root: Path | None = None) -> FastAPI:
             return apply_feedback(workspace, log_id, feedback)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/user/sessions")
+    def list_user_sessions_api(device_id: str) -> list[dict[str, Any]]:
+        if not device_id:
+            raise HTTPException(status_code=400, detail="device_id is required")
+        return QualityDatabase(workspace).list_user_sessions_by_device(device_id)
+
+    @app.get("/api/user/sessions/{session_id}/turns")
+    def list_user_session_turns_api(session_id: str) -> list[dict[str, Any]]:
+        if not session_id:
+            raise HTTPException(status_code=400, detail="session_id is required")
+        return QualityDatabase(workspace).get_user_chat_turns(session_id)
+
+    @app.delete("/api/user/sessions/{session_id}")
+    def delete_user_session_api(session_id: str) -> dict[str, Any]:
+        if not session_id:
+            raise HTTPException(status_code=400, detail="session_id is required")
+        deleted_turns = QualityDatabase(workspace).delete_user_chat_session(session_id)
+        return {"session_id": session_id, "deleted_turns": deleted_turns}
 
     @app.get("/api/readiness")
     def readiness_api(check_network: bool = False) -> dict[str, Any]:
@@ -1710,6 +1771,29 @@ def create_app(root: Path | None = None) -> FastAPI:
     def gaps_api() -> list[dict[str, Any]]:
         return QualityDatabase(workspace).list_gaps()
 
+    @app.get("/api/annotations")
+    def list_annotations_api() -> list[dict[str, Any]]:
+        return QualityDatabase(workspace).list_annotations()
+
+    @app.post("/api/annotations")
+    def create_annotation_api(payload: AnnotationRequest) -> dict[str, Any]:
+        if not payload.query.strip():
+            raise HTTPException(status_code=400, detail="query is required")
+        if not payload.annotated_answer.strip():
+            raise HTTPException(status_code=400, detail="annotated_answer is required")
+        ann_id = QualityDatabase(workspace).add_or_update_annotation(
+            payload.query,
+            payload.annotated_answer,
+            doc_id=payload.doc_id,
+            version=payload.version,
+        )
+        return {"id": ann_id, "status": "success"}
+
+    @app.delete("/api/annotations/{annotation_id}")
+    def delete_annotation_api(annotation_id: int) -> dict[str, Any]:
+        QualityDatabase(workspace).delete_annotation(annotation_id)
+        return {"status": "success"}
+
     @app.get("/api/queries")
     def queries_api() -> list[dict[str, Any]]:
         return QualityDatabase(workspace).list_queries()
@@ -1751,9 +1835,81 @@ def create_app(root: Path | None = None) -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post("/api/gaps/bulk-delete")
+    def bulk_delete_gaps_api(payload: BulkDeleteRequest) -> dict[str, Any]:
+        try:
+            QualityDatabase(workspace).delete_gaps(payload.ids)
+            return {"status": "success"}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/gaps/bulk-status")
+    def bulk_status_gaps_api(payload: BulkStatusRequest) -> dict[str, Any]:
+        try:
+            QualityDatabase(workspace).bulk_update_gaps_status(payload.ids, payload.status)
+            return {"status": "success"}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/queries/bulk-delete")
+    def bulk_delete_queries_api(payload: BulkDeleteRequest) -> dict[str, Any]:
+        try:
+            QualityDatabase(workspace).delete_queries(payload.ids)
+            return {"status": "success"}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/queries/bulk-feedback")
+    def bulk_feedback_queries_api(payload: BulkFeedbackRequest) -> dict[str, Any]:
+        try:
+            QualityDatabase(workspace).bulk_update_queries_feedback(payload.ids, payload.feedback)
+            return {"status": "success"}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/ingestion-runs/bulk-delete")
+    def bulk_delete_ingestion_runs_api(payload: BulkDeleteRequest) -> dict[str, Any]:
+        try:
+            QualityDatabase(workspace).delete_ingestion_runs(payload.ids)
+            return {"status": "success"}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/incidents/bulk-delete")
+    def bulk_delete_incidents_api(payload: BulkDeleteRequest) -> dict[str, Any]:
+        try:
+            QualityDatabase(workspace).delete_incidents(payload.ids)
+            return {"status": "success"}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/incidents/bulk-resolve")
+    def bulk_resolve_incidents_api(payload: BulkStatusRequest) -> dict[str, Any]:
+        try:
+            QualityDatabase(workspace).bulk_resolve_incidents(payload.ids, payload.status)
+            return {"status": "success"}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/diagnostics/clear-logs")
+    def clear_logs_api(payload: BulkDiagnosticsRequest) -> dict[str, Any]:
+        try:
+            for relative_path in payload.files:
+                if ".." in relative_path or relative_path.startswith("/") or relative_path.startswith("\\"):
+                    raise HTTPException(status_code=400, detail="Invalid log file path")
+                log_path = (workspace / relative_path).resolve()
+                if not log_path.is_relative_to(workspace.resolve()):
+                    raise HTTPException(status_code=400, detail="Path must be relative to workspace")
+                if log_path.exists() and log_path.is_file() and log_path.suffix == ".log":
+                    log_path.unlink(missing_ok=True)
+            return {"status": "success"}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get("/api/diagnostics")
     def diagnostics_api(include_logs: bool = True) -> dict[str, Any]:
         return diagnostic_snapshot(workspace, include_logs=include_logs)
+
 
     return app
 

@@ -225,7 +225,7 @@ def _xlsx_cell_value(cell: ET.Element, shared_strings: list[str]) -> str:
     if cell_type == "inlineStr":
         return "".join(node.text or "" for node in cell.findall(".//{*}t")).strip()
     value_node = cell.find("{*}v")
-    raw_value = value_node.text if value_node is not None else ""
+    raw_value = (value_node.text or "") if value_node is not None else ""
     if cell_type == "s":
         try:
             return shared_strings[int(raw_value)].strip()

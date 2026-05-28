@@ -7,6 +7,7 @@ const state = {
   lastResponse: null,
   drawerHidden: isCompactLayout(),
   heartbeatTimer: null,
+  loadingChartJS: null,
 };
 
 const qs = (selector) => document.querySelector(selector);
@@ -56,11 +57,18 @@ function parseMarkdown(text) {
   let inCode = false;
   let codeLang = "";
   let codeLines = [];
+  let inBlockquote = false;
+  let currentCalloutType = "";
   
   for (let line of lines) {
     const trimmed = line.trim();
 
     if (trimmed.startsWith("```")) {
+      if (inBlockquote) {
+        result.push(currentCalloutType ? "</div>" : "</blockquote>");
+        inBlockquote = false;
+        currentCalloutType = "";
+      }
       if (inCode) {
         result.push(renderCodeBlock(codeLang, codeLines.join("\n")));
         inCode = false;
@@ -85,6 +93,52 @@ function parseMarkdown(text) {
     if (inCode) {
       codeLines.push(line);
       continue;
+    }
+
+    // Handle blockquotes / callouts (escaped > is &gt;)
+    if (trimmed.startsWith("&gt;")) {
+      if (inUl) {
+        result.push("</ul>");
+        inUl = false;
+      }
+      if (inOl) {
+        result.push("</ol>");
+        inOl = false;
+      }
+      
+      const quoteContent = line.substring(line.indexOf("&gt;") + 4).trim();
+      
+      if (!inBlockquote) {
+        const calloutMatch = quoteContent.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i);
+        if (calloutMatch) {
+          currentCalloutType = calloutMatch[1].toUpperCase();
+          const innerText = quoteContent.substring(calloutMatch[0].length).trim();
+          result.push(`<div class="callout callout-${currentCalloutType.toLowerCase()}">`);
+          result.push(getCalloutHeader(currentCalloutType));
+          if (innerText) {
+            result.push(`<p class="callout-body">${formatInlineMarkdown(innerText)}</p>`);
+          }
+        } else {
+          currentCalloutType = "";
+          result.push(`<blockquote>`);
+          result.push(`<p>${formatInlineMarkdown(quoteContent)}</p>`);
+        }
+        inBlockquote = true;
+      } else {
+        if (currentCalloutType) {
+          result.push(`<p class="callout-body">${formatInlineMarkdown(quoteContent)}</p>`);
+        } else {
+          result.push(`<p>${formatInlineMarkdown(quoteContent)}</p>`);
+        }
+      }
+      continue;
+    }
+
+    // Close blockquote if we hit a non-blockquote line
+    if (inBlockquote) {
+      result.push(currentCalloutType ? "</div>" : "</blockquote>");
+      inBlockquote = false;
+      currentCalloutType = "";
     }
     
     if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
@@ -140,6 +194,9 @@ function parseMarkdown(text) {
   
   if (inUl) result.push("</ul>");
   if (inOl) result.push("</ol>");
+  if (inBlockquote) {
+    result.push(currentCalloutType ? "</div>" : "</blockquote>");
+  }
   if (inCode) result.push(renderCodeBlock(codeLang, codeLines.join("\n")));
   
   return result.join("\n");
@@ -160,6 +217,12 @@ function formatInlineMarkdown(value) {
 function renderCodeBlock(lang, code) {
   if (lang === "mermaid") {
     return renderMermaidWorkflow(code);
+  }
+  if (lang === "chart" || lang === "echarts") {
+    const trimmed = code.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      return `<div class="chat-chart-container" data-chart-config="${escapeHtml(trimmed)}"></div>`;
+    }
   }
   return `<pre class="markdown-code"><code>${code}</code></pre>`;
 }
@@ -207,6 +270,90 @@ function toast(message) {
   target.textContent = message;
   target.classList.add("show");
   window.setTimeout(() => target.classList.remove("show"), 2800);
+}
+
+function getCalloutHeader(type) {
+  const titles = {
+    NOTE: "Ghi chú",
+    TIP: "Mẹo / Gợi ý",
+    IMPORTANT: "Quan trọng",
+    WARNING: "Cảnh báo",
+    CAUTION: "Lưu ý đặc biệt"
+  };
+  const title = titles[type] || type;
+  
+  let iconSvg = "";
+  if (type === "NOTE") {
+    iconSvg = `<svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`;
+  } else if (type === "TIP") {
+    iconSvg = `<svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2v2M4.22 4.22l1.42 1.42M18.36 4.22l-1.42 1.42M1 12h2M21 12h2M12 6a6 6 0 0 0-6 6c0 1.66.83 3.12 2.1 4H15.9a4 4 0 0 0 2.1-4c0-3.31-2.69-6-6-6z"/></svg>`;
+  } else if (type === "IMPORTANT") {
+    iconSvg = `<svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`;
+  } else if (type === "WARNING") {
+    iconSvg = `<svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`;
+  } else if (type === "CAUTION") {
+    iconSvg = `<svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`;
+  }
+  
+  return `
+    <div class="callout-title">
+      ${iconSvg}
+      <span>${title}</span>
+    </div>
+  `;
+}
+
+function loadChartJS() {
+  if (window.Chart) {
+    return Promise.resolve(window.Chart);
+  }
+  if (state.loadingChartJS) {
+    return state.loadingChartJS;
+  }
+  state.loadingChartJS = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "https://cdn.jsdelivr.net/npm/chart.js";
+    script.onload = () => {
+      resolve(window.Chart);
+    };
+    script.onerror = (err) => {
+      reject(err);
+    };
+    document.head.appendChild(script);
+  });
+  return state.loadingChartJS;
+}
+
+async function hydrateCharts(container = document) {
+  const chartContainers = container.querySelectorAll(".chat-chart-container:not(.initialized)");
+  if (!chartContainers.length) return;
+  
+  try {
+    const Chart = await loadChartJS();
+    chartContainers.forEach((el) => {
+      el.classList.add("initialized");
+      const configStr = el.getAttribute("data-chart-config");
+      try {
+        const config = JSON.parse(configStr);
+        const canvas = document.createElement("canvas");
+        el.appendChild(canvas);
+        
+        canvas.style.maxWidth = "100%";
+        canvas.style.height = "250px";
+        
+        config.options = config.options || {};
+        config.options.responsive = true;
+        config.options.maintainAspectRatio = false;
+        
+        new Chart(canvas, config);
+      } catch (err) {
+        console.error("Failed to render chart:", err);
+        el.innerHTML = `<p class="chart-error">Lỗi hiển thị biểu đồ: ${escapeHtml(err.message)}</p>`;
+      }
+    });
+  } catch (err) {
+    console.error("Failed to load Chart.js:", err);
+  }
 }
 
 function handleSpotlightMove(e) {
@@ -264,7 +411,7 @@ function applyStatus(serviceStatus) {
 }
 
 function renderBootstrap() {
-  qs("#assistantLine").textContent = "Trợ lý đang dùng: Tài liệu phòng Kỹ thuật | Quy tắc: Trả lời có nguồn";
+  qs("#assistantLine").textContent = "Trợ lý đang dùng: Tài liệu quy trình Phương Đông | Quy tắc: Trả lời có nguồn";
   renderAnswerStyles();
   renderTemplates();
   renderWelcomeCards();
@@ -434,6 +581,33 @@ async function submitChat(event) {
   switchDrawerTab("trace");
   renderTrace(LOADING_STEPS.map((label) => ({ label, status: "empty", detail: "" })));
 
+  // Setup loading animation interval for active step representation
+  let activeStepIdx = 0;
+  const loadingInterval = setInterval(() => {
+    if (!pending) return;
+    const steps = pending.querySelectorAll(".loading-step");
+    if (!steps.length) {
+      clearInterval(loadingInterval);
+      return;
+    }
+    steps.forEach((stepEl, idx) => {
+      stepEl.classList.remove("active");
+      if (idx < activeStepIdx) {
+        stepEl.style.color = "var(--muted)";
+        stepEl.style.opacity = "0.5";
+        const dot = stepEl.querySelector(".loading-step-dot");
+        if (dot) {
+          dot.style.background = "var(--green)";
+          dot.style.boxShadow = "none";
+          dot.style.animation = "none";
+        }
+      } else if (idx === activeStepIdx) {
+        stepEl.classList.add("active");
+      }
+    });
+    activeStepIdx = (activeStepIdx + 1) % steps.length;
+  }, 1200);
+
   try {
     const result = await api("/api/chat", {
       method: "POST",
@@ -446,6 +620,7 @@ async function submitChat(event) {
         use_llm: true,
       }),
     });
+    clearInterval(loadingInterval);
     state.lastResponse = result;
     if (result.session?.session_id || result.session_id) {
       state.sessionId = result.session?.session_id || result.session_id;
@@ -454,6 +629,7 @@ async function submitChat(event) {
     pending.querySelector(".message-body").innerHTML = parseMarkdown(result.answer || NO_SOURCE_TEXT);
     pending.insertAdjacentHTML("beforeend", renderFeedbackActions(result.query_log_id || result.log_id));
     wireFeedback(pending);
+    hydrateCharts(pending);
     renderSources(result.citations || []);
     renderTrace(result.trace_steps || result.trace?.steps || []);
     switchDrawerTab("sources");
@@ -462,18 +638,24 @@ async function submitChat(event) {
     autoGrowTextarea();
     checkHealth();
   } catch (error) {
+    clearInterval(loadingInterval);
     pending.querySelector(".message-body").textContent = error.message || "Hệ thống chưa sẵn sàng.";
     toast(error.message);
   } finally {
+    clearInterval(loadingInterval);
     qs("#sendBtn").disabled = false;
   }
 }
 
 function renderLoadingMessage() {
   return `
+    <div class="loading-indicator-wrapper">
+      <div class="modern-loading-spinner"></div>
+      <div class="loading-title">OrientSOP đang suy nghĩ...</div>
+    </div>
     <div class="loading-list">
-      ${LOADING_STEPS.map((step) => `
-        <div class="loading-step">
+      ${LOADING_STEPS.map((step, idx) => `
+        <div class="loading-step${idx === 0 ? " active" : ""}">
           <span class="loading-step-dot"></span>
           <span>${escapeHtml(step)}</span>
         </div>
@@ -566,9 +748,9 @@ function resetChat() {
   qs("#messages").innerHTML = `
     <div id="welcomeState" class="welcome-state">
       <div class="welcome-hero">
-        <div class="welcome-badge">Hệ thống RAG phòng Kỹ thuật</div>
+        <div class="welcome-badge">Hệ thống RAG Quy trình Phương Đông</div>
         <p class="welcome-eyebrow">Tôi có thể giúp gì cho bạn hôm nay?</p>
-        <p class="welcome-sub">Tìm kiếm nhanh chóng, trích dẫn chính xác từ kho tài liệu và quy trình phòng Kỹ thuật.</p>
+        <p class="welcome-sub">Tìm kiếm nhanh chóng, trích dẫn chính xác từ kho tài liệu và quy trình hiệu lực của Phương Đông.</p>
       </div>
       <div id="welcomeCards" class="welcome-cards" aria-label="Gợi ý bắt đầu"></div>
     </div>

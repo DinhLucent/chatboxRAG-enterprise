@@ -6,6 +6,7 @@ This document tracks changes to the system's architecture, default ports, folder
 
 | Version | Date | Description of Changes | Affected Components | Author |
 | :--- | :--- | :--- | :--- | :--- |
+| **v1.3.1** | 2026-05-28 | Align Local Index (ragflow_index), ports, Favicon & Maintenance UI | static/app.js, static/index.html, docs/architecture.md, docs/demo-end-to-end-architecture.md | AI Architect |
 | **v1.3.0** | 2026-05-26 | Live Health Status & AI Agent Prompt Checkpoint | Dashboard UI, webapp, app.js, index.html, styles.css | AI Architect |
 | **v1.2.0** | 2026-05-25 | Interactive Architecture Tab & Scroll-Safe Zoom | static/app.js, static/index.html, static/styles.css | AI Architect |
 | **v1.1.0** | 2026-05-24 | FreeLLMAPI Router & Local fallback retrieval | poc_workflow.chatbot, webapp.py, LLM proxy | AI Architect |
@@ -14,6 +15,12 @@ This document tracks changes to the system's architecture, default ports, folder
 ---
 
 ## Detailed Release Changelog
+
+### v1.3.1 (2026-05-28) - Align Local Index folder (ragflow_index), specific ports, Favicon & RAG Maintenance UI
+- **Aligned Local Index Reference**: Synchronized all user interface references of `knowledge_index/` to the actual `ragflow_index/` directory on disk.
+- **Added Specific Ports to Mermaid Diagrams**: Embedded exact runtime ports (`:8088`, `:3001`, `:8010`, `:9380`) into technical diagrams across both Dashboard UI and technical Markdown files.
+- **Added Favicon Integration**: Integrated custom browser favicon (`favicon.svg`) across all page layouts.
+- **Created RAG Maintenance Blurring Effect**: Implemented an interactive glassmorphic overlay for the RAG offline/maintenance status in the UI dashboard.
 
 ### v1.3.0 (2026-05-26) - Live Health Status & AI Agent Prompt Checkpoint
 - **Added Live Component Status**: Added live status badges on the Bento Grid components within the Architecture dashboard. Badges update automatically every reload using JSON data returned from the backend `/api/health` queries.

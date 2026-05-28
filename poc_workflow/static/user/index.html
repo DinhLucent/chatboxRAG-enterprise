@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>DL Knowledge | Trợ lý phòng Kỹ thuật</title>
-    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Crect x='2' y='2' width='20' height='20' rx='6' fill='%23e11d48'/%3E%3Cpath d='M7 9C7 7.89543 7.89543 7 9 7H15C16.1046 7 17 7.89543 17 9V13C17 14.1046 16.1046 15 15 15H11.5L8.5 17.5V15H9C7.89543 15 7 14.1046 7 13V9Z' fill='white'/%3E%3Ccircle cx='10' cy='11' r='1.2' fill='%23dc2626'/%3E%3Ccircle cx='14' cy='11' r='1.2' fill='%23dc2626'/%3E%3C/svg%3E" />
+    <title>OrientSOP | Trợ lý Tri thức Quy trình Phương Đông</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -16,7 +16,7 @@
   <body>
     <div class="user-shell">
       <aside class="rail" aria-label="Điều hướng">
-        <div class="rail-brand" aria-label="DL Knowledge Trợ lý phòng Kỹ thuật">
+        <div class="rail-brand" aria-label="OrientSOP Trợ lý Tri thức Quy trình Phương Đông">
           <div class="rail-mark-container">
             <svg class="logo-svg" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <rect x="2" y="2" width="20" height="20" rx="6" fill="url(#logo-grad)"/>
@@ -31,7 +31,7 @@
               </defs>
             </svg>
           </div>
-          <span class="brand-text">DL Knowledge</span>
+          <span class="brand-text">OrientSOP</span>
         </div>
         
         <div class="rail-nav">
@@ -42,7 +42,7 @@
             <span class="rail-label">Mới</span>
           </button>
           
-          <button class="rail-button muted" type="button" disabled title="Lịch sử (Sắp ra mắt)">
+          <button id="historyBtn" class="rail-button" type="button" title="Lịch sử trò chuyện">
             <svg class="rail-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="10"/>
               <polyline points="12 6 12 12 16 14"/>
@@ -70,10 +70,24 @@
         </div>
       </aside>
 
+      <!-- Left Sidebar for Chat History -->
+      <aside id="chatSidebar" class="chat-sidebar hidden">
+        <div class="sidebar-header">
+          <h2>Lịch sử trò chuyện</h2>
+          <button id="closeSidebarBtn" class="icon-button" type="button" title="Đóng thanh bên">
+            <svg style="width: 16px; height: 16px;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+        <div id="historyList" class="history-list"></div>
+      </aside>
+
       <main class="chat-main">
         <header class="chat-header">
           <div class="header-content">
-            <h1>Trợ lý Tri thức phòng Kỹ thuật</h1>
+            <h1>Trợ lý Tri thức Quy trình Phương Đông</h1>
             <div id="assistantLine" class="assistant-line">Trợ lý đang dùng: Tài liệu đang hiệu lực</div>
           </div>
         </header>
@@ -83,9 +97,9 @@
         <section id="messages" class="messages" aria-live="polite">
           <div id="welcomeState" class="welcome-state">
             <div class="welcome-hero">
-              <div class="welcome-badge">Hệ thống tri thức phòng Kỹ thuật</div>
+              <div class="welcome-badge">Hệ thống tri thức Quy trình Phương Đông</div>
               <p class="welcome-eyebrow">Tôi có thể giúp gì cho bạn hôm nay?</p>
-              <p class="welcome-sub">Tìm kiếm nhanh chóng, trích dẫn chính xác từ kho tài liệu và quy trình phòng Kỹ thuật.</p>
+              <p class="welcome-sub">Tìm kiếm nhanh chóng, trích dẫn chính xác từ kho tài liệu và quy trình hiệu lực của Phương Đông.</p>
             </div>
             <div id="welcomeCards" class="welcome-cards" aria-label="Gợi ý bắt đầu"></div>
           </div>
@@ -94,6 +108,16 @@
         <form id="chatForm" class="composer">
           <div class="composer-container">
             <div class="composer-settings">
+              <label class="answer-style-label" for="docCategorySelect">Phạm vi:</label>
+              <div class="select-wrapper">
+                <select id="docCategorySelect" class="answer-style-select">
+                  <option value="">Tất cả tài liệu</option>
+                  <option value="procedure">Quy trình vận hành</option>
+                  <option value="vendor_document">Tài liệu kỹ thuật hãng</option>
+                  <option value="form_checklist">Biểu mẫu & checklist</option>
+                  <option value="faq_troubleshooting">Xử lý sự cố & FAQ</option>
+                </select>
+              </div>
               <label class="answer-style-label" for="answerStyle">Kiểu trả lời:</label>
               <div class="select-wrapper">
                 <select id="answerStyle" class="answer-style-select">

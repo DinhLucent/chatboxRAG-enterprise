@@ -26,6 +26,7 @@ MINERU_RICH_ARTIFACT_TYPES = {
     "image",
     "origin_pdf",
 }
+MINERU_JSON_ARTIFACT_TYPES = {"content_list", "content_list_v2", "middle_json", "model_json", "json"}
 
 
 class ConversionError(RuntimeError):
@@ -300,9 +301,12 @@ class MinerUConverter:
         return output_md
 
     def _stage_input_for_mineru(self, source_path: Path, mineru_output_base: Path) -> Path:
-        """Stage input near artifacts while preserving the filename MinerU uses for outputs."""
-        ascii_stage = _env_bool("MINERU_ASCII_STAGE_INPUT", default=False)
-        safe_stem = safe_filename(source_path.stem)[:120] if ascii_stage else source_path.stem[:120]
+        """Stage input near artifacts with an ASCII name to avoid MinerU path encoding bugs."""
+        ascii_stage = _env_bool("MINERU_ASCII_STAGE_INPUT", default=True)
+        max_stem_chars = _env_int("MINERU_STAGE_STEM_MAX_CHARS") or 48
+        max_stem_chars = max(16, min(max_stem_chars, 120))
+        safe_stem = safe_filename(source_path.stem) if ascii_stage else source_path.stem
+        safe_stem = _short_mineru_stem(safe_stem, source_path=source_path, max_chars=max_stem_chars)
         staged_dir = mineru_output_base / "_input"
         staged_dir.mkdir(parents=True, exist_ok=True)
         staged_path = staged_dir / f"{safe_stem}{source_path.suffix.lower()}"
@@ -474,7 +478,7 @@ def collect_mineru_zip_artifacts(
             if member_name.endswith("/"):
                 continue
             artifact_type = _mineru_artifact_type(member_name)
-            if artifact_type not in MINERU_RICH_ARTIFACT_TYPES:
+            if artifact_type == "markdown" and member_name == selected_markdown_name:
                 continue
             data = archive.read(member_name)
             destination = _mineru_artifact_destination(artifact_root, member_name, artifact_type, used_paths)
@@ -489,7 +493,7 @@ def collect_mineru_zip_artifacts(
                 "size_bytes": len(data),
                 "checksum": _sha256_bytes(data),
             }
-            if artifact_type.endswith("_json") or artifact_type.startswith("content_list"):
+            if artifact_type in MINERU_JSON_ARTIFACT_TYPES:
                 entry["json_summary"] = _json_artifact_summary(data)
             artifacts.append(entry)
 
@@ -534,10 +538,14 @@ def collect_mineru_directory_artifacts(
             continue
         except ValueError:
             pass
+        try:
+            if path.resolve() == selected_markdown_path.resolve():
+                continue
+        except OSError:
+            if path == selected_markdown_path:
+                continue
         artifact_type = _mineru_artifact_type(path.as_posix())
-        if artifact_type not in MINERU_RICH_ARTIFACT_TYPES:
-            continue
-        destination = _mineru_artifact_destination(artifact_root, path.name, artifact_type, used_paths)
+        destination = _mineru_artifact_destination(artifact_root, path.as_posix(), artifact_type, used_paths)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(path, destination)
         data = destination.read_bytes()
@@ -550,7 +558,7 @@ def collect_mineru_directory_artifacts(
             "size_bytes": destination.stat().st_size,
             "checksum": _sha256_bytes(data),
         }
-        if artifact_type.endswith("_json") or artifact_type.startswith("content_list"):
+        if artifact_type in MINERU_JSON_ARTIFACT_TYPES:
             entry["json_summary"] = _json_artifact_summary(data)
         artifacts.append(entry)
 
@@ -606,11 +614,17 @@ def _mineru_artifact_index_payload(
     job_id: str | None = None,
 ) -> dict[str, Any]:
     summary = {
+        "indexed_artifact_count": len(artifacts),
+        "sidecar_artifact_count": sum(1 for item in artifacts if not item.get("selected")),
         "has_content_list": any(item["type"] == "content_list" for item in artifacts),
         "has_content_list_v2": any(item["type"] == "content_list_v2" for item in artifacts),
         "has_middle_json": any(item["type"] == "middle_json" for item in artifacts),
         "has_model_json": any(item["type"] == "model_json" for item in artifacts),
         "image_count": sum(1 for item in artifacts if item["type"] == "image"),
+        "markdown_count": sum(1 for item in artifacts if item["type"] == "markdown"),
+        "generic_json_count": sum(1 for item in artifacts if item["type"] == "json"),
+        "other_artifact_count": sum(1 for item in artifacts if item["type"] == "other"),
+        "origin_pdf_count": sum(1 for item in artifacts if item["type"] == "origin_pdf"),
         "rich_artifact_count": sum(1 for item in artifacts if item["type"] in MINERU_RICH_ARTIFACT_TYPES),
     }
     return {
@@ -669,6 +683,10 @@ def _mineru_artifact_destination(
         candidate = artifact_root / "images" / filename
     elif artifact_type == "origin_pdf":
         candidate = artifact_root / "origin" / filename
+    elif artifact_type == "markdown":
+        candidate = artifact_root / "markdown" / filename
+    elif artifact_type == "other":
+        candidate = artifact_root / "other" / filename
     else:
         candidate = artifact_root / "metadata" / filename
 
@@ -799,3 +817,13 @@ def _env_int(name: str) -> int | None:
     except ValueError:
         return None
     return parsed if parsed > 0 else None
+
+
+def _short_mineru_stem(stem: str, *, source_path: Path, max_chars: int) -> str:
+    normalized = stem.strip(" ._-") or "source"
+    if len(normalized) <= max_chars:
+        return normalized
+    digest = hashlib.sha256(str(source_path).encode("utf-8", errors="ignore")).hexdigest()[:8]
+    prefix_length = max(8, max_chars - len(digest) - 1)
+    prefix = normalized[:prefix_length].strip(" ._-") or "source"
+    return f"{prefix}-{digest}"

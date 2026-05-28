@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextvars
 import json
 import os
 import time
@@ -8,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib import error, request
+
+llm_usage_tracker = contextvars.ContextVar("llm_usage_tracker", default=None)
 
 from .rag_index import SearchHit
 from .text_cleaning import clean_retrieval_text
@@ -336,6 +339,7 @@ def redacted_llm_config(root: Path) -> dict[str, Any]:
 class OpenAICompatibleClient:
     def __init__(self, config: OpenAICompatibleConfig):
         self.config = config
+        self.usage_history: list[dict[str, int]] = []
 
     def list_models(self, timeout: float = 8) -> dict[str, Any]:
         req = request.Request(
@@ -494,7 +498,22 @@ class OpenAICompatibleClient:
             raise LLMError(f"LLM HTTP {exc.code}: {raw}") from exc
         except error.URLError as exc:
             raise LLMError(f"LLM connection failed: {exc.reason}") from exc
-        return json.loads(raw)
+        data = json.loads(raw)
+        usage = data.get("usage")
+        if isinstance(usage, dict):
+            pt = usage.get("prompt_tokens") or 0
+            ct = usage.get("completion_tokens") or 0
+            self.usage_history.append({
+                "prompt_tokens": pt,
+                "completion_tokens": ct
+            })
+            tracker = llm_usage_tracker.get()
+            if tracker is not None:
+                tracker.append({
+                    "prompt_tokens": pt,
+                    "completion_tokens": ct
+                })
+        return data
 
 
 def llm_runtime_status(

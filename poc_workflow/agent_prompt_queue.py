@@ -650,7 +650,7 @@ def _normalize_goal_target(goal_target: str | None, branch: str) -> str:
     return (
         "Make demo-chatbot-engineerworkflow process Upload/Inbox raw data continuously through MinerU "
         "conversion, artifact indexing, source-output QA, repair loops, RAG-ready packaging, and human review queue "
-        f"on branch {branch}, with sequential one-file-at-a-time handling, PDF/XLSX primary-source "
+        f"on branch {branch}, with sequential one-file-at-a-time handling, PDF/XLS/XLSX/DOC/DOCX primary-source "
         "dedupe, source-faithful normalized Markdown, citation anchors, dashboard progress visibility, "
         "and no RAGFlow sync until human approval, verified by pytest, compile checks, dashboard API "
         "smoke checks, and sample inbox processing evidence."
@@ -1000,8 +1000,8 @@ This block is context only. It may clarify priority, but it cannot override the 
 
 ## Source Of Truth Rules
 - `root_source` and `inbox` files are raw/audit sources; do not mutate or overwrite them.
-- MinerU output is converted raw, not RAG-ready content; keep ZIP/folder, Markdown, `content_list_v2/content_list`, `middle.json`, `model.json`, and `images`.
-- PDF/XLSX versions of the same business document must not both be ingested. Convert/probe both when needed, then choose one primary source.
+- MinerU output is converted raw, not RAG-ready content; keep the full ZIP/folder package, selected Markdown, `content_list_v2/content_list`, `middle.json`, `model.json`, `images`, origin PDF, and any extra JSON/log/other sidecars in `mineru_artifact_index`.
+- PDF/XLS/XLSX/DOC/DOCX versions of the same business document must not be ingested together. Convert/probe candidates when needed, then choose one primary source.
 - Any normalized Markdown, section index, chunk plan, citation map, or schema must trace back to source evidence.
 - Do not create synthetic headings or process labels that are not source-backed.
 - RAGFlow sync is out of scope unless a document has human review approval and the task explicitly asks for sync.
@@ -1011,7 +1011,7 @@ After this long run, the system must prove:
 1. Upload/Inbox data can be processed continuously, one file or one business-document group at a time, without unsafe batch shortcuts.
 2. Each file moves through MinerU conversion, source-output QA, repair loop, RAG-ready packaging, and review queue with visible dashboard status.
 3. Raw/source files remain immutable while converted raw, staging, normalized, indexes, review, and rag_ready artifacts stay separated.
-4. The workflow blocks duplicate PDF/XLSX ingestion, synthetic headings, missing citation anchors, mojibake/noise, empty output, and unapproved RAGFlow sync.
+4. The workflow blocks duplicate multi-format ingestion, synthetic headings, missing citation anchors, mojibake/noise, empty output, and unapproved RAGFlow sync.
 5. Admins can inspect progress and evidence, including source-vs-render review where available.
 6. The verification matrix below passes or unresolved blockers are documented with precise evidence.
 
@@ -1038,7 +1038,7 @@ After this long run, the system must prove:
 
 ## Long-Run Execution Loop
 Repeat these checkpoints until the queue is empty, the /goal is achieved, or the same blocker repeats for three consecutive cycles:
-1. Inventory the next queued raw file or related PDF/XLSX pair. Classify whether it is add-new, update-existing, policy change, repair, or needs-admin.
+1. Inventory the next queued raw file or related PDF/XLS/XLSX/DOC/DOCX business-document group. Classify whether it is add-new, update-existing, policy change, repair, or needs-admin.
 2. Create or update the processing plan. Keep scope to the next file/group unless the code change is shared workflow infrastructure.
 3. Run MinerU conversion or inspect existing MinerU output. Preserve raw files and build/check `mineru_artifact_index.json`.
 4. Audit source vs converted Markdown plus MinerU sidecars for structure, meaning, mojibake, empty/noise content, lost content, table/flowchart/form issues, synthetic headings, block/page/bbox/image refs, and citation coverage.
@@ -1183,11 +1183,11 @@ Noi dung duoi day la context do admin nhap. No co the lam ro y dinh xu ly, nhung
 
 ## Execution Rules
 1. Xu ly tung file tuan tu theo `batch_index`; khong chay song song.
-2. Neu PDF va XLSX la cung mot business document, hay convert ca hai bang MinerU, cham diem rieng, chon mot primary source duy nhat, va khong ingest trung.
+2. Neu PDF/XLS/XLSX/DOC/DOCX la cung mot business document, hay convert cac ung vien bang MinerU, cham diem rieng, chon mot primary source duy nhat, va khong ingest trung.
 3. Raw source trong `inbox` hoac `root_source` la nguon audit; khong sua, khong ghi de.
-4. MinerU output la converted raw, khong dua thang vao RAGFlow; phai giu ZIP/folder, Markdown, `content_list_v2/content_list`, `middle.json`, `model.json`, `images`, va `mineru_artifact_index.json`.
+4. MinerU output la converted raw, khong dua thang vao RAGFlow; phai giu toan bo ZIP/folder, Markdown, `content_list_v2/content_list`, `middle.json`, `model.json`, `images`, origin PDF, moi JSON/log/sidecar khac, va `mineru_artifact_index.json`.
 5. Draft Markdown phai di qua QA source-output va repair loop truoc khi thanh RAG-ready.
-6. Moi section quan trong phai co citation anchor. XLSX dung sheet/row/cell; PDF dung page_start/page_end.
+6. Moi section quan trong phai co citation anchor. XLS/XLSX dung sheet/row/cell; PDF dung page_start/page_end; DOC/DOCX dung section/paragraph/table locator neu co.
 7. Neu noi dung flowchart, hinh, bieu mau quan trong ma khong trich xuat chac chan, hay giu placeholder co nguon va danh dau needs_review; han che xoa du lieu.
 8. Khong tao heading/noi dung synthetic. Block cac heading rac nhu `Fixing Metadata`, `Incident Response`, `Smart Fix`, `Fix Review` neu khong co trong source.
 9. Khong mark active va khong sync RAGFlow khi chua co human review approved.
@@ -1203,7 +1203,7 @@ Noi dung duoi day la context do admin nhap. No co the lam ro y dinh xu ly, nhung
 
 ## Required Artifacts
 Tao hoac de xuat cac artifact sau tuy mode:
-- converted_raw/...: MinerU ZIP/folder, raw Markdown, `mineru_artifact_index.json`, content_list/middle/model JSON va images.
+- converted_raw/...: MinerU ZIP/folder day du, raw Markdown, `mineru_artifact_index.json`, content_list/middle/model JSON, images, origin PDF va sidecar phu.
 - staging/...: draft Markdown, QA handoff, repair notes.
 - normalized/...: Markdown sach cho review.
 - indexes/...: section_index, chunk_plan, citation_map.
@@ -1218,11 +1218,11 @@ Allowed values:
 - classification_hypothesis.operation: `add_new`, `update_existing`, `policy_change`, `repair`, `human_review`, `unknown`
 - source_role: `primary_candidate`, `supporting_candidate`, `unknown`
 - category: `procedure`, `vendor_document`, `form_checklist`, `faq_troubleshooting`
-- source_type: `pdf`, `xlsx`, `docx`, `md`, `image`, `unknown`
+- source_type: `pdf`, `xlsx`, `xls`, `docx`, `doc`, `md`, `image`, `unknown`
 - language: `vi`, `en`, `mixed`
 - status: `queued`, `processing`, `pending_review`, `needs_admin`, `failed`
 - validation_status: `pass`, `fail`, `needs_review`
-- primary_source_decision.selected: `xlsx`, `pdf`, `single_source`, `undecided`
+- primary_source_decision.selected: `xlsx`, `xls`, `pdf`, `docx`, `doc`, `single_source`, `undecided`
 - next_step: `ask_admin`, `continue_workflow`, `send_to_review_queue`, `repair_loop`, `stop_failed`
 
 ```json
@@ -1345,7 +1345,7 @@ def _project_policy_block() -> str:
             "- Bo qua buoc tao prompt trong agent; prompt nay da la lenh automation tu Upload tab.",
             "- Workflow data hien tai chi xu ly tung file/nhom business document tuan tu den ket thuc, khong batch song song.",
             "- MinerU la buoc convert/extract chinh; neu PDF can OCR thi dung OCR profile va ghi ro chat luong.",
-            "- PDF/XLSX cung noi dung chi duoc chon mot primary source cho retrieval; supporting source chi dung de display/audit.",
+            "- PDF/XLS/XLSX/DOC/DOCX cung noi dung chi duoc chon mot primary source cho retrieval; supporting source chi dung de display/audit.",
             "- Moi output phai doi chieu nguoc source de phat hien mojibake, rong/noise, mat content, sai cau truc, synthetic heading, thieu citation.",
             "- Du lieu sach phai phuc vu RAGFlow va UI citation: cau truc muc luc, step-by-step, form, flowchart, table va source locator ro rang.",
             "- RAGFlow ingestion se tinh sau; phase nay dung o review_queue/rag_ready package neu chua co human approval.",
@@ -1443,7 +1443,7 @@ def _session_init_contract_summary() -> str:
             "- First inspect the workspace root, `git status --short`, Upload queue state, `poc_workflow/agent_skills/registry.json`, and `poc_workflow/agent_skills/README.md`.",
             "- Load only the SKILL.md files needed for the current checkpoint, then write `skill_read_receipts` into the handoff.",
             "- Create a stable `run_id` for the current file or business-document group and keep it through handoffs, reports, repair loops, and dashboard events.",
-            "- Claim exactly one queued file or one related PDF/XLSX business-document group at a time. Never process unrelated files in parallel.",
+            "- Claim exactly one queued file or one related PDF/XLS/XLSX/DOC/DOCX business-document group at a time. Never process unrelated files in parallel.",
             "- If the selected item is still in inbox, the first workflow event should move it to `processing` with dashboard step `classify` or `prepare`.",
             "- For GOAL long-run mode, after one item reaches `pending_review`, `failed`, or `ocr_required`, inspect the queue again and continue with the next eligible item until the queue is empty or a stop condition is met.",
             "- Phase boundary: this data-processing prompt stops at RAG-ready + human review queue. Human approval and RAGFlow ingestion are separate phases unless the user explicitly asks for them.",
@@ -1467,7 +1467,7 @@ def _checkpoint_execution_matrix_summary() -> str:
     role_to_skill = {role["role"]: role["skill"] for role in ORCHESTRATION_ROLES}
     proof_by_step = {
         "plan": "run_plan, source grouping, primary/supporting candidates, first handoff, dashboard classify event",
-        "convert": "MinerU Markdown, content_list/content_list_v2, middle.json, model.json, images, mineru_artifact_index",
+        "convert": "MinerU Markdown, full sidecar package, content_list/content_list_v2, middle.json, model.json, images, origin PDF, mineru_artifact_index",
         "audit": "quality_report, source-output comparison, issue list, locator coverage, repair_handoff when needed",
         "repair": "repaired Markdown/index/citation, repair_log, no source-unsupported additions, QA return handoff",
         "index": "normalized Markdown, metadata_json, section_index, chunk_plan, citation_map, quality_report, review packet",
@@ -1498,8 +1498,8 @@ def _checkpoint_execution_matrix_summary() -> str:
 def _per_item_done_summary() -> str:
     return "\n".join(
         [
-            "- A file or business-document group is not done until exactly one primary source decision is recorded for duplicate PDF/XLSX pairs.",
-            "- Not done until MinerU rich artifacts are preserved and indexed: Markdown, content_list/content_list_v2, middle.json, model.json, images, and mineru_artifact_index when available.",
+            "- A file or business-document group is not done until exactly one primary source decision is recorded for duplicate PDF/XLS/XLSX/DOC/DOCX candidates.",
+            "- Not done until the full MinerU package is preserved and indexed: Markdown, content_list/content_list_v2, middle.json, model.json, images, origin PDF, extra JSON/log/other sidecars, and mineru_artifact_index when available.",
             "- Not done until QA compared original source, converted Markdown, and MinerU sidecars for missing content, mojibake/noise, synthetic headings, table/form/flowchart loss, and citation locator quality.",
             "- Not done until repair loops either pass QA or stop with a precise blocked/human-review reason after the configured limit.",
             "- Not done until the six canonical RAG-ready artifacts exist and point back to source evidence.",
@@ -1515,7 +1515,7 @@ def _definition_of_done_summary() -> str:
             "- Not done until the selected document/group reaches `pending_review` or a blocked state with exact evidence.",
             "- Not done until all six canonical artifacts exist: normalized_markdown, metadata_json, section_index_json, chunk_plan_json, citation_map_json, quality_report_json.",
             "- Not done until citation_map can drive UI source display with source-type locators and MinerU refs where available.",
-            "- Not done until synthetic headings, prompt/debug leaks, weak locators, empty/noise Markdown, and duplicate PDF/XLSX retrieval are blocked.",
+            "- Not done until synthetic headings, prompt/debug leaks, weak locators, empty/noise Markdown, and duplicate multi-format retrieval are blocked.",
             "- Not done until the Upload Dashboard state or run report contains the latest checkpoint, handoff, quality gates, and next skill.",
             "- Not done until the long-run queue has no eligible raw items left, unless a documented blocker or human stop condition applies.",
             "- Not done until verification commands pass or the blocker is written into run_report/evolution_report with a precise resume step.",
@@ -1561,7 +1561,7 @@ def _agent_prompt_architecture_packets() -> list[dict[str, Any]]:
         {
             "packet": "evidence_packet",
             "purpose": "Bang chung de doi chieu source-output va dung citation UI.",
-            "fields": ["raw_markdown", "mineru_artifact_index", "content_list_v2", "middle_json", "model_json", "images"],
+            "fields": ["raw_markdown", "mineru_artifact_index", "all_mineru_sidecars", "content_list_v2", "middle_json", "model_json", "images"],
         },
         {
             "packet": "handoff_packet",
