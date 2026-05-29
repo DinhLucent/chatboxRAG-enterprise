@@ -28,7 +28,7 @@ def test_inventory_phuong_dong_excludes_technical_and_maps_departments(tmp_path:
 
 
 def test_inventory_uses_business_code_department_when_folder_prefix_missing(tmp_path: Path) -> None:
-    source_root = tmp_path / "root_source" / "Quy TrÃ¬nh PhÆ°Æ¡ng ÄÃ´ng"
+    source_root = tmp_path / "root_source" / "Quy Tr\u00c3\u00acnh Ph\u00c6\u00b0\u00c6\u00a1ng \u00c4\u00a0\u00c3\u00b4ng"
     loose = source_root / "LOOSE_UPLOADS"
     loose.mkdir(parents=True)
     (loose / "PD-ACC-A-09. Rev 02. Quy trinh thanh toan.pdf").write_bytes(b"pdf")

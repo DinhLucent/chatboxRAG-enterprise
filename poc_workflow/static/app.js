@@ -7665,42 +7665,35 @@ const MERMAID_DIAGRAMS = {
 
 
   query: `sequenceDiagram
-
     autonumber
+    actor User as Người dùng
+    participant UI as Giao diện Dashboard
+    participant Agent as Trợ lý AI Agent
+    participant Retrieval as Bộ phận Tìm kiếm
+    participant LLM as Trí tuệ Nhân tạo (LLM)
+    participant DB as Nhật ký Hệ thống
 
-    participant User as Người dùng nội bộ
-
-    participant UI as Dashboard UI
-
-    participant Webapp as Application Backend
-
-    participant Retrieval as Tầng Truy Xuất
-
-    participant LLM as AI Brain (LLM)
-
-    participant DB as SQLite Quality DB
-
-
-
-    User->>UI: Đặt câu hỏi quy trình
-
-    UI->>Webapp: POST /api/chat (query, provider, use_llm)
-
-    Webapp->>Retrieval: Tìm kiếm tài liệu hiệu lực (Active Only)
-
-    Retrieval-->>Webapp: Trả về danh sách trích dẫn (Citations)
-
-    Note over Webapp, Retrieval: Lọc theo canonical_doc_id của phiên bản mới nhất
-
-    Webapp->>LLM: Gửi câu hỏi + Văn cảnh được trích dẫn (Context)
-
-    LLM-->>Webapp: Trả về câu trả lời tóm tắt đã tổng hợp
-
-    Webapp->>DB: Lưu nhật ký (query, citations, latency)
-
-    Webapp-->>UI: Response (answer, citations, query_log_id)
-
-    UI-->>User: Hiển thị giao diện trực quan kèm nguồn dẫn`,
+    User->>UI: Đặt câu hỏi quy trình kỹ thuật
+    UI->>Agent: Yêu cầu xử lý câu hỏi
+    
+    Note over Agent: Bước 1: Bộ lọc Phạm vi (Scope Guard)<br/>Chặn các câu hỏi không liên quan
+    
+    Agent->>LLM: Bước 2: Phân tích Ý định & Thực thể<br/>(Nếu thiếu thông tin, yêu cầu bổ sung)
+    LLM-->>Agent: Trả về kết quả phân tích
+    
+    Agent->>Retrieval: Bước 3: Lập kế hoạch Tìm kiếm & Truy xuất<br/>(Chỉ tìm tài liệu đang có hiệu lực)
+    Retrieval-->>Agent: Trả về các đoạn tài liệu nguồn liên quan
+    
+    Agent->>LLM: Bước 4: Trích xuất Bằng chứng & Soạn thảo<br/>(Tạo bản nháp theo định dạng phù hợp)
+    LLM-->>Agent: Trả về bản nháp có cấu trúc
+    
+    Agent->>LLM: Bước 5: Kiểm duyệt & Thẩm định chéo<br/>(Verifier & Critic & Compliance Check)
+    Note over Agent, LLM: Đảm bảo mọi ý kiến đều có dẫn nguồn,<br/>đúng số bước quy trình và không bịa đặt.
+    LLM-->>Agent: Phê duyệt / Sửa đổi câu trả lời
+    
+    Agent->>DB: Ghi nhận nhật ký & Đánh giá chất lượng
+    Agent-->>UI: Trả về câu trả lời có cấu trúc và dẫn nguồn
+    UI-->>User: Hiển thị câu trả lời trực quan (Các bước, cảnh báo, nguồn)`,
 
 
 

@@ -17,6 +17,7 @@ from .text_cleaning import (
     is_low_value_retrieval_text,
     is_procedure_like,
     normalized_text,
+    repair_mojibake,
 )
 from .utils import tokenize
 
@@ -178,7 +179,7 @@ class LocalRagIndex:
         self,
         query: str,
         dataset: str = ACTIVE_DATASET,
-        department: str = "technical",
+        department: str | None = None,
         category: str | None = None,
         limit: int = 3,
     ) -> list[SearchHit]:
@@ -189,7 +190,7 @@ class LocalRagIndex:
         normalized_query = normalized_text(query)
         hits: list[SearchHit] = []
         for entry in self._load_entries(path):
-            if entry.department != department:
+            if department and entry.department != department:
                 continue
             if entry.status != "active":
                 continue
@@ -204,10 +205,10 @@ class LocalRagIndex:
             text_overlap = entry.text_terms & query_terms
             title_overlap = entry.title_terms & query_terms
             score = len(text_overlap) + (len(title_overlap) * 4)
-            if entry.doc_id.lower() in query.lower():
-                score += 12
-            if entry.display_code and normalized_text(entry.display_code) in normalized_query:
-                score += 16
+            if contains_exact_code(query, entry.doc_id):
+                score += 250
+            if entry.display_code and contains_exact_code(normalized_query, normalized_text(entry.display_code)):
+                score += 250
             if entry.doc_id == "KT-QT-215" and "kiem soat" in normalized_query:
                 score += 10
             score += incident_workflow_boost(entry, normalized_query)
@@ -252,7 +253,7 @@ class LocalRagIndex:
         *,
         version: str | None = None,
         dataset: str = ACTIVE_DATASET,
-        department: str = "technical",
+        department: str | None = None,
         category: str | None = None,
         limit: int = 40,
     ) -> list[SearchHit]:
@@ -261,7 +262,9 @@ class LocalRagIndex:
             return []
         hits: list[SearchHit] = []
         for entry in self._load_entries(path):
-            if entry.department != department or entry.status != "active":
+            if department and entry.department != department:
+                continue
+            if entry.status != "active":
                 continue
             if entry.doc_id != doc_id:
                 continue
@@ -306,7 +309,7 @@ class LocalRagIndex:
                 text = clean_retrieval_text(payload.get("text") or "")
                 if not text or is_low_value_retrieval_text(text):
                     continue
-                title = str(payload.get("title") or "")
+                title = repair_mojibake(payload.get("title") or "")
                 doc_id = str(payload.get("doc_id") or "")
                 display_code = payload.get("display_code")
                 display_version = payload.get("display_version")
@@ -539,6 +542,13 @@ def category_matches(payload: object, category: str) -> bool:
     if category == "faq_troubleshooting" and is_procedure_like(title, payload_category):
         return True
     return False
+
+
+def contains_exact_code(query: str, code: str) -> bool:
+    if not query or not code:
+        return False
+    pattern = rf"(?<![a-z0-9.]){re.escape(str(code).lower())}(?![a-z0-9.])"
+    return re.search(pattern, str(query).lower()) is not None
 
 
 def meaningful_terms(value: object) -> set[str]:

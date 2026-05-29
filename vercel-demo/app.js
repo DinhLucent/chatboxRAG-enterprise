@@ -8,6 +8,8 @@ const state = {
   drawerHidden: isCompactLayout(),
   heartbeatTimer: null,
   loadingChartJS: null,
+  _cooldownInterval: null,
+  _beforeUnloadBound: false,
 };
 
 const qs = (selector) => document.querySelector(selector);
@@ -405,10 +407,10 @@ async function api(path, options = {}) {
     if (retryAfter) {
       error.retryAfter = parseInt(retryAfter, 10);
     } else {
-      // Fallback: parse number of seconds from the message string (e.g. "cho 15 giay")
-      const match = errorMsg.match(/\d+/);
+      // Fallback: prefer "N giay" pattern over first number to avoid parsing wrong value
+      const match = errorMsg.match(/(\d+)\s*gi[aâ]y/) || errorMsg.match(/\d+/);
       if (match) {
-        error.retryAfter = parseInt(match[0], 10);
+        error.retryAfter = parseInt(match[1] || match[0], 10);
       }
     }
     throw error;
@@ -747,10 +749,13 @@ function renderCooldownUI(pendingCard, query, seconds) {
   const timerText = messageBody.querySelector(".cooldown-timer");
   const actionButton = messageBody.querySelector(".cooldown-btn");
   
-  const interval = setInterval(() => {
+  // Clear any previous cooldown interval to prevent leaks
+  if (state._cooldownInterval) clearInterval(state._cooldownInterval);
+  state._cooldownInterval = setInterval(() => {
     remaining--;
     if (remaining <= 0) {
-      clearInterval(interval);
+      clearInterval(state._cooldownInterval);
+      state._cooldownInterval = null;
       timerText.textContent = "✓";
       timerText.style.color = "var(--green)";
       progressCircle.style.stroke = "var(--green)";
@@ -982,6 +987,20 @@ function ensureDrawerVisible() {
 }
 
 function resetChat() {
+  // Clear any running cooldown interval to prevent timer leak
+  if (state._cooldownInterval) {
+    clearInterval(state._cooldownInterval);
+    state._cooldownInterval = null;
+  }
+  // Restore composer state in case cooldown was active
+  qs(".composer-container")?.classList.remove("cooldown-active");
+  const qi = qs("#queryInput");
+  if (qi) {
+    qi.disabled = false;
+    qi.placeholder = "Nhập câu hỏi tại đây...";
+  }
+  localStorage.removeItem("kbUserChatDraft");
+
   state.sessionId = createId("session");
   localStorage.setItem("kbUserChatSessionId", state.sessionId);
   state.templateId = null;
@@ -1034,15 +1053,18 @@ function startHeartbeat() {
   state.heartbeatTimer = window.setInterval(() => {
     sendHeartbeat().catch(() => {});
   }, 30000);
-  window.addEventListener("beforeunload", () => {
-    const payload = JSON.stringify({ session_id: state.sessionId, device_id: state.deviceId });
-    const headers = {};
-    const token = qs("#demoToken")?.value.trim();
-    if (token) {
-      headers["X-Demo-Token"] = token;
-    }
-    navigator.sendBeacon?.("/api/heartbeat", new Blob([payload], { type: "application/json" }));
-  });
+  if (!state._beforeUnloadBound) {
+    state._beforeUnloadBound = true;
+    window.addEventListener("beforeunload", () => {
+      const payload = JSON.stringify({ session_id: state.sessionId, device_id: state.deviceId });
+      const headers = {};
+      const token = qs("#demoToken")?.value.trim();
+      if (token) {
+        headers["X-Demo-Token"] = token;
+      }
+      navigator.sendBeacon?.("/api/heartbeat", new Blob([payload], { type: "application/json" }));
+    });
+  }
 }
 
 async function checkHealth() {
@@ -1093,9 +1115,16 @@ async function checkHealth() {
 }
 
 async function init() {
+  // Throttle mousemove with requestAnimationFrame to avoid excessive CPU usage
+  let _rafPending = false;
   window.addEventListener("mousemove", (e) => {
-    document.body.style.setProperty("--global-mouse-x", `${e.clientX}px`);
-    document.body.style.setProperty("--global-mouse-y", `${e.clientY}px`);
+    if (_rafPending) return;
+    _rafPending = true;
+    requestAnimationFrame(() => {
+      document.body.style.setProperty("--global-mouse-x", `${e.clientX}px`);
+      document.body.style.setProperty("--global-mouse-y", `${e.clientY}px`);
+      _rafPending = false;
+    });
   });
 
   qs("#chatForm").addEventListener("submit", submitChat);

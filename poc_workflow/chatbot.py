@@ -12,7 +12,7 @@ from .models import ManifestRecord
 from .rag_index import LocalRagIndex, SearchHit
 from .ragflow_http import RAGFlowConfig, RAGFlowHTTPClient, RAGFlowHTTPError, answer_with_ragflow
 from .runtime import local_fallback_enabled, provider_allowed
-from .text_cleaning import clean_excerpt, clean_retrieval_text, contains_raw_markup, normalized_text
+from .text_cleaning import clean_excerpt, clean_retrieval_text, contains_raw_markup, normalized_text, repair_mojibake
 from .utils import tokenize
 
 NO_SOURCE_ANSWER = "Không tìm thấy căn cứ trong tài liệu hiện hành."
@@ -28,8 +28,233 @@ ANSWER_STYLE_LABELS = {
 }
 MIN_LOCAL_CONFIDENCE_SCORE = 8
 
+DEPARTMENT_LABELS = {
+    "accounting": "Kế toán",
+    "administration": "Hành chính",
+    "app": "Ứng dụng sản phẩm",
+    "customer_service": "Dịch vụ khách hàng",
+    "general": "Khối chung",
+    "governance": "Quản trị",
+    "human_resources": "Nhân sự",
+    "internal_control": "Kiểm soát nội bộ",
+    "it": "Công nghệ thông tin",
+    "marcom": "Marcom",
+    "marketing": "Marketing",
+    "procurement_import_export": "Mua hàng - XNK",
+    "regulatory_affairs": "Regulatory Affairs",
+    "sales": "Kinh doanh",
+    "technical": "Kỹ thuật",
+    "tender_legal": "Thầu - pháp chế",
+    "warehouse_gdp": "Kho GDP",
+}
 
-def ragflow_retrieval_hits(query: str, config: RAGFlowConfig, category: str | None = None) -> list[SearchHit]:
+DEPARTMENT_QUERY_HINTS = {
+    "technical": (
+        "ky thuat",
+        "pd-tech",
+        "kt-qt",
+        "lap dat",
+        "bao duong may",
+        "sua chua may",
+        "hieu chuan dung cu",
+        "phu kien",
+    ),
+    "human_resources": (
+        "nhan su",
+        "phong hr",
+        "hr",
+        "tuyen dung",
+        "dao tao",
+        "nghi viec",
+        "nghi phep",
+        "hop dong lao dong",
+        "ky luat",
+        "ho so nhan vien",
+    ),
+    "accounting": (
+        "ke toan",
+        "thanh toan",
+        "bao lanh",
+        "kiem ke kho",
+        "huy hang",
+        "quan ly tai san",
+        "cong tac phi",
+    ),
+    "administration": (
+        "hanh chinh",
+        "van ban den",
+        "van ban di",
+        "luu tru tai lieu",
+        "phong hop",
+        "chuyen phat nhanh",
+        "giay di duong",
+        "giay gioi thieu",
+    ),
+    "customer_service": (
+        "dvkh",
+        "dich vu khach hang",
+        "khieu nai",
+        "don hang",
+        "hang loi",
+        "phu kien cu",
+        "cldv",
+    ),
+    "internal_control": (
+        "kiem soat noi bo",
+        "danh gia noi bo",
+        "rui ro",
+        "su co",
+        "nhap kho",
+        "biet tru",
+        "quan ly thay doi",
+        "chat luong",
+        "gdp",
+        "bao quan",
+    ),
+    "it": (
+        "cntt",
+        "cong nghe thong tin",
+        "server",
+        "erp",
+        "sharepoint",
+        "microsoft 365",
+        "token",
+        "tb cntt",
+    ),
+    "marketing": (
+        "marketing",
+        "mkt",
+        "nha san xuat",
+        "hang loi nha san xuat",
+        "gp",
+    ),
+    "marcom": (
+        "marcom",
+        "in an",
+        "su kien",
+        "tai tro",
+        "thue nvyt",
+    ),
+    "procurement_import_export": (
+        "mua hang",
+        "nha cung cap",
+        "xuat nhap khau",
+        "uy thac",
+        "can date",
+        "tieu thu cham",
+    ),
+    "regulatory_affairs": (
+        "regulatory",
+        "ra",
+        "dang ky",
+        "nhan phu",
+        "cong bo",
+        "ke khai gia",
+        "thu hoi thuoc",
+        "thuoc gia",
+        "phan loai san pham",
+        "ttbyt",
+    ),
+    "sales": (
+        "sales",
+        "kinh doanh",
+        "ban hang",
+        "crm",
+    ),
+    "tender_legal": (
+        "phap che",
+        "legal",
+        "dau thau",
+        "bao gia",
+        "hop dong",
+        "giay phep ban hang",
+        "bio-rad",
+        "vantive",
+        "medtronic",
+        "terumo",
+        "siemens",
+    ),
+    "warehouse_gdp": (
+        "kho gdp",
+        "trang an",
+        "truy tim nguon goc",
+        "tran do",
+        "bao bi loi",
+        "be vo",
+        "ro ri",
+    ),
+    "app": (
+        "app",
+        "ung dung san pham",
+        "chuyen giao cong nghe",
+        "su co su dung thiet bi",
+    ),
+    "general": (
+        "khoi chung",
+        "chung",
+        "general",
+    ),
+    "governance": (
+        "quan tri",
+        "governance",
+        "lanh dao",
+    ),
+}
+
+DOC_CODE_DEPARTMENT_PREFIXES = {
+    "PD-ACC": "accounting",
+    "PD-ADM": "administration",
+    "PD-APP": "app",
+    "PD-CS": "customer_service",
+    "PD-HR": "human_resources",
+    "PD-IC": "internal_control",
+    "PD-IT": "it",
+    "PD-LEGAL": "tender_legal",
+    "PD-MAR": "marcom",
+    "PD-MKT": "marketing",
+    "PD-PUR": "procurement_import_export",
+    "PD-RA": "regulatory_affairs",
+    "PD-SALES": "sales",
+    "PD-TECH": "technical",
+    "KT-QT": "technical",
+    "PL-092": "tender_legal",
+    "PL-093": "tender_legal",
+}
+
+
+def infer_department(query: str) -> str | None:
+    normalized = normalized_text(query)
+    raw_upper = repair_mojibake(query).upper()
+    if has_explicit_document_code(raw_upper):
+        return None
+    for prefix, department in sorted(DOC_CODE_DEPARTMENT_PREFIXES.items(), key=lambda item: len(item[0]), reverse=True):
+        if prefix in raw_upper:
+            return department
+    matches: list[tuple[int, int, str]] = []
+    for department, hints in DEPARTMENT_QUERY_HINTS.items():
+        matched = [hint for hint in hints if hint in normalized]
+        if matched:
+            matches.append((len(matched), max(len(hint) for hint in matched), department))
+    if not matches:
+        return None
+    matches.sort(reverse=True)
+    return matches[0][2]
+
+
+def has_explicit_document_code(raw_upper_query: str) -> bool:
+    return bool(re.search(r"\b(?:PD|KT|BM|MS|PL|PHU-LUC)(?:-[A-Z0-9.]+){1,5}\b", raw_upper_query))
+
+
+def department_label(department: str | None) -> str:
+    return DEPARTMENT_LABELS.get(str(department or ""), str(department or "toàn bộ phòng ban"))
+
+
+def ragflow_retrieval_hits(
+    query: str,
+    config: RAGFlowConfig,
+    category: str | None = None,
+    department: str | None = None,
+) -> list[SearchHit]:
     if not config.dataset_id:
         raise RAGFlowHTTPError("RAGFLOW_TECHNICAL_ACTIVE_DATASET_ID is required for RAGFlow retrieval")
     client = RAGFlowHTTPClient(config.base_url, config.api_key)
@@ -38,7 +263,7 @@ def ragflow_retrieval_hits(query: str, config: RAGFlowConfig, category: str | No
         query,
         top_k=int(os.getenv("RAGFLOW_RETRIEVAL_TOP_K", "20")),
         page_size=int(os.getenv("RAGFLOW_RETRIEVAL_PAGE_SIZE", "20")),
-        metadata_condition=ragflow_metadata_condition(category),
+        metadata_condition=ragflow_metadata_condition(category, department),
         similarity_threshold=float(os.getenv("RAGFLOW_SIMILARITY_THRESHOLD", "0.0")),
         vector_similarity_weight=float(os.getenv("RAGFLOW_VECTOR_WEIGHT", "0.3")),
         rerank_id=os.getenv("RAGFLOW_RERANK_ID"),
@@ -51,13 +276,13 @@ def ragflow_retrieval_hits(query: str, config: RAGFlowConfig, category: str | No
     return hits[:20]
 
 
-def ragflow_metadata_condition(category: str | None = None) -> dict[str, object]:
+def ragflow_metadata_condition(category: str | None = None, department: str | None = None) -> dict[str, object]:
     conditions: list[dict[str, object]] = [
         {"name": "status", "comparison_operator": "is", "value": "active"}
     ]
-    department = os.getenv("RAGFLOW_RETRIEVAL_DEPARTMENT", "technical").strip()
-    if department:
-        conditions.append({"name": "department", "comparison_operator": "is", "value": department})
+    active_department = os.getenv("RAGFLOW_RETRIEVAL_DEPARTMENT", "").strip() or str(department or "").strip()
+    if active_department:
+        conditions.append({"name": "department", "comparison_operator": "is", "value": active_department})
     if category:
         conditions.append({"name": "category", "comparison_operator": "is", "value": category})
     return {"logic": "and", "conditions": conditions}
@@ -171,6 +396,23 @@ def infer_category(query: str) -> str | None:
 
 def is_out_of_scope_query(query: str) -> bool:
     normalized = normalized_text(query)
+    document_cues = [
+        "quy trinh",
+        "tai lieu",
+        "bieu mau",
+        "ho so",
+        "checklist",
+        "tom tat",
+        "workflow",
+        "pd-",
+        "kt-",
+        "bm-",
+        "ms-",
+        "pl-",
+        "phu-luc",
+    ]
+    if any(term in normalized for term in document_cues):
+        return False
     out_of_scope_terms = [
         "nghi phep",
         "nghi phep nam",
@@ -203,6 +445,7 @@ def ask(
 ) -> dict[str, object]:
     start = time.perf_counter()
     answer_style = infer_query_answer_style(query, answer_style)
+    department = infer_department(query)
     db = QualityDatabase(root)
     stored_query = log_query or query
     ragflow_error = None
@@ -343,7 +586,7 @@ def ask(
         elif config and config.dataset_id:
             try:
                 category = infer_category(query)
-                ragflow_hits = ragflow_retrieval_hits(query, config, category=category)
+                ragflow_hits = ragflow_retrieval_hits(query, config, category=category, department=department)
             except RAGFlowHTTPError as exc:
                 ragflow_error = str(exc)
                 if provider == "ragflow":
@@ -578,6 +821,8 @@ def ask(
 
     index = LocalRagIndex(root)
     category = infer_category(query)
+    if has_explicit_document_code(repair_mojibake(query).upper()):
+        category = None
     if is_out_of_scope_query(query):
         latency_ms = int((time.perf_counter() - start) * 1000)
         log_id = db.log_query(
@@ -605,7 +850,7 @@ def ask(
             "llm_provider": None,
             "llm_model": None,
         }
-    catalog = build_catalog_answer(root, query, answer_style=answer_style)
+    catalog = build_catalog_answer(root, query, answer_style=answer_style, department=department)
     if catalog:
         answer, hits = catalog
         latency_ms = int((time.perf_counter() - start) * 1000)
@@ -634,9 +879,13 @@ def ask(
             "llm_provider": None,
             "llm_model": None,
         }
-    hits = index.search(query, category=category, limit=20)
-    if not hits and category == "procedure":
-        hits = index.search(query, category=None, limit=20)
+    hits = index.search(query, department=department, category=category, limit=20)
+    if not hits and category:
+        hits = index.search(query, department=department, category=None, limit=20)
+    if not hits and department:
+        hits = index.search(query, department=None, category=category, limit=20)
+        if not hits and category:
+            hits = index.search(query, department=None, category=None, limit=20)
     hits = confident_hits(hits)
     hits = focus_hits_for_query(hits, query)
 
@@ -801,24 +1050,30 @@ def combined_hit_text(primary: str, secondary: str, max_chars: int = 3600) -> st
     return combined[:max_chars].rstrip()
 
 
-def build_catalog_answer(root: Path, query: str, answer_style: str = "brief") -> tuple[str, list[SearchHit]] | None:
-    if not is_technical_procedure_catalog_query(query):
+def build_catalog_answer(
+    root: Path,
+    query: str,
+    answer_style: str = "brief",
+    department: str | None = None,
+) -> tuple[str, list[SearchHit]] | None:
+    if not is_procedure_catalog_query(query):
         return None
-    scoped_records = active_scope_records(root)
+    department = department or infer_department(query)
+    scoped_records = active_scope_records(root) if department == "technical" else []
     if scoped_records:
-        return build_active_scope_catalog_answer(scoped_records, answer_style)
-    active_records = active_technical_procedure_records(root)
+        return build_active_scope_catalog_answer(scoped_records, answer_style, department=department)
+    active_records = active_department_procedure_records(root, department)
     record = active_catalog_record(root)
     if not record:
         if active_records:
-            return build_active_scope_catalog_answer(active_records, answer_style)
+            return build_active_scope_catalog_answer(active_records, answer_style, department=department)
         return None
     path = Path(record.normalized_path)
     if not path.exists():
-        return build_active_scope_catalog_answer(active_records, answer_style) if active_records else None
+        return build_active_scope_catalog_answer(active_records, answer_style, department=department) if active_records else None
     rows = extract_department_procedure_rows(path.read_text(encoding="utf-8", errors="ignore"), "ky thuat")
     if not rows:
-        return build_active_scope_catalog_answer(active_records, answer_style) if active_records else None
+        return build_active_scope_catalog_answer(active_records, answer_style, department=department) if active_records else None
     body_lines = [f"{title} ({status})" if status else title for title, status in rows]
     if answer_style == "checklist":
         body = "\n".join(f"- [ ] {line}" for line in body_lines)
@@ -864,11 +1119,11 @@ def active_scope_records(root: Path, scope_id: str = ENGINEERING_SCOPE_ID) -> li
     )
 
 
-def active_technical_procedure_records(root: Path) -> list[ManifestRecord]:
+def active_department_procedure_records(root: Path, department: str | None = None) -> list[ManifestRecord]:
     records = [
         record
         for record in latest_active_records(ManifestStore(root).load())
-        if record.department == "technical" and record.category == "procedure"
+        if (not department or record.department == department) and record.category == "procedure"
     ]
     return sorted(
         records,
@@ -880,9 +1135,14 @@ def active_technical_procedure_records(root: Path) -> list[ManifestRecord]:
     )
 
 
+def active_technical_procedure_records(root: Path) -> list[ManifestRecord]:
+    return active_department_procedure_records(root, "technical")
+
+
 def build_active_scope_catalog_answer(
     records: list[ManifestRecord],
     answer_style: str = "brief",
+    department: str | None = "technical",
 ) -> tuple[str, list[SearchHit]]:
     groups: dict[str, list[ManifestRecord]] = {}
     for record in records:
@@ -893,18 +1153,38 @@ def build_active_scope_catalog_answer(
     for index, (display_code, items) in enumerate(sorted(groups.items()), start=1):
         primary = next((item for item in items if item.extra.get("source_role") == "primary_pdf"), items[0])
         role_names = ", ".join(sorted({source_role_label(str(item.extra.get("source_role") or "")) for item in items}))
-        lines.append(f"{index}. {display_code}: {primary.title} - {len(items)} file ({role_names})")
+        lines.append(f"{index}. {display_code}: {clean_excerpt(primary.title, max_chars=120)} - {len(items)} file ({role_names})")
 
     summary = (
         f"Hệ thống Phương Đông hiện có {len(records)} file active thuộc "
-        f"{len(groups)} nhóm quy trình chính trong phạm vi Quy trình Phương Đông."
+        f"{len(groups)} nhóm quy trình chính"
+        f"{' của ' + department_label(department) if department else ''}."
     )
+    table_rows = [
+        "| Mã | Tài liệu | Phiên bản | Bộ phận |",
+        "| --- | --- | --- | --- |",
+    ]
+    for display_code, items in sorted(groups.items()):
+        primary = next((item for item in items if item.extra.get("source_role") == "primary_pdf"), items[0])
+        table_rows.append(
+            "| "
+            + " | ".join(
+                [
+                    str(display_code),
+                    clean_excerpt(primary.title, max_chars=120).replace("|", "/"),
+                    str(primary.extra.get("display_version") or primary.version or ""),
+                    department_label(primary.department),
+                ]
+            )
+            + " |"
+        )
     if answer_style == "checklist":
         body = "\n".join(line.replace(f"{index}. ", "- [ ] ", 1) for index, line in enumerate(lines, start=1))
     else:
         body = "\n".join(lines)
     answer = (
         f"Tóm tắt:\n{summary}\n\n"
+        f"Bảng tài liệu:\n{chr(10).join(table_rows)}\n\n"
         f"Các bước / Nội dung chính:\n{body}\n\n"
         f"Nguồn:\n{', '.join(source_label_for_record(record) for record in records)}"
     )
@@ -912,7 +1192,7 @@ def build_active_scope_catalog_answer(
         SearchHit(
             doc_id=record.doc_id,
             version=record.version,
-            title=record.title,
+            title=repair_mojibake(record.title),
             category=record.category,
             chunk_id=f"{record.doc_id}_scope_catalog",
             text=(
@@ -952,6 +1232,10 @@ def source_label_for_hit(hit: SearchHit) -> str:
 
 
 def is_technical_procedure_catalog_query(query: str) -> bool:
+    return is_procedure_catalog_query(query)
+
+
+def is_procedure_catalog_query(query: str) -> bool:
     normalized = normalized_text(query)
     if is_procedure_step_count_query(normalized):
         return False
@@ -1382,7 +1666,7 @@ def citation_payload(hit: SearchHit) -> dict[str, object]:
     payload = {
         "doc_id": hit.doc_id,
         "version": hit.version,
-        "title": hit.title,
+        "title": repair_mojibake(hit.title),
         "category": hit.category,
         "excerpt": excerpt,
         "matched_excerpt": excerpt,

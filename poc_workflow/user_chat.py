@@ -179,6 +179,7 @@ def answer_contract_fields(
     *,
     answer_style: str,
     fallback_reason: str | None = None,
+    query: str | None = None,
 ) -> dict[str, Any]:
     if fallback_reason or (not citations and normalized_text(answer) == normalized_text(NO_SOURCE_ANSWER)):
         reason = fallback_reason or "no_active_source"
@@ -200,7 +201,7 @@ def answer_contract_fields(
         "checklist": "checklist",
         "steps": "step_by_step",
     }.get(answer_style, "summary")
-    blocks = legacy_answer_blocks(answer, citations, answer_style)
+    blocks = legacy_answer_blocks(answer, citations, answer_style, query=query)
     block_plan = normalize_block_plan(
         {
             str(block.get("type")): {
@@ -263,13 +264,21 @@ def answer_sections(answer: str) -> dict[str, list[str]]:
     sections: dict[str, list[str]] = {}
     current = "summary"
     for raw_line in str(answer or "").splitlines():
-        normalized = normalized_text(raw_line).strip().strip("#").strip().rstrip(":")
-        if normalized.startswith("tom tat"):
+        raw_normalized = normalized_text(raw_line).strip().strip("#").strip()
+        normalized = raw_normalized.rstrip(":")
+        if normalized == "tom tat" or raw_normalized.startswith("tom tat:"):
             current = "summary"
             sections.setdefault(current, [])
+            inline = raw_line.split(":", 1)[1].strip() if ":" in raw_line else ""
+            if inline:
+                sections[current].append(inline)
             continue
         if normalized.startswith("workflow"):
             current = "workflow"
+            sections.setdefault(current, [])
+            continue
+        if normalized.startswith("bang"):
+            current = "table"
             sections.setdefault(current, [])
             continue
         if normalized.startswith("cac buoc") or normalized.startswith("noi dung chinh"):
@@ -279,17 +288,30 @@ def answer_sections(answer: str) -> dict[str, list[str]]:
         if normalized.startswith("nguon"):
             current = "sources"
             sections.setdefault(current, [])
+            inline = raw_line.split(":", 1)[1].strip() if ":" in raw_line else ""
+            if inline:
+                sections[current].append(inline)
             continue
         sections.setdefault(current, []).append(raw_line)
     return {key: [line for line in value if line.strip()] for key, value in sections.items()}
 
 
-def legacy_answer_blocks(answer: str, citations: list[dict[str, Any]], answer_style: str) -> list[dict[str, object]]:
+def legacy_answer_blocks(
+    answer: str,
+    citations: list[dict[str, Any]],
+    answer_style: str,
+    *,
+    query: str | None = None,
+) -> list[dict[str, object]]:
     sections = answer_sections(answer)
     blocks: list[dict[str, object]] = []
     summary = "\n".join(sections.get("summary") or []).strip()
     if summary:
         blocks.append({"type": "summary", "content": clean_excerpt(summary, max_chars=720)})
+
+    table = extract_markdown_table(answer)
+    if table:
+        blocks.append({"type": "table", "markdown": table})
 
     main_items = legacy_block_items(sections.get("main") or [], citations)
     mermaid = extract_mermaid(answer)
@@ -303,10 +325,75 @@ def legacy_answer_blocks(answer: str, citations: list[dict[str, Any]], answer_st
     if main_items:
         blocks.append({"type": "checklist" if answer_style == "checklist" else "steps", "items": main_items})
 
+    normalized_query = normalized_text(query or "")
+    if asks_decision_matrix(normalized_query) and citations:
+        blocks.append({"type": "decision_matrix", "items": option_items_from_citations(citations)})
+    if asks_form_listing(normalized_query) and citations:
+        form_items = option_items_from_citations(
+            [
+                citation
+                for citation in citations
+                if str(citation.get("category") or "") == "form_checklist"
+                or normalized_text(citation.get("title") or citation.get("display_code") or "").startswith("bm")
+            ]
+            or citations
+        )
+        blocks.append({"type": "form", "items": form_items})
+
     sources = sources_from_public_citations(citations)
     if sources:
         blocks.append({"type": "sources", "items": sources})
     return normalize_blocks(blocks)
+
+
+def extract_markdown_table(answer: str) -> str:
+    lines = str(answer or "").splitlines()
+    tables: list[str] = []
+    for index, line in enumerate(lines):
+        if "|" not in line:
+            continue
+        next_line = lines[index + 1] if index + 1 < len(lines) else ""
+        if "|" in next_line and re.search(r"\|\s*:?-{3,}:?\s*\|", next_line):
+            table_lines = [line, next_line]
+            for tail in lines[index + 2 :]:
+                if "|" not in tail.strip():
+                    break
+                table_lines.append(tail)
+            tables.append("\n".join(table_lines))
+            break
+    return tables[0] if tables else ""
+
+
+def asks_decision_matrix(normalized_query: str) -> bool:
+    return any(
+        term in normalized_query
+        for term in ["nen dung", "nen chon", "chon bieu mau", "so sanh", "khac nhau", "phan van"]
+    )
+
+
+def asks_form_listing(normalized_query: str) -> bool:
+    return any(term in normalized_query for term in ["bieu mau", "form", "ho so", "phieu", "mau nao"])
+
+
+def option_items_from_citations(citations: list[dict[str, Any]]) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for citation in citations:
+        display = str(citation.get("display_code") or citation.get("doc_id") or "").strip()
+        title = clean_excerpt(citation.get("title") or display, max_chars=160)
+        key = display or title
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        items.append(
+            {
+                "option": display or title,
+                "text": title,
+                "detail": clean_excerpt(citation.get("excerpt") or citation.get("matched_excerpt") or "", max_chars=260),
+                "source_anchor": str(citation.get("anchor_id") or ""),
+            }
+        )
+    return items[:8]
 
 
 def legacy_block_items(lines: list[str], citations: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -446,7 +533,7 @@ def user_chat_response(
                 "expires_at": session["expires_at"],
             }
         }
-        contract = answer_contract_fields(annotated_answer, citations, answer_style=answer_style or "brief")
+        contract = answer_contract_fields(annotated_answer, citations, answer_style=answer_style or "brief", query=query)
         
         return {
             "answer": annotated_answer,
@@ -544,7 +631,7 @@ def user_chat_response(
         )
 
     citations = sanitize_public_citations(root, result.get("citations") or [])
-    result["answer"] = format_user_answer(str(result.get("answer") or ""), citations, active_answer_style)
+    result["answer"] = format_user_answer(str(result.get("answer") or ""), citations, active_answer_style, query=query)
     citation_doc_ids = sorted({str(citation.get("doc_id")) for citation in citations if citation.get("doc_id")})
     db.log_user_chat_turn(
         active_session_id,
@@ -591,6 +678,7 @@ def user_chat_response(
         citations,
         answer_style=active_answer_style,
         fallback_reason=str(result.get("fallback_reason") or "") if not citations else None,
+        query=query,
     )
     return {
         "answer": result.get("answer") or policy.get("no_answer") or NO_SOURCE_ANSWER,
@@ -654,7 +742,7 @@ def qa_agent_chat_response(
     if result.get("answer_source") in {"clarification", "scope_guard"}:
         answer = str(result.get("answer") or "")
     else:
-        answer = format_user_answer(str(result.get("answer") or ""), citations, answer_style)
+        answer = format_user_answer(str(result.get("answer") or ""), citations, answer_style, query=query)
     citation_doc_ids = sorted({str(citation.get("doc_id")) for citation in citations if citation.get("doc_id")})
     
     tokens_prompt = result.get("tokens_prompt") or 0
@@ -911,7 +999,7 @@ def scope_reject_response(
         "context_used": False,
         "expires_at": session["expires_at"],
     }
-    contract = answer_contract_fields(answer, [], answer_style=answer_style, fallback_reason="out_of_scope")
+    contract = answer_contract_fields(answer, [], answer_style=answer_style, fallback_reason="out_of_scope", query=query)
     return {
         "answer": answer,
         **contract,
@@ -1255,12 +1343,21 @@ def sanitize_public_citations(
     return safe
 
 
-def format_user_answer(answer: str, citations: list[dict[str, Any]], answer_style: str) -> str:
+def format_user_answer(
+    answer: str,
+    citations: list[dict[str, Any]],
+    answer_style: str,
+    *,
+    query: str | None = None,
+) -> str:
     text = answer.strip() or NO_SOURCE_ANSWER
     if contains_raw_markup(text):
         text = clean_retrieval_text(text)
     if text == NO_SOURCE_ANSWER or not citations:
         return NO_SOURCE_ANSWER if not citations else text
+    text = add_grounding_caveat_for_requested_role(text, query)
+    text = add_form_usage_context(text, query, citations)
+    text = add_workflow_evidence_caveat(text, query, answer_style)
     if has_answer_headings(text):
         return normalize_answer_headings(text)
     if "Tóm tắt:" in text and "Nguồn:" in text:
@@ -1289,6 +1386,94 @@ def format_user_answer(answer: str, citations: list[dict[str, Any]], answer_styl
     return f"Tóm tắt:\n{text}\n\nCác bước / Nội dung chính:\n{body}\n\nNguồn:\n{source_text}"
 
 
+def add_grounding_caveat_for_requested_role(answer: str, query: str | None) -> str:
+    normalized_query = normalized_text(query or "")
+    if not any(term in normalized_query for term in ["ai duyet", "ai phe duyet", "ai phu trach", "nguoi duyet"]):
+        return answer
+    normalized_answer = normalized_text(answer)
+    if any(term in normalized_answer for term in ["duyet", "phe duyet", "phu trach", "responsible", "accountable"]):
+        return answer
+    return (
+        "Chưa thấy căn cứ nêu rõ người phê duyệt/phụ trách trực tiếp cho ý hỏi này. "
+        f"Phần liên quan trong tài liệu cho biết: {answer}"
+    )
+
+
+def add_form_usage_context(answer: str, query: str | None, citations: list[dict[str, Any]]) -> str:
+    normalized_query = normalized_text(query or "")
+    if not asks_form_listing(normalized_query):
+        return answer
+    if not any(term in normalized_query for term in ["dung khi", "khi nao", "luc nao", "truong hop nao"]):
+        return answer
+    normalized_answer = normalized_text(answer)
+    if any(
+        term in normalized_answer
+        for term in ["dung khi", "su dung khi", "ap dung khi", "dung de", "su dung de", "tai lieu nay la bieu mau"]
+    ):
+        return answer
+    citation = next(
+        (
+            item
+            for item in citations
+            if str(item.get("category") or "") == "form_checklist"
+            or normalized_text(item.get("title") or item.get("display_code") or "").startswith("bm")
+        ),
+        citations[0] if citations else {},
+    )
+    label = citation_usage_label(citation)
+    excerpt = clean_excerpt(citation.get("excerpt") or citation.get("matched_excerpt") or citation.get("text") or "", max_chars=260)
+    prefix = f"Biểu mẫu/hồ sơ này dùng khi cần lập hoặc ghi nhận thông tin theo {label}."
+    if excerpt:
+        prefix += f" Tài liệu không nêu rõ điều kiện sử dụng riêng trong phần trích dẫn; căn cứ hiện có cho biết: {excerpt}"
+    return f"{prefix}\n\n{answer}"
+
+
+def citation_usage_label(citation: dict[str, Any]) -> str:
+    title = clean_retrieval_text(citation.get("title") or citation.get("display_code") or citation.get("doc_id") or "biểu mẫu/hồ sơ")
+    display_code = str(citation.get("display_code") or citation.get("doc_id") or "").strip()
+    if display_code and normalized_text(display_code) not in normalized_text(title):
+        title = f"{display_code} - {title}"
+    return clean_excerpt(title, max_chars=180)
+
+
+def add_workflow_evidence_caveat(answer: str, query: str | None, answer_style: str) -> str:
+    normalized_query = normalized_text(query or "")
+    if answer_style != "workflow" and not any(term in normalized_query for term in ["workflow", "luu do", "ve quy trinh"]):
+        return answer
+    normalized_answer = normalized_text(answer)
+    if any(term in normalized_answer for term in ["khong du noi dung dang quy trinh", "khong du can cu", "chua du can cu"]):
+        return answer
+    if workflow_point_count(answer) >= 2:
+        return answer
+    evidence = compact_answer_evidence(answer)
+    return (
+        "Tài liệu được dẫn chưa đủ nội dung dạng quy trình để vẽ workflow nhiều bước. "
+        f"Phần có căn cứ hiện tại là: {evidence}"
+    )
+
+
+def compact_answer_evidence(answer: str) -> str:
+    sections = answer_sections(answer)
+    candidates = sections.get("summary") or sections.get("main") or []
+    if not candidates:
+        candidates = _answer_points(answer)
+    text = " ".join(str(item).strip(" -*") for item in candidates if str(item).strip(" -*"))
+    return clean_excerpt(text or answer, max_chars=260)
+
+
+def workflow_point_count(answer: str) -> int:
+    sections = answer_sections(answer)
+    main_items = legacy_block_items(sections.get("main") or [], [])
+    if main_items:
+        return len(main_items)
+    mermaid_items = workflow_items_from_mermaid(extract_mermaid(answer))
+    if mermaid_items:
+        return len(mermaid_items)
+    heading_terms = {"tom tat", "workflow", "cac buoc / noi dung chinh", "noi dung chinh", "nguon"}
+    points = [workflow_label(item) for item in _answer_points(answer)]
+    return len([point for point in points if point and normalized_text(point).strip(" :-") not in heading_terms])
+
+
 def has_answer_headings(text: str) -> bool:
     normalized = normalized_text(text)
     return "tom tat" in normalized and "nguon" in normalized
@@ -1304,11 +1489,13 @@ def normalize_answer_headings(text: str) -> str:
         heading, rest = stripped.split(":", 1)
         normalized_heading = normalized_text(heading)
         rest = rest.strip().strip("*").strip()
-        if "tom tat" in normalized_heading:
+        heading_key = re.sub(r"\s+", " ", normalized_heading).strip(" #*-")
+        heading_candidate = len(heading_key) <= 32 and len(heading_key.split()) <= 6
+        if heading_candidate and heading_key.startswith("tom tat"):
             lines.append("Tóm tắt:" + (f" {rest}" if rest else ""))
-        elif "cac buoc" in normalized_heading or "noi dung chinh" in normalized_heading:
+        elif heading_candidate and (heading_key.startswith("cac buoc") or heading_key.startswith("noi dung chinh")):
             lines.append("Các bước / Nội dung chính:" + (f" {rest}" if rest else ""))
-        elif "nguon" in normalized_heading:
+        elif heading_candidate and heading_key.startswith("nguon"):
             lines.append("Nguồn:" + (f" {rest}" if rest else ""))
         else:
             lines.append(line)

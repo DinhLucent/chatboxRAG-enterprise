@@ -237,6 +237,11 @@ def release_user_chat_queue_ticket(ticket: dict[str, Any] | None) -> None:
             if user_key:
                 USER_CHAT_ACTIVE_KEYS.discard(user_key)
                 USER_CHAT_LAST_FINISHED_AT[user_key] = time.monotonic()
+                # Evict stale entries older than 1 hour to prevent memory leak
+                cutoff = time.monotonic() - 3600.0
+                stale_keys = [k for k, v in USER_CHAT_LAST_FINISHED_AT.items() if v < cutoff]
+                for k in stale_keys:
+                    USER_CHAT_LAST_FINISHED_AT.pop(k, None)
 
 
 def public_user_chat_queue(ticket: dict[str, Any] | None) -> dict[str, Any]:

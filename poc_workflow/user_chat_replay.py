@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -27,15 +28,17 @@ def run_user_chat_replay(
     root = root.resolve()
     cases = load_cases(root / cases_path if not cases_path.is_absolute() else cases_path)
     selected = filter_cases(cases, tags or [])
+    run_id = uuid.uuid4().hex[:8]
     client = TestClient(create_app(root))
     results = []
     for case in selected:
-        case_result = run_case(client, case, force_use_llm=force_use_llm)
+        case_result = run_case(client, case, force_use_llm=force_use_llm, run_id=run_id)
         results.append(case_result)
     report = {
         "started_at": utc_now(),
         "root": str(root),
         "cases_path": str(cases_path),
+        "run_id": run_id,
         "tags": tags or [],
         "total": len(results),
         "passed": sum(1 for item in results if item["passed"]),
@@ -62,10 +65,17 @@ def filter_cases(cases: list[dict[str, Any]], tags: list[str]) -> list[dict[str,
     return [case for case in cases if wanted.intersection(set(case.get("tags") or []))]
 
 
-def run_case(client: TestClient, case: dict[str, Any], *, force_use_llm: bool | None = None) -> dict[str, Any]:
+def run_case(
+    client: TestClient,
+    case: dict[str, Any],
+    *,
+    force_use_llm: bool | None = None,
+    run_id: str = "",
+) -> dict[str, Any]:
     failures: list[str] = []
     turns = []
-    session_id = str(case.get("session_id") or f"replay-{case.get('name', 'case')}")
+    base_session_id = str(case.get("session_id") or f"replay-{case.get('name', 'case')}")
+    session_id = f"{base_session_id}-{run_id}" if run_id else base_session_id
     env_failures = missing_required_env(case.get("requires_env"))
     failures.extend(env_failures)
     for index, turn in enumerate(case.get("turns") or [], start=1):

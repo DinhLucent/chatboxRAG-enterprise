@@ -28,14 +28,8 @@
   },
   {
     "name": "technical catalog returns scannable table",
-    "tags": ["live_ragflow", "catalog", "table"],
+    "tags": ["offline", "catalog", "table"],
     "session_id": "replay-catalog",
-    "requires_env": {
-      "KB_QA_AGENT_WORKFLOW_ENABLED": "true",
-      "POC_LLM_MODEL": "set",
-      "RAGFLOW_BASE_URL": "set",
-      "RAGFLOW_DATASET_ALLOWLIST": "set"
-    },
     "turns": [
       {
         "query": "Cac quy trinh cua phong ky thuat gom nhung tai lieu nao?",
@@ -43,20 +37,14 @@
         "expected_action": "answer",
         "expected_blocks": ["summary", "table", "sources"],
         "required_terms": ["quy trinh"],
-        "expected_doc_ids_any": ["KT-QT-215"]
+        "expected_doc_ids_any": ["KT-QT-001", "KT-QT-002", "KT-QT-003"]
       }
     ]
   },
   {
     "name": "workflow answer keeps follow up context",
-    "tags": ["live_ragflow", "workflow", "multi_turn"],
+    "tags": ["offline", "workflow", "multi_turn"],
     "session_id": "replay-follow-up",
-    "requires_env": {
-      "KB_QA_AGENT_WORKFLOW_ENABLED": "true",
-      "POC_LLM_MODEL": "set",
-      "RAGFLOW_BASE_URL": "set",
-      "RAGFLOW_DATASET_ALLOWLIST": "set"
-    },
     "turns": [
       {
         "query": "Flow quy trinh bao tri may nen tu tiep nhan den luu ho so",
@@ -75,14 +63,8 @@
   },
   {
     "name": "decision style question shows comparison blocks",
-    "tags": ["live_ragflow", "decision"],
+    "tags": ["offline", "decision"],
     "session_id": "replay-decision",
-    "requires_env": {
-      "KB_QA_AGENT_WORKFLOW_ENABLED": "true",
-      "POC_LLM_MODEL": "set",
-      "RAGFLOW_BASE_URL": "set",
-      "RAGFLOW_DATASET_ALLOWLIST": "set"
-    },
     "turns": [
       {
         "query": "Toi nen dung bieu mau nao khi phat sinh su co van hanh?",

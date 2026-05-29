@@ -15,6 +15,18 @@ RAW_MARKUP_MARKERS = (
     "src=",
 )
 
+MOJIBAKE_MARKERS = (
+    "\u00c3",
+    "\u00c4",
+    "\u00c6",
+    "\u00e1\u00ba",
+    "\u00e1\u00bb",
+    "\u00e2\u20ac\u00a6",
+    "\u00e2\u20ac\u201c",
+    "\u00e2\u20ac\u201d",
+    "\u00e2\u20ac",
+)
+
 CONTENT_HEADING_TERMS = (
     "muc dich",
     "pham vi",
@@ -59,8 +71,28 @@ def contains_raw_markup(value: object) -> bool:
     return any(marker in text for marker in RAW_MARKUP_MARKERS)
 
 
+def repair_mojibake(value: object) -> str:
+    text = str(value or "")
+    if not text or not any(marker in text for marker in MOJIBAKE_MARKERS):
+        return text
+    try:
+        repaired = text.encode("latin1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+    if mojibake_score(repaired) < mojibake_score(text):
+        return repaired
+    return text
+
+
+def mojibake_score(text: str) -> int:
+    marker_score = sum(text.count(marker) for marker in MOJIBAKE_MARKERS) * 3
+    control_score = sum(1 for char in text if unicodedata.category(char) == "Cc" and char not in "\n\r\t") * 5
+    replacement_score = text.count("\ufffd") * 8
+    return marker_score + control_score + replacement_score
+
+
 def clean_retrieval_text(value: object) -> str:
-    text = html.unescape(str(value or ""))
+    text = repair_mojibake(html.unescape(str(value or "")))
     if not text.strip():
         return ""
 
@@ -98,7 +130,7 @@ def clean_excerpt(value: object, max_chars: int = 720) -> str:
 
 
 def normalized_text(value: object) -> str:
-    text = str(value or "").replace("đ", "d").replace("Đ", "D")
+    text = repair_mojibake(value).replace("đ", "d").replace("Đ", "D")
     text = unicodedata.normalize("NFD", text)
     text = "".join(char for char in text if unicodedata.category(char) != "Mn")
     return text.lower()

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from .chatbot import NO_SOURCE_ANSWER, infer_category, is_out_of_scope_query, is_procedure_step_count_query
+from .chatbot import NO_SOURCE_ANSWER, infer_category, infer_department, is_out_of_scope_query, is_procedure_step_count_query
 from .llm import LLMError, OpenAICompatibleClient, resolve_llm_config
 from .rag_index import LocalRagIndex, SearchHit
 from .ragflow_http import RAGFlowConfig, RAGFlowHTTPClient, RAGFlowHTTPError
@@ -121,7 +121,7 @@ def approved_latest_metadata_condition(
     ]
     department = metadata_filter_value("department", variables, analysis) or os.getenv(
         "KB_QA_AGENT_DEFAULT_DEPARTMENT",
-        "technical",
+        "",
     )
     category = metadata_filter_value("category", variables, analysis) or str(
         (analysis or {}).get("likely_category") or ""
@@ -189,6 +189,10 @@ def scope_guard(query: str) -> dict[str, Any]:
         "pd-",
         "pd-tech",
         "kt-qt",
+        "bm-",
+        "ms-",
+        "pl-",
+        "phu-luc",
         "phu trach",
         "duyet",
         "bien ban",
@@ -680,9 +684,14 @@ def _run_qa_agent_workflow_impl(
                     retrieve_queries,
                     top_k=int(retrieval_plan.get("top_k") or DEFAULT_TOP_K),
                     category=str(analysis.get("likely_category") or infer_category(query) or "") or None,
+                    department=metadata_filter_value("department", variables, analysis) or None,
                 )
                 if local_step_count_mode:
-                    retrieved = expand_local_procedure_step_chunks(local_index or LocalRagIndex(root), retrieved)
+                    retrieved = expand_local_procedure_step_chunks(
+                        local_index or LocalRagIndex(root),
+                        retrieved,
+                        department=metadata_filter_value("department", variables, analysis) or None,
+                    )
         except (RAGFlowHTTPError, ValueError) as exc:
             reason = "ragflow_error" if ragflow_client else "local_retrieval_error"
             return failed(reason, str(exc))
@@ -1213,8 +1222,9 @@ def deterministic_analysis(query: str, history: list[dict[str, Any]], answer_sty
     doc_match = re.search(r"\b(kt)\s*[- ]\s*(qt|faq|bm|hang)\s*[- ]\s*(\d{1,4})\b", normalized)
     if doc_match:
         entities["doc_id_hint"] = f"KT-{doc_match.group(2).upper()}-{doc_match.group(3).zfill(3)}"
-    if "ky thuat" in normalized:
-        entities["department"] = "technical"
+    department = infer_department(query)
+    if department:
+        entities["department"] = department
     missing_context: list[str] = []
     vague_terms = {
         "quy trinh nay",
@@ -1355,11 +1365,18 @@ def retrieve_local_evidence(
     *,
     top_k: int,
     category: str | None = None,
+    department: str | None = None,
 ) -> list[EvidenceChunk]:
     chunks: list[EvidenceChunk] = []
     per_query_limit = max(3, min(top_k, DEFAULT_TOP_K))
     for query in queries:
-        hits = index.search(query, category=category, limit=per_query_limit)
+        hits = index.search(query, department=department, category=category, limit=per_query_limit)
+        if not hits and category:
+            hits = index.search(query, department=department, category=None, limit=per_query_limit)
+        if not hits and department:
+            hits = index.search(query, department=None, category=category, limit=per_query_limit)
+            if not hits and category:
+                hits = index.search(query, department=None, category=None, limit=per_query_limit)
         chunks.extend(local_hit_to_evidence_chunk(hit) for hit in hits)
     return [chunk for chunk in chunks if chunk.doc_id and chunk.version and chunk.content.strip()]
 
@@ -1382,13 +1399,19 @@ def local_hit_to_evidence_chunk(hit: SearchHit) -> EvidenceChunk:
     )
 
 
-def expand_local_procedure_step_chunks(index: LocalRagIndex, chunks: list[EvidenceChunk]) -> list[EvidenceChunk]:
+def expand_local_procedure_step_chunks(
+    index: LocalRagIndex,
+    chunks: list[EvidenceChunk],
+    *,
+    department: str | None = None,
+) -> list[EvidenceChunk]:
     if not chunks:
         return chunks
     primary = chunks[0]
     document_hits = index.document_chunks(
         primary.doc_id,
         version=primary.version,
+        department=department,
         category=primary.category or "procedure",
         limit=40,
     )

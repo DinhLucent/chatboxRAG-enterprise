@@ -641,7 +641,7 @@ def test_upload_quality_flags_corrupted_title_text() -> None:
 
 
 def test_preclean_markdown_repairs_common_cp1252_utf8_mojibake() -> None:
-    text = "Quy trÃ¬nh báº£o dÆ°á»¡ng<br>PhÃ²ng Ká»¹ thuáº­t"
+    text = "Quy tr\u00c3\u00acnh b\u00e1\u00ba\u00a3o d\u00c6\u00b0\u00e1\u00bb\u00a1ng<br>Ph\u00c3\u00b2ng K\u00e1\u00bb\u00b9 thu\u00e1\u00ba\u00adt"
 
     cleaned = preclean_markdown(text)
 

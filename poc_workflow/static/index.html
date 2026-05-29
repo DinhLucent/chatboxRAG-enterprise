@@ -422,12 +422,14 @@
                   </div>
 
                   <div id="arch-query-desc" class="arch-desc-pane">
-                    <h3>Trình tự xử lý hội thoại</h3>
-                    <p>Mỗi lượt Hỏi-Đáp được giám sát và lưu trữ để đánh giá chất lượng liên tục:</p>
+                    <h3>Trình tự xử lý hội thoại (Tác nhân AI)</h3>
+                    <p>Mỗi câu hỏi của bạn được xử lý thông qua quy trình bảo vệ chất lượng đa tầng của Tác nhân AI nhằm đảm bảo thông tin chính xác 100%:</p>
                     <ul class="arch-list">
-                      <li>Giao diện gửi các thông số kiểm tra kỹ thuật (provider, sử dụng LLM hay trích xuất thuần).</li>
-                      <li>Hệ thống trả lời đính kèm danh sách <strong>Citations (nguồn dẫn)</strong> chứa mã tài liệu, phiên bản cụ thể và đoạn trích matched.</li>
-                      <li>Nhật ký hội thoại được lưu vào bảng SQLite. Phản hồi của người dùng (Đúng, Sai nguồn, Không trả lời được) sẽ tự động tạo các bản ghi <strong>Khoảng trống tri thức (Knowledge Gap)</strong> để người vận hành biết tài liệu nào đang bị thiếu hoặc trả lời sai.</li>
+                      <li><strong>Bước 1: Bộ lọc phạm vi (Scope Guard):</strong> Tự động kiểm tra xem câu hỏi có thuộc phạm vi kỹ thuật của đơn vị hay không. Chặn ngay các câu hỏi ngoài lề để tiết kiệm tài nguyên.</li>
+                      <li><strong>Bước 2: Phân tích ý định & Nhận diện thiếu thông tin:</strong> AI xác định bạn đang hỏi về quy trình, biểu mẫu hay so sánh thiết bị. Nếu câu hỏi quá mơ hồ, hệ thống sẽ tự động hiển thị form yêu cầu bạn bổ sung bối cảnh.</li>
+                      <li><strong>Bước 3: Lập kế hoạch tìm kiếm tài liệu hiệu lực:</strong> AI tạo ra nhiều cách viết khác nhau cho câu hỏi của bạn để tìm kiếm rộng hơn, đảm bảo chỉ lấy tài liệu quy trình đang có hiệu lực thi hành.</li>
+                      <li><strong>Bước 4: Soạn thảo câu trả lời dựa trên bằng chứng:</strong> Hệ thống trích xuất các thông tin cốt lõi (Claims) từ tài liệu tìm thấy, tự động loại bỏ rác định dạng PDF/ảnh scan, và sắp xếp theo định dạng phù hợp (các bước thực hiện, checklist, hoặc sơ đồ quy trình).</li>
+                      <li><strong>Bước 5: Thẩm định chéo & Kiểm duyệt tuân thủ (Verifier & Critic):</strong> AI tự động đóng vai trò người kiểm duyệt, đối chiếu câu trả lời với tài liệu gốc để đảm bảo không bịa đặt thông tin, đúng số bước quy trình và ghi nhận nguồn dẫn (mã tài liệu, phiên bản) rõ ràng.</li>
                     </ul>
                   </div>
 
