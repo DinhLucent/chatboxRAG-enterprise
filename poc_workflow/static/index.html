@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OrientSOP | Trợ lý Quy trình Phương Đông</title>
+    <title>OrientSOP | Hệ thống Quản lý tài liệu Phương Đông</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -18,7 +18,7 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
           </div>
           <div>
-            <div class="brand-title">Kho Quy Trình</div>
+            <div class="brand-title">Kho Tài Liệu</div>
             <div class="brand-subtitle">Tri thức đã kiểm soát</div>
           </div>
         </div>
@@ -53,7 +53,7 @@
       <main class="content">
         <section class="topbar">
           <div>
-            <h1>OrientSOP | Trợ lý Quy trình Phương Đông</h1>
+            <h1>OrientSOP | Hệ thống Quản lý tài liệu Phương Đông</h1>
             <p>Tra cứu có dẫn nguồn, kiểm soát vòng đời tài liệu và duyệt vận hành trong một màn hình gọn.</p>
           </div>
           <div class="topbar-actions">
@@ -107,8 +107,8 @@
               <div id="chatHistory" class="chat-history">
                 <div class="chat-welcome">
                   <div class="welcome-icon">💬</div>
-                  <h3>Trợ lý Quy trình Phương Đông sẵn sàng!</h3>
-                  <p>Đặt câu hỏi về các quy trình Phương Đông, tài liệu vận hành hoặc biểu mẫu trong kho tri thức hiệu lực.</p>
+                  <h3>Trợ lý tài liệu OrientSOP sẵn sàng!</h3>
+                  <p>Đặt câu hỏi về các tài liệu Phương Đông, quy trình vận hành hoặc biểu mẫu trong kho tri thức hiệu lực.</p>
                   <div class="suggested-questions-grid">
                     <button class="suggested-question-card" data-query="Quy trình xử lý sự cố vận hành gồm những bước nào?" type="button">
                       <span class="suggested-question-title">Quy trình xử lý sự cố vận hành</span>
@@ -701,11 +701,29 @@ Respond with a clear list of files scanned, details of changes identified, and a
                 <div class="panel-header">
                   <h2>Khoảng trống tri thức</h2>
                 </div>
+                <div class="quality-filters">
+                  <input id="gapSearchInput" placeholder="Tìm câu hỏi, lý do..." style="flex: 2; min-width: 120px;" />
+                  <select id="gapStatusFilter" aria-label="Lọc theo trạng thái" style="flex: 1; min-width: 100px;">
+                    <option value="">Tất cả trạng thái</option>
+                    <option value="open">Đang mở (Open)</option>
+                    <option value="resolved">Đã xử lý (Resolved)</option>
+                  </select>
+                </div>
                 <div id="gapList" class="list"></div>
               </section>
               <section class="panel">
                 <div class="panel-header">
                   <h2>Truy vấn gần đây</h2>
+                </div>
+                <div class="quality-filters">
+                  <input id="querySearchInput" placeholder="Tìm câu hỏi, câu trả lời..." style="flex: 2; min-width: 120px;" />
+                  <select id="queryFeedbackFilter" aria-label="Lọc theo phản hồi" style="flex: 1; min-width: 100px;">
+                    <option value="">Tất cả phản hồi</option>
+                    <option value="correct">Đúng</option>
+                    <option value="wrong_source">Sai nguồn</option>
+                    <option value="no_answer">Không trả lời</option>
+                    <option value="none">Chưa phản hồi</option>
+                  </select>
                 </div>
                 <div id="queryList" class="list"></div>
               </section>
@@ -715,31 +733,60 @@ Respond with a clear list of files scanned, details of changes identified, and a
               <div class="panel-header">
                 <h2>Kho câu hỏi chuẩn (RAG Annotations)</h2>
               </div>
+              <div class="quality-filters" style="justify-content: flex-start;">
+                <input id="annotationSearchInput" placeholder="Tìm câu hỏi hoặc câu trả lời mẫu..." style="max-width: 320px;" />
+              </div>
               <div id="annotationList" class="list"></div>
             </section>
           </section>
 
           <div class="split system-lower">
+            <!-- Cột bên trái: Lượt xử lý & Nhật ký Logs -->
+            <div style="display: flex; flex-direction: column; gap: var(--space-4);">
+              <section class="panel">
+                <div class="panel-header">
+                  <h2>Lượt xử lý dữ liệu</h2>
+                </div>
+                <div class="quality-filters">
+                  <input id="runSearchInput" placeholder="Tìm ID, mã tài liệu, phiên bản..." style="flex: 2; min-width: 120px;" />
+                  <select id="runStatusFilter" aria-label="Lọc theo trạng thái" style="flex: 1; min-width: 100px;">
+                    <option value="">Tất cả trạng thái</option>
+                    <option value="active">Thành công (Active)</option>
+                    <option value="pending_review">Chờ duyệt</option>
+                    <option value="failed_review">Duyệt lỗi</option>
+                    <option value="retired">Đã ngưng</option>
+                  </select>
+                </div>
+                <div id="ingestionList" class="list"></div>
+              </section>
+
+              <section class="panel">
+                <div class="panel-header">
+                  <h2>Nhật ký vận hành (Logs)</h2>
+                </div>
+                <div id="diagnosticsLogList" class="list" style="margin-bottom: var(--space-4);"></div>
+                <div class="diagnostic-stack" style="padding: 0 var(--space-4) var(--space-4) var(--space-4); border-top: 1px solid var(--line); padding-top: var(--space-4);">
+                  <details style="margin-bottom: var(--space-2);">
+                    <summary>Payload chẩn đoán thô (JSON)</summary>
+                    <pre id="diagnosticsBox" class="json-box compact"></pre>
+                  </details>
+                  <details style="margin-bottom: var(--space-4);">
+                    <summary>Payload health thô (JSON)</summary>
+                    <pre id="healthBox" class="json-box compact"></pre>
+                  </details>
+                </div>
+              </section>
+            </div>
+
+            <!-- Cột bên phải: Chẩn đoán & Cảnh báo hệ thống (Dashboard, Khuyến nghị, Sẵn sàng) -->
             <section class="panel">
               <div class="panel-header">
-                <h2>Lượt xử lý dữ liệu</h2>
+                <h2>Chẩn đoán & Cảnh báo hệ thống</h2>
               </div>
-              <div id="ingestionList" class="list"></div>
-            </section>
-            <section class="panel">
-              <div class="panel-header">
-                <h2>Chẩn đoán</h2>
-              </div>
-              <div id="diagnosticsLogList" class="list" style="margin-bottom: var(--space-4);"></div>
-              <div class="diagnostic-stack">
-                <details style="margin-bottom: var(--space-2);">
-                  <summary>Tóm tắt chẩn đoán</summary>
-                  <pre id="diagnosticsBox" class="json-box compact"></pre>
-                </details>
-                <details>
-                  <summary>Payload health thô</summary>
-                  <pre id="healthBox" class="json-box compact"></pre>
-                </details>
+              <div style="padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-4);">
+                <div id="diagnosticsDashboard" class="diagnostics-dashboard">
+                  <!-- Diagnostics Dashboard trực quan sẽ được render ở đây -->
+                </div>
               </div>
             </section>
           </div>

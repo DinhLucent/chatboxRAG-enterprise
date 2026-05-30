@@ -4234,11 +4234,17 @@ function renderQuality() {
 
 
 
-  const visibleGaps = state.gaps.slice(0, 10);
+  const gapSearch = (qs("#gapSearchInput")?.value || "").trim().toLowerCase();
+  const gapStatus = qs("#gapStatusFilter")?.value || "";
+  const filteredGaps = state.gaps.filter((gap) => {
+    const haystack = [gap.query || "", gap.reason || "", gap.suggested_owner || ""].join(" ").toLowerCase();
+    return (!gapSearch || haystack.includes(gapSearch)) && (!gapStatus || gap.status === gapStatus);
+  });
+  const visibleGaps = filteredGaps.slice(0, 10);
 
   qs("#gapList").innerHTML = visibleGaps.length
 
-    ? `${listLimitNote(visibleGaps.length, state.gaps.length)}
+    ? `${listLimitNote(visibleGaps.length, filteredGaps.length)}
 
        <div class="list-select-header">
 
@@ -4302,11 +4308,23 @@ function renderQuality() {
 
 
 
-  const visibleQueries = state.queries.slice(0, 10);
+  const querySearch = (qs("#querySearchInput")?.value || "").trim().toLowerCase();
+  const queryFeedback = qs("#queryFeedbackFilter")?.value || "";
+  const filteredQueries = state.queries.filter((q) => {
+    const haystack = [q.query || "", q.answer || ""].join(" ").toLowerCase();
+    let matchesFeedback = true;
+    if (queryFeedback === "none") {
+      matchesFeedback = !q.feedback;
+    } else if (queryFeedback) {
+      matchesFeedback = q.feedback === queryFeedback;
+    }
+    return (!querySearch || haystack.includes(querySearch)) && matchesFeedback;
+  });
+  const visibleQueries = filteredQueries.slice(0, 10);
 
   qs("#queryList").innerHTML = visibleQueries.length
 
-    ? `${listLimitNote(visibleQueries.length, state.queries.length)}
+    ? `${listLimitNote(visibleQueries.length, filteredQueries.length)}
 
        <div class="list-select-header">
 
@@ -4394,7 +4412,12 @@ function renderQuality() {
 
 
 
-  const visibleAnnotations = state.annotations || [];
+  const annotationSearch = (qs("#annotationSearchInput")?.value || "").trim().toLowerCase();
+  const filteredAnnotations = (state.annotations || []).filter((ann) => {
+    const haystack = [ann.query || "", ann.annotated_answer || "", ann.doc_id || ""].join(" ").toLowerCase();
+    return (!annotationSearch || haystack.includes(annotationSearch));
+  });
+  const visibleAnnotations = filteredAnnotations;
 
   qs("#annotationList").innerHTML = visibleAnnotations.length
 
@@ -5116,11 +5139,17 @@ function renderOperations() {
 
 
 
-  const visibleRuns = state.runs.slice(0, 15);
+  const runSearch = (qs("#runSearchInput")?.value || "").trim().toLowerCase();
+  const runStatus = qs("#runStatusFilter")?.value || "";
+  const filteredRuns = state.runs.filter((run) => {
+    const haystack = [run.doc_id || "", run.version || "", run.run_id || "", run.error_message || ""].join(" ").toLowerCase();
+    return (!runSearch || haystack.includes(runSearch)) && (!runStatus || run.status === runStatus);
+  });
+  const visibleRuns = filteredRuns.slice(0, 15);
 
   qs("#ingestionList").innerHTML = visibleRuns.length
 
-    ? `${listLimitNote(visibleRuns.length, state.runs.length)}
+    ? `${listLimitNote(visibleRuns.length, filteredRuns.length)}
 
        <div class="list-select-header">
 
@@ -5465,6 +5494,8 @@ function renderOperations() {
   });
 
 
+
+  renderDiagnosticsDashboard(state.diagnostics);
 
   updateOperationsActionBar();
 
@@ -6537,11 +6568,28 @@ function setupActions() {
   });
 
   ["#documentSearchInput", "#documentCategoryFilter", "#documentStatusFilter"].forEach((selector) => {
-
     qs(selector)?.addEventListener("input", renderManifest);
-
     qs(selector)?.addEventListener("change", renderManifest);
+  });
 
+  // Bind events for quality & maintenance tab filters
+  ["#gapSearchInput", "#gapStatusFilter"].forEach((selector) => {
+    qs(selector)?.addEventListener("input", renderQuality);
+    qs(selector)?.addEventListener("change", renderQuality);
+  });
+
+  ["#querySearchInput", "#queryFeedbackFilter"].forEach((selector) => {
+    qs(selector)?.addEventListener("input", renderQuality);
+    qs(selector)?.addEventListener("change", renderQuality);
+  });
+
+  ["#annotationSearchInput"].forEach((selector) => {
+    qs(selector)?.addEventListener("input", renderQuality);
+  });
+
+  ["#runSearchInput", "#runStatusFilter"].forEach((selector) => {
+    qs(selector)?.addEventListener("input", renderOperations);
+    qs(selector)?.addEventListener("change", renderOperations);
   });
 
   // Setup event delegation for chatHistory (delegating suggested questions, inline feedback, citation badges)
@@ -8615,5 +8663,114 @@ function getCalloutIconSvg(type) {
 
   return icons[type] || icons.note;
 
+}
+
+function renderDiagnosticsDashboard(diag) {
+  const target = qs("#diagnosticsDashboard");
+  if (!target) return;
+  if (!diag) {
+    target.innerHTML = `<div class="empty">Chưa có dữ liệu chẩn đoán. Bấm nút Chẩn đoán bên dưới để tải.</div>`;
+    return;
+  }
+
+  let statusClass = "queue";
+  let statusText = "Chưa xác định";
+  let statusDesc = "Đang tải dữ liệu...";
+
+  if (diag.status === "ok") {
+    statusClass = "done";
+    statusText = "✓ HOẠT ĐỘNG BÌNH THƯỜNG";
+    statusDesc = "Mọi dịch vụ và cấu phần hệ thống đang hoạt động ổn định.";
+  } else if (diag.status === "attention") {
+    statusClass = "warning";
+    statusText = "⚠ HỆ THỐNG CÓ CẢNH BÁO";
+    statusDesc = "Có một số sự cố nhỏ hoặc cảnh báo đang được theo dõi.";
+  } else if (diag.status === "not_ready") {
+    statusClass = "warning";
+    statusText = "⚠ CHƯA SẴN SÀNG";
+    statusDesc = "Thiếu tài liệu active hoặc cấu hình chưa hoàn thiện để chạy RAG.";
+  } else if (diag.status === "incident") {
+    statusClass = "failed";
+    statusText = "✗ GẶP SỰ CỐ NGHIÊM TRỌNG";
+    statusDesc = "Có sự cố nghiêm trọng ảnh hưởng đến luồng RAG hoặc dịch vụ.";
+  }
+
+  const summary = diag.summary || {};
+  const statsHtml = `
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: var(--space-3); margin-top: var(--space-4); width: 100%;">
+      <div class="bento-card bento-cyan" style="padding: var(--space-3); margin: 0; min-height: auto; align-items: center; justify-content: center; text-align: center;">
+        <div style="font-size: 10px; font-weight: bold; color: var(--muted); text-transform: uppercase; margin-bottom: var(--space-1);">Sự cố mở</div>
+        <div style="font-size: 18px; font-weight: 800; color: ${summary.open_incidents ? 'var(--danger)' : 'var(--success)'};">${summary.open_incidents ?? 0}</div>
+      </div>
+      <div class="bento-card bento-teal" style="padding: var(--space-3); margin: 0; min-height: auto; align-items: center; justify-content: center; text-align: center;">
+        <div style="font-size: 10px; font-weight: bold; color: var(--muted); text-transform: uppercase; margin-bottom: var(--space-1);">Khoảng trống</div>
+        <div style="font-size: 18px; font-weight: 800; color: var(--primary-strong);">${summary.open_gaps ?? 0}</div>
+      </div>
+      <div class="bento-card bento-orange" style="padding: var(--space-3); margin: 0; min-height: auto; align-items: center; justify-content: center; text-align: center;">
+        <div style="font-size: 10px; font-weight: bold; color: var(--muted); text-transform: uppercase; margin-bottom: var(--space-1);">Nạp lỗi</div>
+        <div style="font-size: 18px; font-weight: 800; color: ${summary.failed_ingestions ? 'var(--danger)' : 'var(--muted-strong)'};">${summary.failed_ingestions ?? 0}</div>
+      </div>
+      <div class="bento-card bento-blue" style="padding: var(--space-3); margin: 0; min-height: auto; align-items: center; justify-content: center; text-align: center;">
+        <div style="font-size: 10px; font-weight: bold; color: var(--muted); text-transform: uppercase; margin-bottom: var(--space-1);">Hồi quy</div>
+        <div style="font-size: 18px; font-weight: 800; color: ${summary.latest_evaluation_pass ? 'var(--success)' : 'var(--danger)'};">${summary.latest_evaluation_pass ? "Đạt" : "Lỗi"}</div>
+      </div>
+    </div>
+  `;
+
+  const recs = diag.recommendations || [];
+  const recsHtml = recs.length
+    ? `
+      <div style="margin-top: var(--space-4);">
+        <h4 style="font-size: 11px; font-weight: bold; color: var(--muted); text-transform: uppercase; margin-bottom: var(--space-2); letter-spacing: 0.05em;">Khuyến nghị từ hệ thống</h4>
+        <ul style="margin: 0; padding-left: var(--space-4); display: flex; flex-direction: column; gap: var(--space-2);">
+          ${recs.map(rec => `<li style="font-size: 12px; color: var(--text-muted); line-height: 1.45;">${escapeHtml(rec)}</li>`).join("")}
+        </ul>
+      </div>
+    `
+    : "";
+
+  const checks = diag.readiness?.checks || [];
+  const checksHtml = checks.length
+    ? `
+      <div style="margin-top: var(--space-4);">
+        <h4 style="font-size: 11px; font-weight: bold; color: var(--muted); text-transform: uppercase; margin-bottom: var(--space-2); letter-spacing: 0.05em;">Kiểm tra cấu hình sẵn sàng</h4>
+        <div style="display: flex; flex-direction: column; gap: var(--space-2);">
+          ${checks.map(chk => {
+            let statusBadge = "queue";
+            if (chk.status === "pass") statusBadge = "done";
+            if (chk.status === "warn") statusBadge = "warning";
+            if (chk.status === "fail") statusBadge = "failed";
+
+            return `
+              <div class="item" style="margin: 0; padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--surface-soft); display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);">
+                <div style="flex: 1; min-width: 0;">
+                  <strong style="font-size: 12px; color: var(--text);">${escapeHtml(readinessCheckLabel(chk.name))}</strong>
+                  <div style="font-size: 11px; color: var(--muted); margin-top: 2px; font-weight: 500;">${escapeHtml(chk.detail || "Không có mô tả.")}</div>
+                </div>
+                <span class="status ${statusBadge}">${escapeHtml(readinessStatusLabel(chk.status))}</span>
+              </div>
+            `;
+          }).join("")}
+        </div>
+      </div>
+    `
+    : "";
+
+  target.innerHTML = `
+    <div class="item" style="border-left: 4px solid var(--${statusClass === 'done' ? 'success' : (statusClass === 'failed' ? 'danger' : 'warning')}); background: var(--${statusClass === 'done' ? 'success-soft' : (statusClass === 'failed' ? 'danger-soft' : 'warning-soft')}); margin: 0; padding: var(--space-3); border-radius: var(--radius-md);">
+      <div class="item-title" style="display: flex; align-items: center; justify-content: space-between; gap: var(--space-2);">
+        <strong style="color: var(--${statusClass === 'done' ? 'success' : (statusClass === 'failed' ? 'danger' : 'warning')}); font-size: 14px; font-weight: 700;">
+          ${statusText}
+        </strong>
+        <span class="status ${statusClass}">${escapeHtml(diag.status || "attention")}</span>
+      </div>
+      <div class="item-meta" style="margin-top: var(--space-1); font-size: 12px; color: var(--text); font-weight: 500;">
+        ${statusDesc}
+      </div>
+    </div>
+    ${statsHtml}
+    ${recsHtml}
+    ${checksHtml}
+  `;
 }
 

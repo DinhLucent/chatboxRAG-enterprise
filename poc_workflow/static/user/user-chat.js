@@ -2010,7 +2010,36 @@ function resetChat() {
   qs("#messages").innerHTML = `
     <div id="welcomeState" class="welcome-state">
       <div class="welcome-hero">
-        <div class="welcome-badge">Hệ thống tri thức Quy trình Phương Đông</div>
+        <div class="welcome-avatar" aria-hidden="true">
+          <div class="welcome-avatar-inner">
+            <svg width="88" height="88" viewBox="0 0 88 88" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <radialGradient id="avatarGlow" cx="50%" cy="50%" r="50%" fx="50%" fy="50%">
+                  <stop offset="0%" stop-color="#e11d48" stop-opacity="0.3"/>
+                  <stop offset="100%" stop-color="#e11d48" stop-opacity="0"/>
+                </radialGradient>
+                <linearGradient id="avatarGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#fb7185"/>
+                  <stop offset="100%" stop-color="#e11d48"/>
+                </linearGradient>
+              </defs>
+              <circle class="avatar-glow-circle" cx="44" cy="44" r="40" fill="url(#avatarGlow)"/>
+              <circle class="avatar-dash-ring" cx="44" cy="44" r="34" fill="#ffffff" stroke="url(#avatarGradient)" stroke-width="1.5" stroke-dasharray="4 3"/>
+              <circle cx="44" cy="44" r="28" fill="url(#avatarGradient)" filter="drop-shadow(0 4px 12px rgba(225, 29, 72, 0.25))"/>
+              <rect x="32" y="33" width="24" height="20" rx="6" fill="#ffffff"/>
+              <rect x="29" y="38" width="3" height="10" rx="1.5" fill="#ffffff"/>
+              <rect x="56" y="38" width="3" height="10" rx="1.5" fill="#ffffff"/>
+              <rect x="41" y="52" width="6" height="4" fill="#ffffff"/>
+              <circle class="avatar-eye avatar-eye-left" cx="39" cy="42" r="2" fill="#e11d48"/>
+              <circle class="avatar-eye avatar-eye-right" cx="49" cy="42" r="2" fill="#e11d48"/>
+              <path class="avatar-mouth" d="M41 47.5C42 48.5 43 49 44 49C45 49 46 48.5 47 47.5" stroke="#e11d48" stroke-width="1.5" stroke-linecap="round"/>
+              <g class="avatar-antenna">
+                <rect x="43" y="26" width="2" height="7" fill="#ffffff"/>
+                <circle cx="44" cy="25" r="2" fill="#ffffff"/>
+              </g>
+            </svg>
+          </div>
+        </div>
         <p class="welcome-eyebrow">Tôi có thể giúp gì cho bạn hôm nay?</p>
         <p class="welcome-sub">Tìm kiếm nhanh chóng, trích dẫn chính xác từ kho tài liệu và quy trình hiệu lực của Phương Đông.</p>
       </div>

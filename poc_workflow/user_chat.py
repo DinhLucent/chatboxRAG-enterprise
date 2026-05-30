@@ -65,28 +65,28 @@ WELCOME_CARDS = [
         "id": "welcome_procedure",
         "label": "Quy trình Phương Đông",
         "template_id": "procedure_steps",
-        "question": "Quy trình Phương Đông gồm những bước nào?",
+        "question": "Quy trình các bước thu hồi thuốc tự nguyện (BM-002) được thực hiện như thế nào?",
         "answer_style": "steps",
     },
     {
         "id": "welcome_form",
-        "label": "Biểu mẫu quy trình",
+        "label": "Biểu mẫu & Hồ sơ",
         "template_id": "form_usage",
-        "question": "Trường hợp này cần dùng biểu mẫu quy trình nào?",
+        "question": "Hồ sơ đăng ký tổ chức hội thảo y tế quốc tế (BM-093.03) gồm những tài liệu gì?",
         "answer_style": "brief",
     },
     {
         "id": "welcome_incident",
         "label": "Xử lý sự cố",
         "template_id": "incident_first_response",
-        "question": "Khi phát sinh sự cố vận hành, cần xử lý ban đầu thế nào?",
+        "question": "Quy định báo cáo và giải trình sự cố vận hành (BM-046.02) thế nào?",
         "answer_style": "checklist",
     },
     {
         "id": "welcome_vendor",
-        "label": "Tài liệu quy trình",
+        "label": "Tài liệu kỹ thuật",
         "template_id": "vendor_requirement",
-        "question": "Tài liệu quy trình nêu yêu cầu thế nào?",
+        "question": "Yêu cầu kỹ thuật trong hợp đồng mua bán máy hãng BIORAD (MS-012) là gì?",
         "answer_style": "brief",
     },
 ]
@@ -1282,9 +1282,9 @@ def has_context_reference(normalized_query: str) -> bool:
 
 def public_policy_summary(policy: dict[str, Any]) -> dict[str, Any]:
     return {
-        "label": "Trợ lý Tri thức Quy trình Phương Đông",
+        "label": "OrientSOP | Hệ thống Truy vấn tài liệu Phương Đông",
         "summary": [
-            "Trợ lý chỉ trả lời dựa trên tài liệu quy trình đang hiệu lực của Phương Đông.",
+            "Trợ lý chỉ trả lời dựa trên tài liệu và quy trình đang hiệu lực của Phương Đông.",
             "Nếu không tìm thấy căn cứ, trợ lý sẽ nói rõ là chưa tìm thấy trong tài liệu hiện hành.",
         ],
         "debug_visible": False,

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OrientSOP | Trợ lý Tri thức Quy trình Phương Đông</title>
+    <title>OrientSOP | Hệ thống Truy vấn tài liệu Phương Đông</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Crect x='2' y='2' width='20' height='20' rx='6' fill='%23e11d48'/%3E%3Cpath d='M7 9C7 7.89543 7.89543 7 9 7H15C16.1046 7 17 7.89543 17 9V13C17 14.1046 16.1046 15 15 15H11.5L8.5 17.5V15H9C7.89543 15 7 14.1046 7 13V9Z' fill='white'/%3E%3Ccircle cx='10' cy='11' r='1.2' fill='%23dc2626'/%3E%3Ccircle cx='14' cy='11' r='1.2' fill='%23dc2626'/%3E%3C/svg%3E" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -16,7 +16,7 @@
   <body>
     <div class="user-shell">
       <aside class="rail" aria-label="Điều hướng">
-        <div class="rail-brand" aria-label="OrientSOP Trợ lý Tri thức Quy trình Phương Đông">
+        <div class="rail-brand" aria-label="OrientSOP | Hệ thống Truy vấn tài liệu Phương Đông">
           <div class="rail-mark-container">
             <svg class="logo-svg" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
               <rect x="2" y="2" width="20" height="20" rx="6" fill="url(#logo-grad)"/>
@@ -87,7 +87,7 @@
       <main class="chat-main">
         <header class="chat-header">
           <div class="header-content">
-            <h1>Trợ lý Tri thức Quy trình Phương Đông</h1>
+            <h1>OrientSOP | Hệ thống Truy vấn tài liệu Phương Đông</h1>
             <div id="assistantLine" class="assistant-line">Trợ lý đang dùng: Tài liệu đang hiệu lực</div>
           </div>
         </header>
@@ -97,7 +97,36 @@
         <section id="messages" class="messages" aria-live="polite">
           <div id="welcomeState" class="welcome-state">
             <div class="welcome-hero">
-              <div class="welcome-badge">Hệ thống tri thức Quy trình Phương Đông</div>
+              <div class="welcome-avatar" aria-hidden="true">
+                <div class="welcome-avatar-inner">
+                  <svg width="88" height="88" viewBox="0 0 88 88" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                      <radialGradient id="avatarGlow" cx="50%" cy="50%" r="50%" fx="50%" fy="50%">
+                        <stop offset="0%" stop-color="#e11d48" stop-opacity="0.3"/>
+                        <stop offset="100%" stop-color="#e11d48" stop-opacity="0"/>
+                      </radialGradient>
+                      <linearGradient id="avatarGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" stop-color="#fb7185"/>
+                        <stop offset="100%" stop-color="#e11d48"/>
+                      </linearGradient>
+                    </defs>
+                    <circle class="avatar-glow-circle" cx="44" cy="44" r="40" fill="url(#avatarGlow)"/>
+                    <circle class="avatar-dash-ring" cx="44" cy="44" r="34" fill="#ffffff" stroke="url(#avatarGradient)" stroke-width="1.5" stroke-dasharray="4 3"/>
+                    <circle cx="44" cy="44" r="28" fill="url(#avatarGradient)" filter="drop-shadow(0 4px 12px rgba(225, 29, 72, 0.25))"/>
+                    <rect x="32" y="33" width="24" height="20" rx="6" fill="#ffffff"/>
+                    <rect x="29" y="38" width="3" height="10" rx="1.5" fill="#ffffff"/>
+                    <rect x="56" y="38" width="3" height="10" rx="1.5" fill="#ffffff"/>
+                    <rect x="41" y="52" width="6" height="4" fill="#ffffff"/>
+                    <circle class="avatar-eye avatar-eye-left" cx="39" cy="42" r="2" fill="#e11d48"/>
+                    <circle class="avatar-eye avatar-eye-right" cx="49" cy="42" r="2" fill="#e11d48"/>
+                    <path class="avatar-mouth" d="M41 47.5C42 48.5 43 49 44 49C45 49 46 48.5 47 47.5" stroke="#e11d48" stroke-width="1.5" stroke-linecap="round"/>
+                    <g class="avatar-antenna">
+                      <rect x="43" y="26" width="2" height="7" fill="#ffffff"/>
+                      <circle cx="44" cy="25" r="2" fill="#ffffff"/>
+                    </g>
+                  </svg>
+                </div>
+              </div>
               <p class="welcome-eyebrow">Tôi có thể giúp gì cho bạn hôm nay?</p>
               <p class="welcome-sub">Tìm kiếm nhanh chóng, trích dẫn chính xác từ kho tài liệu và quy trình hiệu lực của Phương Đông.</p>
             </div>
@@ -116,6 +145,22 @@
                   <option value="vendor_document" disabled>Tài liệu kỹ thuật hãng</option>
                   <option value="form_checklist" disabled>Biểu mẫu & checklist</option>
                   <option value="faq_troubleshooting" disabled>Xử lý sự cố & FAQ</option>
+                </select>
+              </div>
+              <label class="answer-style-label" for="deptSelect">Phòng ban:</label>
+              <div class="select-wrapper">
+                <select id="deptSelect" class="answer-style-select">
+                  <option value="" selected>Tất cả phòng ban</option>
+                  <option value="technical" disabled>Phòng Kỹ thuật</option>
+                  <option value="warehouse_gdp" disabled>Kho GDP</option>
+                  <option value="internal_control" disabled>Kiểm soát nội bộ</option>
+                  <option value="it" disabled>CNTT (IT)</option>
+                  <option value="accounting" disabled>Kế toán</option>
+                  <option value="human_resources" disabled>Nhân sự</option>
+                  <option value="sales" disabled>Kinh doanh</option>
+                  <option value="marketing" disabled>Marketing</option>
+                  <option value="procurement_import_export" disabled>Mua hàng & XNK</option>
+                  <option value="tender_legal" disabled>Thầu & Pháp lý</option>
                 </select>
               </div>
               <label class="answer-style-label" for="answerStyle">Kiểu trả lời:</label>
