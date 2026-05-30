@@ -382,65 +382,80 @@
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="nav-icon"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
                     </button>
                     <span id="zoomLevelDisplay">100%</span>
-                    <button id="zoomIn                <div class="prompt-body">
-                  <div id="arch-runtime-desc" class="arch-desc-pane active-desc">
-                    <h3>Cơ chế Runtime & Bảo mật</h3>
-                    <p>Hệ thống kết hợp giữa giao diện quản trị gọn nhẹ và các tác nhân AI chạy ngầm. Khi người dùng đặt câu hỏi:</p>
-                    <ul class="arch-list">
-                      <li><strong>Application Backend:</strong> Tiếp nhận yêu cầu tại cổng <code>:8088</code>.</li>
-                      <li><strong>Bảo mật Ranh giới:</strong> Giao tiếp giữa Vercel UI và local server qua Tunnel có xác thực header <code>X-KB-Token</code>. Nếu token sai, hệ thống lập tức ở chế độ <code>fail-closed</code>.</li>
-                      <li><strong>Tầng Truy xuất (Retrieval):</strong> Chỉ lấy dữ liệu từ các tài liệu có trạng thái <code>active</code> trong <code>manifest/records.json</code>.</li>
-                      <li><strong>Tích hợp LLM Gateway:</strong> Gọi LLM thông qua gateway ở cổng <code>:3001</code> để tổng hợp câu trả lời từ context chunks, đảm bảo dữ liệu không bị rò rỉ.</li>
-                    </ul>
+                    <button id="zoomInBtn" class="button secondary compact" type="button" title="Phóng to">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="nav-icon"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                    </button>
                   </div>
-
-                  <div id="arch-ingestion-desc" class="arch-desc-pane">
-                    <h3>Luồng Ingestion & Số hóa</h3>
-                    <p>Vòng đời xử lý và chuẩn hóa tài liệu đầu vào trước khi được lập chỉ mục:</p>
-                    <ul class="arch-list">
-                      <li><strong>Intake:</strong> File được nạp vào <code>inbox/</code> (hoặc qua UI), AI Agent phân loại sơ bộ (procedure, vendor_document, form_checklist, faq_troubleshooting).</li>
-                      <li><strong>Chuyển đổi MinerU:</strong> Chuyển đổi PDF, XLSX, DOCX thô thành Markdown tại <code>normalized/</code> và trích xuất cấu trúc bảng biểu, hình ảnh, model/middle layout JSON.</li>
-                      <li><strong>Kiểm định QA:</strong> Chạy <code>qa_source_output()</code> đánh giá mojibake, độ phủ từ vựng, tính trích xuất bước thủ tục. Nếu lỗi, chuyển sang trạng thái sửa đổi.</li>
-                      <li><strong>Đóng gói RAG-Ready:</strong> Tạo manifest liên kết dòng Markdown với bounding boxes/tọa độ trang MinerU và lưu bản ghi dưới dạng <code>pending_review</code>.</li>
-                    </ul>
-                  </div>
-
-                  <div id="arch-query-desc" class="arch-desc-pane">
-                    <h3>Xử lý Hỏi-Đáp & Định tuyến</h3>
-                    <p>Các bước xử lý tuần tự khi nhận được truy vấn từ người dùng:</p>
-                    <ul class="arch-list">
-                      <li><strong>Nhận diện Ý đồ & Style:</strong> Xác định style hiển thị câu hỏi (brief, steps, checklist, workflow) và phân tích phòng ban/danh mục mục tiêu.</li>
-                      <li><strong>Bộ lọc Ngoài Phạm vi:</strong> Kiểm tra câu hỏi ngoài phạm vi nghiệp vụ kỹ thuật thông qua heuristic bộ lọc <code>is_out_of_scope_query()</code> để chặn câu hỏi rác.</li>
-                      <li><strong>Catalog Fallback:</strong> Nếu hỏi danh sách quy trình, hệ thống dùng <code>build_catalog_answer()</code> trả về danh sách có định dạng không cần đi qua LLM.</li>
-                      <li><strong>Định tuyến (Routing):</strong> Định tuyến giữa RAGFlow API (HTTP REST) hoặc Local Search Index (BM25 + Heuristics cục bộ).</li>
-                    </ul>
-                  </div>
-
-                  <div id="arch-scoring-desc" class="arch-desc-pane">
-                    <h3>Thuật toán & Chấm điểm RAG</h3>
-                    <p>Cơ chế tìm kiếm cục bộ và hiệu chỉnh điểm số thông minh của <code>LocalRagIndex.search()</code>:</p>
-                    <ul class="arch-list">
-                      <li><strong>Điểm số thô:</strong> <code>(Title_overlap * 4) + Text_overlap</code> dựa trên Meaningful Terms của truy vấn.</li>
-                      <li><strong>Mã tài liệu Boost (+250):</strong> Ưu tiên tuyệt đối khi truy vấn khớp chính xác mã hiển thị (như <code>PD-TECH-A-01</code>).</li>
-                      <li><strong>Hiệu chỉnh ý đồ:</strong> Boost mạnh khi khớp ý định tìm kiếm (như <code>mục đích</code>, <code>bảo dưỡng</code>, <code>CCDC</code>, <code>chứng chỉ</code>, <code>biểu mẫu</code>, <code>hồ sơ</code>) từ +40 đến +85 điểm.</li>
-                      <li><strong>Phạt nhiễu & Lịch sử sửa đổi (-30):</strong> Giảm điểm các chunk chứa bảng chỉnh sửa, thông tin rác hoặc text OCR chất lượng thấp.</li>
-                      <li><strong>Lọc tự tin & Focus:</strong> Chỉ giữ các chunk có điểm >= 8 và tập trung kết quả vào tài liệu có độ khớp cao nhất để tránh trộn lẫn nội dung.</li>
-                    </ul>
-                  </div>
-
-                  <div id="arch-agent-desc" class="arch-desc-pane">
-                    <h3>Luồng Vận Hành Tác Nhân AI</h3>
-                    <p>Mô hình trạng thái và các tác nhân tự động chạy ngầm trong hệ thống:</p>
-                    <ul class="arch-list">
-                      <li><strong>Quản lý Handoff Contract:</strong> Hệ thống lưu nhật ký chuyển tiếp tại <code>handoffs.jsonl</code>, đảm bảo tính tuần tự nghiêm ngặt (plan -> convert -> audit -> index -> evolve).</li>
-                      <li><strong>Tự Động Sửa Lỗi (Repair Loop):</strong> Nếu bước <code>audit</code> bị gắn mác <code>needs_repair</code>, tác nhân sửa lỗi tự động được kích hoạt để khắc phục Markdown lỗi.</li>
-                      <li><strong>Human Review Gate:</strong> Sau khi đóng gói RAG-ready, tài liệu ở trạng thái <code>pending_review</code> chờ Quản trị viên duyệt checklist nghiệp vụ trên Dashboard để đổi thành <code>active</code>.</li>
-                      <li><strong>Tái tạo chỉ mục:</strong> Phê duyệt kích hoạt <code>approve_record()</code>, lưu trữ phiên bản cũ (archived/retired) và tái tạo cơ sở dữ liệu tìm kiếm cục bộ.</li>
-                    </ul>
-                  </div>
+                  <div id="mermaid-render-area" class="mermaid-container"></div>
                 </div>
-              </section>
-            </div>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-header">
+                <div>
+                  <h2>Chi tiết kiến trúc</h2>
+                  <p class="panel-caption">Giải thích chi tiết luồng xử lý và dữ liệu của góc nhìn đang chọn.</p>
+                </div>
+              </div>
+              <div class="prompt-body">
+                <div id="arch-runtime-desc" class="arch-desc-pane active-desc">
+                  <h3>Cơ chế Runtime & Bảo mật</h3>
+                  <p>Hệ thống kết hợp giữa giao diện quản trị gọn nhẹ và các tác nhân AI chạy ngầm. Khi người dùng đặt câu hỏi:</p>
+                  <ul class="arch-list">
+                    <li><strong>Application Backend:</strong> Tiếp nhận yêu cầu tại cổng <code>:8088</code>.</li>
+                    <li><strong>Bảo mật Ranh giới:</strong> Giao tiếp giữa Vercel UI và local server qua Tunnel có xác thực header <code>X-KB-Token</code>. Nếu token sai, hệ thống lập tức ở chế độ <code>fail-closed</code>.</li>
+                    <li><strong>Tầng Truy xuất (Retrieval):</strong> Chỉ lấy dữ liệu từ các tài liệu có trạng thái <code>active</code> trong <code>manifest/records.json</code>.</li>
+                    <li><strong>Tích hợp LLM Gateway:</strong> Gọi LLM thông qua gateway ở cổng <code>:3001</code> để tổng hợp câu trả lời từ context chunks, đảm bảo dữ liệu không bị rò rỉ.</li>
+                  </ul>
+                </div>
+
+                <div id="arch-ingestion-desc" class="arch-desc-pane">
+                  <h3>Luồng Ingestion & Số hóa</h3>
+                  <p>Vòng đời xử lý và chuẩn hóa tài liệu đầu vào trước khi được lập chỉ mục:</p>
+                  <ul class="arch-list">
+                    <li><strong>Intake:</strong> File được nạp vào <code>inbox/</code> (hoặc qua UI), AI Agent phân loại sơ bộ (procedure, vendor_document, form_checklist, faq_troubleshooting).</li>
+                    <li><strong>Chuyển đổi MinerU:</strong> Chuyển đổi PDF, XLSX, DOCX thô thành Markdown tại <code>normalized/</code> và trích xuất cấu trúc bảng biểu, hình ảnh, model/middle layout JSON.</li>
+                    <li><strong>Kiểm định QA:</strong> Chạy <code>qa_source_output()</code> đánh giá mojibake, độ phủ từ vựng, tính trích xuất bước thủ tục. Nếu lỗi, chuyển sang trạng thái sửa đổi.</li>
+                    <li><strong>Đóng gói RAG-Ready:</strong> Tạo manifest liên kết dòng Markdown với bounding boxes/tọa độ trang MinerU và lưu bản ghi dưới dạng <code>pending_review</code>.</li>
+                  </ul>
+                </div>
+
+                <div id="arch-query-desc" class="arch-desc-pane">
+                  <h3>Xử lý Hỏi-Đáp & Định tuyến</h3>
+                  <p>Các bước xử lý tuần tự khi nhận được truy vấn từ người dùng:</p>
+                  <ul class="arch-list">
+                    <li><strong>Nhận diện Ý đồ & Style:</strong> Xác định style hiển thị câu hỏi (brief, steps, checklist, workflow) và phân tích phòng ban/danh mục mục tiêu.</li>
+                    <li><strong>Bộ lọc Ngoài Phạm vi:</strong> Kiểm tra câu hỏi ngoài phạm vi nghiệp vụ kỹ thuật thông qua heuristic bộ lọc <code>is_out_of_scope_query()</code> để chặn câu hỏi rác.</li>
+                    <li><strong>Catalog Fallback:</strong> Nếu hỏi danh sách quy trình, hệ thống dùng <code>build_catalog_answer()</code> trả về danh sách có định dạng không cần đi qua LLM.</li>
+                    <li><strong>Định tuyến (Routing):</strong> Định tuyến giữa RAGFlow API (HTTP REST) hoặc Local Search Index (BM25 + Heuristics cục bộ).</li>
+                  </ul>
+                </div>
+
+                <div id="arch-scoring-desc" class="arch-desc-pane">
+                  <h3>Thuật toán & Chấm điểm RAG</h3>
+                  <p>Cơ chế tìm kiếm cục bộ và hiệu chỉnh điểm số thông minh của <code>LocalRagIndex.search()</code>:</p>
+                  <ul class="arch-list">
+                    <li><strong>Điểm số thô:</strong> <code>(Title_overlap * 4) + Text_overlap</code> dựa trên Meaningful Terms của truy vấn.</li>
+                    <li><strong>Mã tài liệu Boost (+250):</strong> Ưu tiên tuyệt đối khi truy vấn khớp chính xác mã hiển thị (như <code>PD-TECH-A-01</code>).</li>
+                    <li><strong>Hiệu chỉnh ý đồ:</strong> Boost mạnh khi khớp ý định tìm kiếm (như <code>mục đích</code>, <code>bảo dưỡng</code>, <code>CCDC</code>, <code>chứng chỉ</code>, <code>biểu mẫu</code>, <code>hồ sơ</code>) từ +40 đến +85 điểm.</li>
+                    <li><strong>Phạt nhiễu & Lịch sử sửa đổi (-30):</strong> Giảm điểm các chunk chứa bảng chỉnh sửa, thông tin rác hoặc text OCR chất lượng thấp.</li>
+                    <li><strong>Lọc tự tin & Focus:</strong> Chỉ giữ các chunk có điểm >= 8 và tập trung kết quả vào tài liệu có độ khớp cao nhất để tránh trộn lẫn nội dung.</li>
+                  </ul>
+                </div>
+
+                <div id="arch-agent-desc" class="arch-desc-pane">
+                  <h3>Luồng Vận Hành Tác Nhân AI</h3>
+                  <p>Mô hình trạng thái và các tác nhân tự động chạy ngầm trong hệ thống:</p>
+                  <ul class="arch-list">
+                    <li><strong>Quản lý Handoff Contract:</strong> Hệ thống lưu nhật ký chuyển tiếp tại <code>handoffs.jsonl</code>, đảm bảo tính tuần tự nghiêm ngặt (plan -> convert -> audit -> index -> evolve).</li>
+                    <li><strong>Tự Động Sửa Lỗi (Repair Loop):</strong> Nếu bước <code>audit</code> bị gắn mác <code>needs_repair</code>, tác nhân sửa lỗi tự động được kích hoạt để khắc phục Markdown lỗi.</li>
+                    <li><strong>Human Review Gate:</strong> Sau khi đóng gói RAG-ready, tài liệu ở trạng thái <code>pending_review</code> chờ Quản trị viên duyệt checklist nghiệp vụ trên Dashboard để đổi thành <code>active</code>.</li>
+                    <li><strong>Tái tạo chỉ mục:</strong> Phê duyệt kích hoạt <code>approve_record()</code>, lưu trữ phiên bản cũ (archived/retired) và tái tạo cơ sở dữ liệu tìm kiếm cục bộ.</li>
+                  </ul>
+                </div>
+              </div>
+            </section>
           </div>
 
           <section class="panel">

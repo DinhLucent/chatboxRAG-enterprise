@@ -7596,7 +7596,7 @@ const MERMAID_DIAGRAMS = {
     QA -->|Đạt / Pass| PKG["build_rag_ready_package"]
     PKG -->|Tạo manifest| STG["staging/ (pending_review)"]
     STG -->|Human review checklist| APP["approve_record()"]
-    APP -->|Trạng thái Active| IDX["Local JSONL index & RAGFlow sync"]
+    APP -->|Trạng thái Active| IDX["Local JSONL index và RAGFlow sync"]
     REP -->|Tác nhân AI sửa đổi| PROC
 
     style IN fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1e40af
@@ -7611,7 +7611,7 @@ const MERMAID_DIAGRAMS = {
 
   query: `flowchart TD
     Q["Câu hỏi (User query)"] -->|infer_query_style| STY["Ý định style (brief/steps/checklist/workflow)"]
-    STY -->|infer_dept & infer_category| INT["Phân tích ngữ cảnh câu hỏi"]
+    STY -->|infer_dept và infer_category| INT["Phân tích ngữ cảnh câu hỏi"]
     INT -->|is_out_of_scope_query| SCO{"Thuộc phạm vi?"}
     SCO -->|Không| GAP["Không có căn cứ + Tạo knowledge_gap"]
     SCO -->|Có| CAT{"Hỏi danh mục?"}
@@ -7620,7 +7620,7 @@ const MERMAID_DIAGRAMS = {
     ROUTE -->|KnowledgeCore| RAG["answer_with_ragflow()"]
     ROUTE -->|Local search| LOC["LocalRagIndex.search()"]
     RAG -->|Lỗi API| LOC
-    LOC -->|Confident filter >= 8 & focus| GEN{"Sinh câu trả lời"}
+    LOC -->|Confident filter >= 8 và focus| GEN{"Sinh câu trả lời"}
     GEN -->|use_llm=true| LLM["OpenAICompatibleClient.answer()"]
     GEN -->|use_llm=false / LLM error| DETERMINISTIC["build_answer()"]
     LLM -->|Clean markup retry| OUT["Đáp án hiển thị"]
@@ -7676,7 +7676,7 @@ const MERMAID_DIAGRAMS = {
     AUD -->|passed| IDX["5. Step Index (next_skill: data-skill-evolution)"]
     IDX -->|passed| EVOL["6. Step Evolve (next_skill: None)"]
     EVOL -->|Lưu pending_review| REV["Human Review Gate (Phê duyệt thủ công)"]
-    REV -->|Duyệt / approve_record()| ACT["7. Active & Rebuild Index cục bộ"]
+    REV -->|Duyệt / approve_record| ACT["7. Active và Rebuild Index cục bộ"]
 
     style PLAN fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1e40af
     style CONV fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1e40af
