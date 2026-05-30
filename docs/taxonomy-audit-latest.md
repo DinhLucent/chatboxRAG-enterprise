@@ -1,8 +1,8 @@
 # Taxonomy Audit Latest
 
-- Generated: `2026-05-28T03:48:25+00:00`
+- Generated: `2026-05-29T18:17:42+00:00`
 - Statuses: `active, pending_review`
-- Scanned records: `151`
+- Scanned records: `149`
 - Issues: `0`
 
 ## Issues

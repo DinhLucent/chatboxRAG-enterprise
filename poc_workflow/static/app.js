@@ -7568,172 +7568,124 @@ let currentArchZoom = 100;
 
 const MERMAID_DIAGRAMS = {
 
-  runtime: `flowchart LR
-
-    U["Người dùng nội bộ"] -->|Hỏi đáp quy trình| WEB["Dashboard UI<br/>(Application API + static UI)"]
-
-    WEB -->|Gọi API| APP["Workflow API<br/>(Port :8088)"]
-
-    APP -->|Truy xuất hiệu lực| RET["Tầng truy xuất (Retrieval)"]
-
-    RET -->|Dự phòng cục bộ| LOCAL["Index JSONL cục bộ<br/>(ragflow_index/)"]
-
-    RET -->|Truy xuất chính| RAG["KnowledgeCore technical_active<br/>(Port :9380)"]
-
-    APP -->|Gửi Context + Câu hỏi| LLM["OpenAI-compatible LLM"]
-
-    LLM -->|Cổng điều hướng| FREE["LLM Gateway<br/>(Port :3001)"]
-
-    FREE -->|Miễn phí / Demo| P1["Pollinations / LLM7"]
-
-    FREE -->|API Keys cá nhân| P2["Google / Groq / OpenRouter"]
-
-    APP -->|Lưu nhật ký và gap| QDB["SQLite quality.db<br/>(data/poc_quality.db)"]
-
-    APP -->|Trả về đáp án + nguồn| UI["Đáp án có trích dẫn nguồn"]
-
-    UI --> U
-
-
+  runtime: `flowchart TD
+    U["Người dùng nội bộ"] -->|HTTPS Tunnel| B["Vercel Proxy / UI"]
+    B -->|X-KB-Token Auth| APP["Workflow Backend (:8088)"]
+    APP -->|Truy xuất hiệu lực| RET["Tầng Retrieval"]
+    RET -->|Đồng bộ chính| RAG["KnowledgeCore (:9380)"]
+    RET -->|Dự phòng cục bộ| LOCAL["Local JSONL Index"]
+    APP -->|LLM API| GATE["LLM Gateway (:3001)"]
+    GATE -->|Demo / Personal| LLM["OpenAI-Compatible Models"]
+    APP -->|Lưu nhật ký / Gap| DB[("poc_quality.db (SQLite)")]
 
     style U fill:#f9fafb,stroke:#d1d5db,stroke-width:2px,color:#111827
-
-    style WEB fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0369a1
-
-    style APP fill:#e6fffa,stroke:#0f766e,stroke-width:2px,color:#0b5f59
-
-    style RET fill:#fef9c3,stroke:#ca8a04,stroke-width:2px,color:#854d0e
-
+    style B fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1e40af
+    style APP fill:#ecfeff,stroke:#06b6d4,stroke-width:2px,color:#0891b2
+    style RET fill:#fff7ed,stroke:#f97316,stroke-width:2px,color:#c2410c
     style LOCAL fill:#f3f4f6,stroke:#9ca3af,stroke-width:2px,color:#4b5563
-
-    style RAG fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#166534
-
-    style LLM fill:#f3e8ff,stroke:#7e22ce,stroke-width:2px,color:#6b21a8
-
-    style FREE fill:#fae8ff,stroke:#c026d3,stroke-width:2px,color:#86198f
-
-    style QDB fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#991b1b
-
-    style UI fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0369a1`,
-
-
+    style RAG fill:#ecfdf5,stroke:#10b981,stroke-width:2px,color:#047857
+    style GATE fill:#faf5ff,stroke:#a855f7,stroke-width:2px,color:#6b21a8
+    style LLM fill:#faf5ff,stroke:#a855f7,stroke-width:2px,color:#6b21a8
+    style DB fill:#fee2e2,stroke:#ef4444,stroke-width:2px,color:#991b1b`,
 
   ingestion: `flowchart TD
+    IN["Nhập tài liệu (inbox/)"] -->|AI classification| PROC[".Workplace/processing/"]
+    PROC -->|MinerU convert| NORM["normalized/ (*.md)"]
+    NORM -->|QA check: qa_source_output| QA{"Quality Gate?"}
+    QA -->|Lỗi / Fail| REP["Needs Repair / Failed review"]
+    QA -->|Đạt / Pass| PKG["build_rag_ready_package"]
+    PKG -->|Tạo manifest| STG["staging/ (pending_review)"]
+    STG -->|Human review checklist| APP["approve_record()"]
+    APP -->|Trạng thái Active| IDX["Local JSONL index & RAGFlow sync"]
+    REP -->|Tác nhân AI sửa đổi| PROC
 
-    A["Tài liệu tải lên / Drop vào inbox/"] -->|Quét thư mục| B["AI Agent chuẩn hóa (Ingest)"]
+    style IN fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1e40af
+    style PROC fill:#faf5ff,stroke:#a855f7,stroke-width:2px,color:#6b21a8
+    style NORM fill:#ecfeff,stroke:#06b6d4,stroke-width:2px,color:#0891b2
+    style QA fill:#fff7ed,stroke:#f97316,stroke-width:2px,color:#c2410c
+    style REP fill:#fee2e2,stroke:#ef4444,stroke-width:2px,color:#991b1b
+    style PKG fill:#ecfdf5,stroke:#10b981,stroke-width:2px,color:#047857
+    style STG fill:#fff7ed,stroke:#f97316,stroke-width:2px,color:#c2410c
+    style APP fill:#ecfdf5,stroke:#10b981,stroke-width:2px,color:#047857
+    style IDX fill:#ecfdf5,stroke:#10b981,stroke-width:2px,color:#047857`,
 
-    B -->|Tạo metadata thô| C["Lưu source/ & metadata.json"]
+  query: `flowchart TD
+    Q["Câu hỏi (User query)"] -->|infer_query_style| STY["Ý định style (brief/steps/checklist/workflow)"]
+    STY -->|infer_dept & infer_category| INT["Phân tích ngữ cảnh câu hỏi"]
+    INT -->|is_out_of_scope_query| SCO{"Thuộc phạm vi?"}
+    SCO -->|Không| GAP["Không có căn cứ + Tạo knowledge_gap"]
+    SCO -->|Có| CAT{"Hỏi danh mục?"}
+    CAT -->|Đúng| CAT_ANS["build_catalog_answer()"]
+    CAT -->|Sai| ROUTE{"Định tuyến?"}
+    ROUTE -->|KnowledgeCore| RAG["answer_with_ragflow()"]
+    ROUTE -->|Local search| LOC["LocalRagIndex.search()"]
+    RAG -->|Lỗi API| LOC
+    LOC -->|Confident filter >= 8 & focus| GEN{"Sinh câu trả lời"}
+    GEN -->|use_llm=true| LLM["OpenAICompatibleClient.answer()"]
+    GEN -->|use_llm=false / LLM error| DETERMINISTIC["build_answer()"]
+    LLM -->|Clean markup retry| OUT["Đáp án hiển thị"]
+    DETERMINISTIC --> OUT
+    CAT_ANS --> OUT
 
-    C -->|Số hóa tài liệu| D["HyperScribeModel OCR (Port :8010)<br/>hoặc Native Parser"]
+    style Q fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1e40af
+    style STY fill:#ecfeff,stroke:#06b6d4,stroke-width:2px,color:#0891b2
+    style INT fill:#ecfeff,stroke:#06b6d4,stroke-width:2px,color:#0891b2
+    style SCO fill:#fff7ed,stroke:#f97316,stroke-width:2px,color:#c2410c
+    style GAP fill:#fee2e2,stroke:#ef4444,stroke-width:2px,color:#991b1b
+    style CAT fill:#fff7ed,stroke:#f97316,stroke-width:2px,color:#c2410c
+    style CAT_ANS fill:#ecfdf5,stroke:#10b981,stroke-width:2px,color:#047857
+    style ROUTE fill:#faf5ff,stroke:#a855f7,stroke-width:2px,color:#6b21a8
+    style RAG fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1e40af
+    style LOC fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1e40af
+    style GEN fill:#faf5ff,stroke:#a855f7,stroke-width:2px,color:#6b21a8
+    style LLM fill:#faf5ff,stroke:#a855f7,stroke-width:2px,color:#6b21a8
+    style DETERMINISTIC fill:#f3f4f6,stroke:#9ca3af,stroke-width:2px,color:#4b5563
+    style OUT fill:#ecfdf5,stroke:#10b981,stroke-width:2px,color:#047857`,
 
-    D -->|Lưu trữ văn bản| E["Thư mục normalized/ (Markdown/JSON)"]
+  scoring: `flowchart TD
+    Q["meaningful_terms(query)"] -->|Trùng khớp từ vựng| RAW["Điểm thô = Title_overlap * 4 + Text_overlap"]
+    RAW -->|Khớp mã tài liệu display_code| BOOST["Cộng điểm cực lớn +250"]
+    BOOST -->|Heuristic adjustments| ADJ["Điểm hiệu chỉnh (Heuristics)"]
+    ADJ -->|Ý đồ câu hỏi: mục đích, phạm vi, trách nhiệm| INTENT["Cộng +40 đến +85 điểm"]
+    ADJ -->|Chủ đề lắp đặt, bảo dưỡng, sửa chữa| TOPIC["Cộng +55 điểm (Trừ 55 nếu lệch)"]
+    ADJ -->|OCR bẩn, lịch sử sửa đổi, danh sách tắt| NOISE["Trừ 30 điểm (Phạt nhiễu)"]
+    ADJ -->|Trang cấu trúc bước, bảng biểu STT 1| STRUCT["Cộng +35 đến +95 điểm"]
+    ADJ -->|Định dạng tệp tin: PDF / XLSX| FILE["Cộng +18 / +14 / -18 điểm"]
+    INTENT & TOPIC & NOISE & STRUCT & FILE --> TOTAL["Tổng điểm chunk"]
+    TOTAL -->|Confident check: điểm >= 8| FLTR["Lọc SearchHit tự tin"]
+    FLTR -->|Focus check: gom nhóm cùng mã tài liệu| FINAL["Tập hợp chunks tốt nhất"]
 
-    E -->|Kiểm định 3 lớp| F["Validation Quality Gate (taxonomy, version, schema)"]
+    style Q fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1e40af
+    style RAW fill:#ecfeff,stroke:#06b6d4,stroke-width:2px,color:#0891b2
+    style BOOST fill:#ecfdf5,stroke:#10b981,stroke-width:2px,color:#047857
+    style ADJ fill:#faf5ff,stroke:#a855f7,stroke-width:2px,color:#6b21a8
+    style INTENT fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1e40af
+    style TOPIC fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1e40af
+    style NOISE fill:#fee2e2,stroke:#ef4444,stroke-width:2px,color:#991b1b
+    style STRUCT fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1e40af
+    style FILE fill:#f3f4f6,stroke:#9ca3af,stroke-width:2px,color:#4b5563
+    style TOTAL fill:#faf5ff,stroke:#a855f7,stroke-width:2px,color:#6b21a8
+    style FLTR fill:#fff7ed,stroke:#f97316,stroke-width:2px,color:#c2410c
+    style FINAL fill:#ecfdf5,stroke:#10b981,stroke-width:2px,color:#047857`,
 
-    F -->|Đưa vào hàng chờ| G["Trạng thái pending_review"]
+  agent: `flowchart TD
+    PLAN["1. Step Plan (next_skill: mineru-source-converter)"] -->|passed| CONV["2. Step Convert (next_skill: source-output-quality-auditor)"]
+    CONV -->|passed| AUD["3. Step Audit (Quality Gate check)"]
+    AUD -->|needs_repair| REP["4. Step Repair (next_skill: rag-markdown-repairer)"]
+    REP -->|passed| AUD
+    AUD -->|passed| IDX["5. Step Index (next_skill: data-skill-evolution)"]
+    IDX -->|passed| EVOL["6. Step Evolve (next_skill: None)"]
+    EVOL -->|Lưu pending_review| REV["Human Review Gate (Phê duyệt thủ công)"]
+    REV -->|Duyệt / approve_record()| ACT["7. Active & Rebuild Index cục bộ"]
 
-    G -->|Đánh giá thủ công| H{"Hội đồng duyệt duyệt?"}
-
-    H -->|Phê duyệt| I["Trạng thái active (Hiệu lực)"]
-
-    H -->|Từ chối| J["Trạng thái failed_review"]
-
-    I -->|Cập nhật cache| K["Index JSONL cục bộ<br/>(ragflow_index/)"]
-
-    I -->|Đồng bộ dataset| L["KnowledgeCore dataset sync<br/>(Port :9380)"]
-
-    I -->|Lưu trữ lịch sử| M["Lưu trữ phiên bản cũ (archived/retired)"]
-
-    J --> B
-
-
-
-    style A fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0369a1
-
-    style B fill:#e6fffa,stroke:#0f766e,stroke-width:2px,color:#0b5f59
-
-    style D fill:#f3e8ff,stroke:#7e22ce,stroke-width:2px,color:#6b21a8
-
-    style F fill:#fef9c3,stroke:#ca8a04,stroke-width:2px,color:#854d0e
-
-    style H fill:#fef08a,stroke:#eab308,stroke-width:2px,color:#854d0e
-
-    style I fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#166534
-
-    style J fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#991b1b`,
-
-
-
-  query: `sequenceDiagram
-    autonumber
-    actor User as Người dùng
-    participant UI as Giao diện Dashboard
-    participant Agent as Trợ lý AI Agent
-    participant Retrieval as Bộ phận Tìm kiếm
-    participant LLM as Trí tuệ Nhân tạo (LLM)
-    participant DB as Nhật ký Hệ thống
-
-    User->>UI: Đặt câu hỏi quy trình kỹ thuật
-    UI->>Agent: Yêu cầu xử lý câu hỏi
-    
-    Note over Agent: Bước 1: Bộ lọc Phạm vi (Scope Guard)<br/>Chặn các câu hỏi không liên quan
-    
-    Agent->>LLM: Bước 2: Phân tích Ý định & Thực thể<br/>(Nếu thiếu thông tin, yêu cầu bổ sung)
-    LLM-->>Agent: Trả về kết quả phân tích
-    
-    Agent->>Retrieval: Bước 3: Lập kế hoạch Tìm kiếm & Truy xuất<br/>(Chỉ tìm tài liệu đang có hiệu lực)
-    Retrieval-->>Agent: Trả về các đoạn tài liệu nguồn liên quan
-    
-    Agent->>LLM: Bước 4: Trích xuất Bằng chứng & Soạn thảo<br/>(Tạo bản nháp theo định dạng phù hợp)
-    LLM-->>Agent: Trả về bản nháp có cấu trúc
-    
-    Agent->>LLM: Bước 5: Kiểm duyệt & Thẩm định chéo<br/>(Verifier & Critic & Compliance Check)
-    Note over Agent, LLM: Đảm bảo mọi ý kiến đều có dẫn nguồn,<br/>đúng số bước quy trình và không bịa đặt.
-    LLM-->>Agent: Phê duyệt / Sửa đổi câu trả lời
-    
-    Agent->>DB: Ghi nhận nhật ký & Đánh giá chất lượng
-    Agent-->>UI: Trả về câu trả lời có cấu trúc và dẫn nguồn
-    UI-->>User: Hiển thị câu trả lời trực quan (Các bước, cảnh báo, nguồn)`,
-
-
-
-  security: `flowchart LR
-
-    subgraph PUBLIC["Lớp Công Cộng (Public Demo)"]
-
-        A["Trình duyệt người dùng"] -->|HTTPS / API Token| B["Vercel API Proxy"]
-
-    end
-
-    subgraph TUNNEL["Đường Truyền Bảo Mật"]
-
-        B -->|Secure HTTPS Tunnel| C["Localtunnel / Cloudflare Tunnel"]
-
-    end
-
-    subgraph LOCAL["Lớp Nội Bộ (Local Server Machine)"]
-
-        C -->|X-KB-Token Auth| D["Application Backend (Port :8088)"]
-
-        D -->|Đọc file| E["Thư mục normalized/ & manifest/"]
-
-        D -->|Lưu logs| F["SQLite data/poc_quality.db"]
-
-    end
-
-
-
-    style A fill:#f9fafb,stroke:#d1d5db,stroke-width:2px,color:#111827
-
-    style B fill:#e0f2fe,stroke:#0284c7,stroke-width:2px,color:#0369a1
-
-    style C fill:#fae8ff,stroke:#c026d3,stroke-width:2px,color:#86198f
-
-    style D fill:#e6fffa,stroke:#0f766e,stroke-width:2px,color:#0b5f59
-
-    style E fill:#dcfce7,stroke:#15803d,stroke-width:2px,color:#166534
-
-    style F fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#991b1b`
+    style PLAN fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1e40af
+    style CONV fill:#eff6ff,stroke:#3b82f6,stroke-width:2px,color:#1e40af
+    style AUD fill:#fff7ed,stroke:#f97316,stroke-width:2px,color:#c2410c
+    style REP fill:#fee2e2,stroke:#ef4444,stroke-width:2px,color:#991b1b
+    style IDX fill:#ecfdf5,stroke:#10b981,stroke-width:2px,color:#047857
+    style EVOL fill:#ecfdf5,stroke:#10b981,stroke-width:2px,color:#047857
+    style REV fill:#fef9c3,stroke:#eab308,stroke-width:2px,color:#854d0e
+    style ACT fill:#ecfdf5,stroke:#10b981,stroke-width:2px,color:#047857`
 
 };
 

@@ -1545,6 +1545,7 @@ def deterministic_evidence_pack(chunks: list[EvidenceChunk], retrieval_plan: dic
                 "source_status": chunk.status or "active",
                 "source_role": chunk.source_role,
                 "chunk_id": chunk.chunk_id,
+                "display_code": chunk.display_code or "",
             }
         )
     return {
@@ -1583,6 +1584,7 @@ def normalize_evidence_pack(
                 "source_status": chunk.status or "active",
                 "source_role": chunk.source_role,
                 "chunk_id": chunk.chunk_id,
+                "display_code": chunk.display_code or "",
             }
         )
     if not claims:
@@ -2083,42 +2085,75 @@ def normalize_answer_list(value: Any) -> list[dict[str, str]]:
 
 def normalize_answer_sources(value: Any, claims: list[dict[str, Any]]) -> list[dict[str, str]]:
     sources: list[dict[str, str]] = []
+    seen = set()
     if isinstance(value, list):
         for item in value:
             if not isinstance(item, dict):
                 continue
+            doc_id = str(item.get("doc_id") or "").strip()
+            version = str(item.get("version") or "").strip()
+            if not doc_id:
+                continue
+            key = (doc_id, version)
+            if key in seen:
+                continue
+            seen.add(key)
+            display_code = str(item.get("display_code") or "").strip()
+            display_version = str(item.get("display_version") or "").strip()
+            title = clean_excerpt(item.get("title") or "", max_chars=180)
+            for claim in claims:
+                if str(claim.get("doc_id")) == doc_id and str(claim.get("version")) == version:
+                    if not display_code and claim.get("display_code"):
+                        display_code = str(claim.get("display_code"))
+                    if not display_version and claim.get("display_version"):
+                        display_version = str(claim.get("display_version"))
+                    if not title and claim.get("title"):
+                        title = clean_excerpt(claim.get("title"), max_chars=180)
+                    break
             sources.append(
                 {
-                    "doc_id": str(item.get("doc_id") or ""),
-                    "version": str(item.get("version") or ""),
-                    "display_code": str(item.get("display_code") or ""),
-                    "display_version": str(item.get("display_version") or ""),
-                    "title": clean_excerpt(item.get("title") or "", max_chars=180),
+                    "doc_id": doc_id,
+                    "version": version,
+                    "display_code": display_code,
+                    "display_version": display_version,
+                    "title": title,
                     "locator": str(item.get("locator") or item.get("citation") or ""),
                 }
             )
-    seen = {(source["doc_id"], source["version"]) for source in sources}
     for claim in claims:
-        key = (str(claim.get("doc_id") or ""), str(claim.get("version") or ""))
-        if not key[0] or key in seen:
+        doc_id = str(claim.get("doc_id") or "").strip()
+        version = str(claim.get("version") or "").strip()
+        if not doc_id:
             continue
+        key = (doc_id, version)
+        if key in seen:
+            continue
+        seen.add(key)
         sources.append(
             {
-                "doc_id": key[0],
-                "version": key[1],
-                "display_code": "",
-                "display_version": "",
-                "title": clean_excerpt(claim.get("title") or key[0], max_chars=180),
+                "doc_id": doc_id,
+                "version": version,
+                "display_code": str(claim.get("display_code") or ""),
+                "display_version": str(claim.get("display_version") or ""),
+                "title": clean_excerpt(claim.get("title") or doc_id, max_chars=180),
                 "locator": str(claim.get("citation") or ""),
             }
         )
-        seen.add(key)
     return sources[:10]
 
 
 def render_structured_answer(answer: dict[str, Any]) -> str:
     markdown = str(answer.get("markdown") or "").strip()
+    sources = answer.get("sources") if isinstance(answer.get("sources"), list) else []
     if markdown:
+        has_sources_in_md = "nguồn:" in markdown.lower() or "nguon:" in markdown.lower()
+        if sources and not has_sources_in_md:
+            source_lines = ["", "Nguồn:"]
+            for source in sources:
+                label = source.get("display_code") or source.get("doc_id")
+                version = source.get("display_version") or ("v" + str(source.get("version") or ""))
+                source_lines.append(f"- {label} {version}".strip())
+            markdown += "\n" + "\n".join(source_lines)
         return markdown
     lines: list[str] = []
     title = str(answer.get("title") or "").strip()
@@ -2145,7 +2180,6 @@ def render_structured_answer(answer: dict[str, Any]) -> str:
         for item in items:
             detail = f": {item.get('detail')}" if item.get("detail") else ""
             lines.append(f"- {item.get('label')}{detail}")
-    sources = answer.get("sources") if isinstance(answer.get("sources"), list) else []
     if sources:
         lines.append("Nguồn:")
         for source in sources:
@@ -2350,12 +2384,17 @@ def deterministic_critic(answer: str, evidence_items: list[Any]) -> dict[str, An
     for item in evidence_items:
         if isinstance(item, EvidenceChunk):
             marker = item.doc_id
+            disp = item.display_code
         elif isinstance(item, dict):
             marker = str(item.get("doc_id") or "")
+            disp = str(item.get("display_code") or "")
         else:
             marker = ""
+            disp = ""
         if marker:
             source_markers.append(marker)
+        if disp:
+            source_markers.append(disp)
     if not any(marker in answer for marker in source_markers):
         return {
             "decision": "retrieve_more",
@@ -2438,9 +2477,18 @@ def procedure_compliance_check(
 
 def deterministic_procedure_compliance(answer: str, evidence_pack: dict[str, Any]) -> dict[str, Any]:
     claims = [item for item in evidence_pack.get("verified_evidence") or [] if isinstance(item, dict)]
-    doc_ids = {str(item.get("doc_id") or "") for item in claims if item.get("doc_id")}
-    cited = sum(1 for doc_id in doc_ids if doc_id and doc_id in answer)
-    coverage = cited / max(len(doc_ids), 1)
+    doc_to_codes = {}
+    for item in claims:
+        doc_id = str(item.get("doc_id") or "")
+        display_code = str(item.get("display_code") or "")
+        if doc_id:
+            if doc_id not in doc_to_codes:
+                doc_to_codes[doc_id] = set()
+            doc_to_codes[doc_id].add(doc_id)
+            if display_code:
+                doc_to_codes[doc_id].add(display_code)
+    cited = sum(1 for doc_id, codes in doc_to_codes.items() if any(code in answer for code in codes))
+    coverage = cited / max(len(doc_to_codes), 1)
     conflicts = normalize_string_list(evidence_pack.get("conflicts"))
     missing = normalize_string_list(evidence_pack.get("missing_evidence"))
     must_fix = []

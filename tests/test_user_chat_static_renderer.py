@@ -181,8 +181,8 @@ def test_user_chat_structured_renderer_links_sources_and_quality_summary() -> No
 
         if (!answerHtml.includes('data-contract="answer_blocks.v1"')) throw new Error('missing block contract');
         if (!answerHtml.includes('answer-block checklist')) throw new Error('missing checklist block');
-        if (!answerHtml.includes('answer-source-link')) throw new Error('missing answer source link');
-        if (!answerHtml.includes('data-citation-index="0"')) throw new Error('missing citation index');
+        if (answerHtml.includes('answer-source-link')) throw new Error('chat answer must not embed source links');
+        if (answerHtml.includes('structured-sources')) throw new Error('chat answer must not embed a sources section');
         if (!decisionHtml.includes('answer-block decision-matrix')) throw new Error('missing decision matrix block');
         if (!decisionHtml.includes('answer-block clarification')) throw new Error('missing clarification block');
         if (!tableHtml.includes('markdown-table')) throw new Error('missing markdown table fallback');

@@ -683,8 +683,7 @@ a:focus-visible {
 
 .structured-timeline ol,
 .structured-checklist ol,
-.structured-block ul,
-.structured-sources ul {
+.structured-block ul {
   display: grid;
   gap: 8px;
   margin: 8px 0 0;
@@ -724,8 +723,7 @@ a:focus-visible {
 
 .structured-timeline p,
 .structured-checklist p,
-.structured-block li,
-.structured-sources li {
+.structured-block li {
   margin: 3px 0 0;
 }
 
