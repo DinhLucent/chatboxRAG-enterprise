@@ -109,14 +109,15 @@ Các nhóm tùy chọn được nghiên cứu và đưa vào diện đánh giá:
 
 #### Acceptance Criteria
 
-1. WHILE một phiên hội thoại đang hoạt động VÀ Session_Manager được bật, THE LLM_Router SHALL ghim cùng một model cho phiên đó trong khoảng thời gian cấu hình (mặc định ~30 phút).
-2. WHEN model đang ghim cho một phiên thất bại hoặc hết hạn mức, THE LLM_Router SHALL chuyển sang model kế tiếp trong chuỗi failover và cập nhật model ghim của phiên.
+1. WHERE Session_Manager được bật, WHILE một phiên hội thoại đang hoạt động, THE LLM_Router SHALL ghim cùng một model cho phiên đó kể từ lời gọi thành công đầu tiên trong khoảng thời gian cấu hình (mặc định 1800 giây, phạm vi cấu hình 60–86400 giây).
+2. WHEN model đang ghim cho một phiên rơi vào cooldown (theo tiêu chí 4 hoặc 5) hoặc cửa sổ ghim của phiên hết hạn, THE LLM_Router SHALL chuyển sang model kế tiếp trong chuỗi failover và cập nhật model ghim của phiên.
 3. THE Rate_Ledger SHALL theo dõi mức sử dụng per-key theo RPM, RPD, TPM, và TPD.
-4. IF một key đạt bất kỳ hạn mức nào trong RPM/RPD/TPM/TPD, THEN THE LLM_Router SHALL đưa key đó vào trạng thái cooldown và định tuyến sang key hoặc model kế tiếp khả dụng.
-5. WHEN một nhà cung cấp trả về lỗi 429, lỗi 5xx, hoặc timeout, THE LLM_Router SHALL áp dụng cooldown cho mục tiêu đó rồi thử mục tiêu kế tiếp trong chuỗi failover.
-6. THE LLM_Router SHALL giữ một primary trả phí ở đầu chuỗi failover làm mặc định chất lượng, với các nhà cung cấp tier miễn phí ở phía dưới.
+4. IF mức sử dụng của một key đạt hoặc vượt bất kỳ hạn mức nào trong RPM/RPD/TPM/TPD, THEN THE LLM_Router SHALL đưa key đó vào trạng thái cooldown (mặc định 60 giây) và định tuyến sang key hoặc model kế tiếp khả dụng.
+5. WHEN một nhà cung cấp trả về lỗi 429, lỗi 5xx, hoặc không phản hồi trong ngưỡng timeout cấu hình (mặc định 30 giây), THE LLM_Router SHALL áp dụng cooldown (mặc định 60 giây) cho mục tiêu đó rồi thử mục tiêu kế tiếp trong chuỗi failover.
+6. THE LLM_Router SHALL duyệt các mục tiêu trong chuỗi failover theo đúng thứ tự ưu tiên đã cấu hình, với một primary trả phí ở đầu chuỗi làm mặc định chất lượng và các nhà cung cấp tier miễn phí ở phía dưới.
 7. THE LLM_Router SHALL phơi bày một điểm vào (endpoint) OpenAI-compatible hợp nhất để gọi failover, tương thích với `OpenAICompatibleClient` hiện có.
-8. THE Rate_Ledger SHALL lưu trữ khóa nhà cung cấp ở dạng mã hóa và SHALL KHÔNG ghi giá trị khóa ra log hoặc phản hồi.
+8. THE Rate_Ledger SHALL lưu trữ khóa nhà cung cấp ở dạng mã hóa và SHALL chỉ tham chiếu khóa bằng định danh đã che (masked), SHALL KHÔNG ghi giá trị khóa nguyên bản ra log hoặc phản hồi.
+9. IF mọi mục tiêu trong chuỗi failover đều ở trạng thái cooldown hoặc thất bại cho một lời gọi, THEN THE LLM_Router SHALL trả về một lỗi rõ ràng cho bên gọi, SHALL KHÔNG trả về câu trả lời rỗng hoặc bịa đặt, và SHALL giữ nguyên trạng thái model ghim của phiên.
 
 ### Requirement 6: Quản trị đánh giá tùy chọn và degrade gracefully (P1 - xuyên suốt)
 
@@ -124,11 +125,12 @@ Các nhóm tùy chọn được nghiên cứu và đưa vào diện đánh giá:
 
 #### Acceptance Criteria
 
-1. THE Feature_Flag_Manager SHALL cung cấp một cờ cấu hình độc lập cho mỗi tùy chọn đang đánh giá: Turbovec_Retriever, Reasoning_Retrieval_Layer, OCR_Fallback, Call_Chain_Logger, và các mẫu hình freellmapi (Session_Manager, Rate_Ledger).
-2. WHERE tất cả cờ tùy chọn ở trạng thái tắt, THE RAG_Engine SHALL vận hành giống hệt Production_Core đã định nghĩa ở spec 001.
-3. IF một thành phần tùy chọn thất bại tại runtime, THEN THE RAG_Engine SHALL quay về hành vi của Production_Core và tiếp tục phục vụ truy vấn.
-4. THE Benchmark_Harness SHALL tạo báo cáo so sánh mỗi tùy chọn với Production_Core baseline trên Golden_Query_Set hoặc Hard_Question_Set tương ứng trước khi tùy chọn được đề xuất làm mặc định.
-5. WHEN một tùy chọn được đề xuất chuyển thành mặc định sản xuất, THE Benchmark_Harness SHALL cung cấp số liệu cho thấy tùy chọn đó không làm giảm độ chính xác câu trả lời, độ phủ trích dẫn, hoặc độ trễ so với baseline.
+1. THE Feature_Flag_Manager SHALL cung cấp một cờ cấu hình độc lập, mặc định TẮT, cho mỗi tùy chọn đang đánh giá: Turbovec_Retriever, Reasoning_Retrieval_Layer, OCR_Fallback, Call_Chain_Logger, Session_Manager, và Rate_Ledger.
+2. WHERE tất cả cờ tùy chọn ở trạng thái tắt, THE RAG_Engine SHALL trả về câu trả lời và trích dẫn giống hệt Production_Core trên toàn bộ Golden_Query_Set và SHALL vượt qua bộ kiểm thử hồi quy của Production_Core mà không có sai khác.
+3. IF một thành phần tùy chọn ném ngoại lệ không xử lý được hoặc vượt ngưỡng thời gian cấu hình (mặc định 10 giây) tại runtime, THEN THE RAG_Engine SHALL quay về hành vi của Production_Core, trả về câu trả lời thành công mà không để lộ lỗi cho người dùng, và ghi nhận một cảnh báo kèm trace id.
+4. THE Benchmark_Harness SHALL tạo báo cáo so sánh mỗi tùy chọn với Production_Core baseline — trên Golden_Query_Set với các tùy chọn truy hồi/OCR và trên Hard_Question_Set với các lớp suy luận — báo cáo tối thiểu các số liệu: độ chính xác câu trả lời, độ phủ trích dẫn, recall@k, và độ trễ p95.
+5. WHEN một tùy chọn được đề xuất chuyển thành mặc định sản xuất, THE Benchmark_Harness SHALL cung cấp số liệu cho thấy độ chính xác câu trả lời và độ phủ trích dẫn của tùy chọn đó không thấp hơn baseline, và độ trễ p95 nằm trong dung sai cấu hình so với baseline (mặc định 10%).
+6. WHEN một lỗi được tiêm (fault injection) vào bất kỳ thành phần tùy chọn nào, THE RAG_Engine SHALL vẫn trả về câu trả lời thành công qua đường dẫn Production_Core.
 
 ## Success Criteria
 

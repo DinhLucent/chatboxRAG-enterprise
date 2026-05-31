@@ -13,6 +13,7 @@ Key variables (additions for this feature):
 - `RAG_DENSE_MODEL` (path/name; default multilingual MiniLM, recommended `bge-m3`), `RAG_SPARSE_ENABLED=true`
 - `RAG_RERANK_ENABLED=true`, `RAG_RERANK_MODEL`, `RAG_RERANK_TOP_K=50`, `RAG_RRF_K=60`
 - `RAG_MFLOW_EXPERIMENTAL=false`
+- Agentic QA: `RAG_AGENTIC_ENABLED=true`, `RAG_ROUTER_MODEL` (cheap/fast model id), `RAG_RELEVANCE_JUDGE_ENABLED=true`, `RAG_ANSWER_VALIDATOR_ENABLED=true`, `RAG_MAX_CLARIFICATIONS=1`, `RAG_GUIDANCE_MAX_OPTIONS=7`
 - `KB_LLM_FAILOVER_CHAIN` (e.g. `gemini,deepseek,freemodel,ollama`) + provider creds (`GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, …)
 
 ## 1. Start Qdrant (production retrieval core)
@@ -62,7 +63,11 @@ Open `http://127.0.0.1:8088/user` (port per `KB_WEB_PORT`).
 
 - **US1 (data + hierarchical chunking)**: confirm chunks carry `chunk_type`, `section_path`, `image_refs`, `page_start`; citation coverage ≥ 90% (SC-001).
 - **US2 (Qdrant hybrid + rerank)**: query a synonym ("bảo trì máy" vs "bảo dưỡng máy") and an exact code ("KT-QT-002"); confirm dense catches the synonym and sparse keeps the exact-code hit; check `backend="qdrant"` and rerank scores in retrieval telemetry.
-- **US3 (softened gating + reasoning)**: ask an equipment/error question previously rejected; confirm it reaches the LLM and returns a structured, spelling-correct answer (Tóm tắt / Các bước / Nguồn), and that weak-evidence questions abstain or ask back. Track rejection-rate drop (SC-002).
+- **US3 (agentic QA: router + clarification + judge + validator)**:
+  - Router + slot filling: ask a misspelled/synonym/indirect engineering question and confirm it is classified `specific` and answered (not blocked); ask an off-domain question and confirm `out_of_scope` refusal.
+  - Dynamic guidance (broad → deep): ask "Quy trình bảo dưỡng?" and confirm the bot returns a `kind="clarification"` turn whose `options` are drawn from the index hierarchy (device groups present in the corpus) with **no** retrieval; pick "Máy phát điện", then answer the next narrowing question (e.g. chu kỳ), and confirm the final answer matches all accumulated slots. Confirm a newly added corpus sub-branch shows up as an option without code changes.
+  - Session state: confirm slots accumulate across turns and the bot only asks for still-missing parameters; convergence within `RAG_MAX_CLARIFICATIONS`.
+  - Relevance judge / validator: confirm noisy chunks are dropped before generation (telemetry) and that every citation maps to a retrieved source; weak-evidence questions abstain or ask back. Track rejection-rate drop (SC-002).
 - **US4 (preview + images)**: under "Nguồn", click **Xem trước**; confirm the split panel shows highlighted markdown next to the MinerU image; preview < 1.5s (SC-003).
 - **US5 (LLM failover)**: break the primary provider key; confirm fallback (stderr `[LLM Failover]`) and answers still succeed (SC-004).
 - **Fallback drill**: stop Qdrant with `RAG_RETRIEVER=auto`; confirm chat still answers via `backend="lexical_fallback"`.

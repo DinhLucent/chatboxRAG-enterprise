@@ -10,9 +10,14 @@ MinerU artifacts (content_list_v2.json, middle.json, images/)
    → retrieval/chunker (hierarchical chunking + chunk_type classification)   →  Chunk
    → retrieval/embeddings (dense + sparse encode)                            →  vectors
    → retrieval/qdrant_store.upsert                                           →  Qdrant point
-   → query: classify → metadata filter → hybrid query → RRF → rerank
-                                       → parent-context expand               →  RetrievalResult[]
-   → context_composer → chatbot.citation_payload                            →  Citation payload
+
+   query (+ session slots) → agentic/router + slot-fill (LLM)
+                                 ─► out_of_scope: refuse
+                                 ├► missing slots: GuidanceTurn (options from index hierarchy; stop; merge slot; loop)
+                                 └► is_complete:
+                                      metadata filter (slots) → hybrid query → RRF → rerank
+                                        → parent-context expand → agentic/relevance_judge (LLM)  →  kept RetrievalResult[]
+   → LLM answer (cited) → agentic/answer_validator (LLM) → context_composer → chatbot.citation_payload
    → webapp citation endpoint + image route → static/user/user-chat.js       →  split preview + image
 ```
 
@@ -113,12 +118,79 @@ Adds `citation.image_url`, `citation.display_locator`, `citation.section_path`, 
 
 Ordered list from `KB_LLM_FAILOVER_CHAIN` (csv) filtered against `LLM_PRESETS`; per-provider creds via `LLM_PROVIDER_ENV`. Recommended default leads with the chosen fast multilingual provider, then DeepSeek, then free/local fallbacks (research.md Decision 9).
 
-## 9. Config additions (`config.py` / `.env`)
+## 9. Agentic QA entities — NEW (`agentic/`)
 
-`QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_COLLECTION` (default `technical_active`), `RAG_RETRIEVER` (`qdrant|lexical|auto`), `RAG_DENSE_MODEL`, `RAG_SPARSE_ENABLED`, `RAG_RERANK_ENABLED`, `RAG_RERANK_MODEL`, `RAG_RERANK_TOP_K` (default 50), `RAG_RRF_K` (default 60), `RAG_MFLOW_EXPERIMENTAL` (default off).
+### RouterDecision (Node 1 output, structured JSON)
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `intent` | `enum` | `generic \| specific \| out_of_scope \| troubleshooting` |
+| `department` | `str` | one of `config.ALLOWED_DEPARTMENTS` or `unknown` |
+| `detected_entities` | `list[str]` | e.g. `["máy phát điện", "bơm RO"]` → query expansion / metadata filter |
+| `is_ambiguous` | `bool` | high-level ambiguity flag |
+| `is_complete` | `bool` | false when required slots are missing → triggers guidance |
+| `extracted_parameters` | `dict[str,str]` | filled slots this turn, e.g. `{"action":"bảo dưỡng"}` |
+| `missing_parameters` | `list[str]` | required-but-missing slots, e.g. `["thiết bị","mã lỗi"]` |
+| `guidance_prompt` | `str \| None` | LLM-authored ask-back question (Vietnamese) |
+| `confidence` | `float \| None` | optional; low confidence can also trigger guidance |
+
+**Validation**: `intent`/`department` constrained to enums; on invalid JSON or LLM error → fall back to deterministic `infer_department`/`infer_category`/`is_out_of_scope_query` (which imply `is_complete=true`, no guidance).
+
+### GuidanceTurn (Dynamic Multi-turn Guidance output)
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `question` | `str` | the guiding question (from `guidance_prompt`) |
+| `options` | `list[{label, value, doc_id?, procedure_id?, section_path?}]` | button-chips **generated dynamically from the index hierarchy** (distinct `section_path` roots / `procedure_name` aggregated from Qdrant payloads by `department`/filled slots); capped by `RAG_GUIDANCE_MAX_OPTIONS`; includes a free-text "Thiết bị khác…" escape |
+| `missing_parameter` | `str` | which slot this turn is collecting |
+| `session_state` | `SessionState` | carried forward to the next turn |
+
+Returned by `ask()` as `kind="clarification"` (no retrieval performed). If the index scan yields a single dominant branch, the system skips the question and proceeds. Bounded by `RAG_MAX_CLARIFICATIONS`.
+
+### SessionState (Stateful multi-turn memory)
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `session_id` | `str` | keyed by `user_id`/session (reuses `webapp.py` session tracking) |
+| `slots` | `dict[str,str]` | accumulated parameters across turns, e.g. `{"action":"bảo dưỡng","equipment":"máy phát điện","cycle":"6 tháng"}` |
+| `intent` | `str` | sticky intent from the first classified turn |
+| `department` | `str \| None` | sticky department once known |
+| `guidance_turns` | `int` | count of guidance turns so far (bounded by `RAG_MAX_CLARIFICATIONS`) |
+| `updated_at` | `str` | ISO timestamp; state expires with the session |
+
+**Lifecycle**: each turn merges new `extracted_parameters` into `slots`, re-runs the router with the accumulated state, and either asks for the next missing slot or (when `is_complete`) runs precise retrieval using `slots` as the metadata filter + query expansion.
+
+### RelevanceVerdict (Node 2 output)
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `kept_chunk_ids` | `list[str]` | chunks that actually contain answer evidence |
+| `dropped_chunk_ids` | `list[str]` | distractors removed before answer generation |
+| `reason` | `str \| None` | brief justification (telemetry) |
+
+**Fallback**: on error/skip, keep all reranked chunks (no-op filter).
+
+### AnswerValidation (Node 3 output)
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `answer` | `str` | formatted/repaired answer (Tóm tắt / Các bước / Nguồn) |
+| `citations_grounded` | `bool` | every citation traced to a retrieved chunk |
+| `ungrounded_claims` | `list[str]` | flagged/removed claims (telemetry) |
+| `action` | `enum` | `ok \| abstain \| clarify` |
+
+**Fallback**: on error, use the existing `contains_raw_markup`→`clean_answer` retry and return the answer as-is.
+
+## 10. Config additions (`config.py` / `.env`)
+
+Retrieval: `QDRANT_URL`, `QDRANT_API_KEY`, `QDRANT_COLLECTION` (default `technical_active`), `RAG_RETRIEVER` (`qdrant|lexical|auto`), `RAG_DENSE_MODEL`, `RAG_SPARSE_ENABLED`, `RAG_RERANK_ENABLED`, `RAG_RERANK_MODEL`, `RAG_RERANK_TOP_K` (default 50), `RAG_RRF_K` (default 60), `RAG_MFLOW_EXPERIMENTAL` (default off).
+
+Agentic QA: `RAG_AGENTIC_ENABLED` (default on), `RAG_ROUTER_MODEL` (cheap/fast model id), `RAG_RELEVANCE_JUDGE_ENABLED` (default on), `RAG_ANSWER_VALIDATOR_ENABLED` (default on), `RAG_MAX_CLARIFICATIONS` (default 1; max guidance turns), `RAG_GUIDANCE_MAX_OPTIONS` (default 7).
 
 ## State Transitions
 
 - **Chunk**: `mineru blocks → classified+structured Chunk → dense+sparse encoded → upserted (Qdrant) [+ JSONL fallback]`. Reprocess/clean pass is idempotent and may re-run before encoding.
-- **Retrieval**: `query → classify → metadata filter → dense+sparse → RRF → rerank(top-K) → parent expand → RetrievalResult[]` (or `lexical_fallback` when Qdrant down).
+- **Agentic flow**: `query (+ SessionState slots) → Router+SlotFill(LLM) → {out_of_scope: refuse | missing slots: GuidanceTurn with index-derived options (stop, merge slot, loop) | is_complete: continue}`.
+- **Retrieval (specific only)**: `metadata filter → dense+sparse → RRF → rerank(top-K) → parent expand → RelevanceJudge(LLM) → kept chunks` (or `lexical_fallback` when Qdrant down).
+- **Answer**: `kept chunks → LLM answer → AnswerValidation(LLM) → {ok | abstain | clarify}`.
 - **Citation**: `RetrievalResult → SearchHit adapter → citation_payload → API → UI preview (text + image)`.

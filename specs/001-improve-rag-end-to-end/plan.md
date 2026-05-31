@@ -14,14 +14,33 @@ MinerU → normalized Markdown/JSON → hierarchical chunking → Qdrant hybrid 
        → LLM answer with citation → QA guardrails
 ```
 
-The value is concentrated in **index schema + retrieval strategy**, not in replacing the parser or the app. MinerU already handles the front of the pipeline well (PDF/image/DOCX/PPTX/XLSX → Markdown + JSON, preserving heading, paragraph, list, image, table, formula, OCR, and reading order). So this plan keeps MinerU as the parser and invests in:
+…coordinated by an **Agentic QA layer** that replaces the brittle static `if-then` rules with three lightweight LLM decision nodes plus a clarification loop:
+
+```
+User query
+  └─[Node 1: LLM Router / Intent + Slot Filling]──► out_of_scope ─► refuse early
+                                              ├► missing required slots ─► Dynamic Guidance (ask back with
+                                              │      options auto-generated from the index hierarchy; NO retrieval)
+                                              │      ↑ stateful loop: accumulate slots across turns (broad → deep)
+                                              └► is_complete ─► metadata filter (slots) ─► Qdrant hybrid ─► rerank ─► parent expand
+                                                            └─[Node 2: LLM Relevance Judge]──► drop noisy chunks
+                                                                          └► LLM answer (cited)
+                                                                                └─[Node 3: LLM Formatter + Citation Validator]──► final answer
+```
+
+The value is concentrated in **index schema + retrieval strategy + LLM-driven flow control**, not in replacing the parser or the app. The current `chatbot.py` is over-engineered in static coordination (hardcoded `infer_department`, `infer_category`, `is_out_of_scope_query` keyword lists that miss synonyms/typos/indirect phrasing) but under-powered semantically. The fix is to move flow control into the LLM and keep retrieval logic owned by us. MinerU already handles the front of the pipeline well (PDF/image/DOCX/PPTX/XLSX → Markdown + JSON, preserving heading, paragraph, list, image, table, formula, OCR, and reading order). So this plan keeps MinerU as the parser and invests in:
 
 1. **Hierarchical chunk schema** — every chunk carries procedure/section/role/form metadata and a `chunk_type` (policy | step | condition | exception | table | form | image_caption | …), with `parent_section_id` for parent-context expansion.
 2. **Qdrant hybrid retrieval (production core)** — dense (semantic) + sparse/BM25 (codes, form names, step names) vectors in a single Qdrant collection, fused with Reciprocal Rank Fusion, plus heading/section-path boosts.
 3. **Multi-tier retrieval** — query classification → metadata filter → hybrid retrieval → cross-encoder rerank (top 30–80) → parent context expansion → answer composer.
-4. **Softened QA workflow** — relax the rigid `is_out_of_scope_query` gate, let the LLM judge scope from retrieved evidence, abstain or ask back when evidence is weak, and produce concise, well-formed Vietnamese answers with correct render blocks and citations.
+4. **Agentic QA layer (replaces static if-then)** — three LLM decision nodes coordinate the flow:
+   - **Node 1 — Router / Intent Classifier + Slot Filling**: a super-light LLM call (JSON/structured output) classifies `intent` (generic | specific | out_of_scope | troubleshooting), `department`, `detected_entities`, `is_ambiguous`, and performs **dynamic slot filling** — it reports `is_complete`, `extracted_parameters`, `missing_parameters`, and a natural `guidance_prompt`. Replaces `infer_department` / `infer_category` / `is_out_of_scope_query` with semantic understanding (no per-device `if-then`).
+   - **Dynamic Multi-turn Guidance (broad → deep)**: when required parameters (e.g. equipment, error code, maintenance cycle) are missing, the system **stops before calling Qdrant/reranker** and asks one guiding question. Candidate **options** (button-chips) are generated **dynamically from the hierarchical index** — a cheap scan of Qdrant payloads (`department` → `section_path` / `procedure_name`) surfaces the actual sub-branches that exist (e.g. máy phát điện / máy nén khí / hệ thống lọc nước), never a hardcoded list. The system acts as a guided assistant, not a passive search engine.
+   - **Stateful session memory**: accumulated slots persist across turns (`action=bảo dưỡng` → `equipment=máy phát điện` → `cycle=6 tháng`); each turn either narrows further or, once `is_complete`, runs the precise retrieval with all collected parameters as the metadata filter + expanded query.
+   - **Node 2 — Relevance Judge (LLM-as-judge)**: runs **after rerank, before answer generation**; drops candidate chunks that don't actually contain the answer.
+   - **Node 3 — Answer Formatter + Citation Validator**: ensures correct render structure (Markdown / tables / Mermaid) and that every citation is grounded (anti-hallucination). Abstain or ask back when evidence is weak. Concise, well-formed Vietnamese with spelling/diacritic correction.
 5. **LLM selection** — recommend the best-fit model versus the current DeepSeek chat, kept config-driven with failover (see research.md).
-6. **Interface** — enable the disabled "Xem trước" preview, add an authenticated image-serving endpoint, render a split-screen citation preview (highlighted source text + MinerU image/diagram).
+6. **Interface** — enable the disabled "Xem trước" preview, add an authenticated image-serving endpoint, render a split-screen citation preview (highlighted source text + MinerU image/diagram), and render the agentic **guidance option chips** (dynamic buttons from `clarification.options`) so users narrow broad → deep by clicking.
 
 ### Stack roles (architect decision)
 
@@ -76,8 +95,8 @@ This is a deliberate change from the prior "no external vector DB" stance: it ad
 - [x] **Module isolation**: retrieval is introduced behind a `Retriever` abstraction (`QdrantRetriever` vs existing `LocalRagIndex`) so `chatbot.ask()` is decoupled from the backend.
 - [x] **Text/CLI interface preserved**: indexing and chat remain invokable via CLI and HTTP; a new `reindex`/`qdrant-upsert` CLI step is additive.
 - [x] **Test-first / verification**: each user story has an independent test; Qdrant work is testable via in-memory/embedded mode; verified with pytest + smoke + QA eval before completion.
-- [⚠] **Simplicity / YAGNI**: introducing Qdrant + reranker + (experimental) m_flow adds infra and dependencies. Justified in Complexity Tracking below; mitigated by keeping the lexical fallback and gating m_flow behind a flag.
-- [x] **Observability**: retain structured logging (SQLite + stderr failover traces); add per-stage retrieval telemetry (lexical/dense/sparse/rerank scores, chosen backend).
+- [⚠] **Simplicity / YAGNI**: introducing Qdrant + reranker + (experimental) m_flow + 3 agentic LLM nodes adds infra, dependencies, and per-query LLM calls. Justified in Complexity Tracking below; mitigated by keeping the lexical fallback, gating m_flow behind a flag, using a cheap/fast model for agentic nodes, and falling back to the existing static rules when the router LLM is unavailable.
+- [x] **Observability**: retain structured logging (SQLite + stderr failover traces); add per-stage telemetry (router decision/intent, clarification triggered, chunks kept vs dropped by the judge, lexical/dense/sparse/rerank scores, chosen backend, citation-validation result).
 
 **Result**: PASS (advisory) with one justified complexity item (external retrieval service). See Complexity Tracking.
 
@@ -117,8 +136,15 @@ poc_workflow/
 │   ├── query_router.py           #   query classification + metadata filter builder
 │   ├── context_composer.py       #   parent-context expansion + evidence assembly
 │   └── retriever.py              #   Retriever protocol; select Qdrant vs lexical fallback
-├── chatbot.py                    # ask(), softened is_out_of_scope_query(), citation_payload()
-├── llm.py                        # OpenAICompatibleClient (answer/failover), LLM_PRESETS, chain
+├── agentic/                      # NEW package: LLM-driven QA flow control (Agentic RAG)
+│   ├── router.py                 #   Node 1: LLM intent + slot-filling classifier (JSON mode)
+│   ├── guidance.py               #   Dynamic guidance: options from index hierarchy + guidance_prompt
+│   ├── session_state.py          #   Stateful multi-turn slot accumulation (broad → deep)
+│   ├── relevance_judge.py        #   Node 2: LLM-as-judge context filter (post-rerank)
+│   ├── answer_validator.py       #   Node 3: format + citation grounding validator
+│   └── orchestrator.py           #   wires nodes + session state around retriever + llm; deterministic fallback
+├── chatbot.py                    # ask(): delegates flow to agentic.orchestrator (static rules become fallback)
+├── llm.py                        # OpenAICompatibleClient (answer/failover/JSON mode), LLM_PRESETS, chain
 ├── webapp.py                     # FastAPI app: + image route, extended citation/preview endpoints
 └── static/user/                  # user-chat.js (enable "Xem trước"), user-chat.css (split preview)
 
@@ -141,7 +167,7 @@ refs/                              # read-only references to borrow patterns fro
 |-----------|---------------|
 | US1 Data + hierarchical chunking + image refs | `data_workflow.py`, `retrieval/schema.py`, `retrieval/chunker.py`, `text_cleaning.py` |
 | US2 Qdrant hybrid retrieval + rerank | `retrieval/embeddings.py`, `retrieval/qdrant_store.py`, `retrieval/reranker.py`, `retrieval/query_router.py`, `retrieval/context_composer.py`, `config.py` |
-| US3 Softened gating + multi-step reasoning | `chatbot.py` (`is_out_of_scope_query`, `ask`), `retrieval/context_composer.py`, `llm.py` (`answer` prompt) |
+| US3 Agentic QA: router + slot-filling + dynamic guidance + session state + relevance judge + answer validator | `agentic/router.py`, `agentic/guidance.py`, `agentic/session_state.py`, `agentic/relevance_judge.py`, `agentic/answer_validator.py`, `agentic/orchestrator.py`, `chatbot.py` (`ask`), `llm.py` (JSON mode + `answer` prompt) |
 | US4 Citation preview + images | `webapp.py` (image route, citation payload), `static/user/user-chat.js`, `user-chat.css` |
 | US5 LLM selection + failover | `llm.py` (`LLM_PRESETS`, `llm_failover_chain`), `.env` / `.env.example` |
 | (Experimental) procedural/graph layer | `refs/m_flow` patterns → flagged module + hard-question benchmark |
@@ -153,3 +179,4 @@ refs/                              # read-only references to borrow patterns fro
 | External vector DB (Qdrant) replacing in-memory lexical core | Production-grade hybrid (dense+sparse) retrieval with metadata filtering, RRF, and room to scale; needed for condition/exception/multi-step question quality | Pure in-memory cosine + lexical (prior plan) caps ranking quality and metadata-filtered hybrid; rejected by architect for the production core (kept as offline fallback) |
 | Cross-encoder reranker | Precision on top 30–80 candidates materially improves answer grounding | RRF-only ordering leaves near-duplicates/weak hits high; rerank is the standard precision lever |
 | Experimental m_flow graph layer | Hard multi-hop / dependency / "if A then which procedure?" questions are not well served by chunk similarity alone | Skipping it loses the upside; mitigated by keeping it experimental, flagged, and separately benchmarked (not in the default path) |
+| Agentic QA nodes (3 extra LLM calls: router, relevance judge, validator) | Static `if-then` routing misses synonyms/typos/indirect phrasing and floods the answer LLM with mixed context; LLM nodes fix routing precision, cut prompt tokens, and stop hallucinated citations | Pure static rules (status quo) cause diluted/incorrect answers; mitigated by using a cheap/fast model for nodes, caching, and a deterministic fallback (old rules) when the router LLM is unavailable |
