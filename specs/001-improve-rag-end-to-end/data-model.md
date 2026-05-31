@@ -110,6 +110,8 @@ Add optional `image_refs: list[str] | None`, `page_start/page_end: int | None`, 
 
 Forwarded to the frontend when present: `image_ref`/`image_refs`, `image_url` (`/api/user/documents/{doc_id}/{version}/images/{name}`), `page_start`/`page_end`, `bbox`, `section_path`, `display_locator` ("Trang 3, khối ảnh" / "Mục 5.2" / "Dòng 45–60"), `source_locator` `{type, content_type, mineru_block_id?, page_start?}`. Existing fields unchanged.
 
+**Wire aliases (Contract 3, Mode B)**: the citation card in the chat `success` response uses the compact form `{ doc_id, title, page, text_snippet, image_ref }`, where `page` = `page_start`, `text_snippet` = `matched_excerpt`/`excerpt`. The richer detail endpoint (Contract 2) supplies `page_start`/`page_end`, `bbox`, `section_path`, and `image_url` for the split-screen preview. Both views are produced from the same `SearchHit`.
+
 ## 7. Public Citation Endpoint (`webapp._public_document_citation_payload`) — extended
 
 Adds `citation.image_url`, `citation.display_locator`, `citation.section_path`, `citation.source_locator` on top of the existing `record` / `citation` / `preview` structure from `_markdown_preview_lines`. See contracts/api-contract.md.
@@ -136,29 +138,28 @@ Ordered list from `KB_LLM_FAILOVER_CHAIN` (csv) filtered against `LLM_PRESETS`; 
 
 **Validation**: `intent`/`department` constrained to enums; on invalid JSON or LLM error → fall back to deterministic `infer_department`/`infer_category`/`is_out_of_scope_query` (which imply `is_complete=true`, no guidance).
 
-### GuidanceTurn (Dynamic Multi-turn Guidance output)
+### GuidanceTurn (Dynamic Multi-turn Guidance output → wire `status="clarify"`)
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `question` | `str` | the guiding question (from `guidance_prompt`) |
-| `options` | `list[{label, value, doc_id?, procedure_id?, section_path?}]` | button-chips **generated dynamically from the index hierarchy** (distinct `section_path` roots / `procedure_name` aggregated from Qdrant payloads by `department`/filled slots); capped by `RAG_GUIDANCE_MAX_OPTIONS`; includes a free-text "Thiết bị khác…" escape |
-| `missing_parameter` | `str` | which slot this turn is collecting |
-| `session_state` | `SessionState` | carried forward to the next turn |
+| `message` | `str` | the guiding question (from `guidance_prompt`); serialized as `message` |
+| `options` | `list[{label, next_query, section_path?, doc_id?, procedure_id?}]` | button-chips **generated dynamically from the index hierarchy** (distinct `section_path` roots / `procedure_name` aggregated from Qdrant payloads by `department`/filled slots); capped by `RAG_GUIDANCE_MAX_OPTIONS`; may include a free-text "Thiết bị khác…" chip. `next_query` is the full follow-up query the client resends |
+| `missing_parameter` | `str` | which slot this turn is collecting (telemetry) |
+| `session_state` | `SessionState` | carried forward to the next turn (serialized as `{accumulated_context, ...}`) |
 
-Returned by `ask()` as `kind="clarification"` (no retrieval performed). If the index scan yields a single dominant branch, the system skips the question and proceeds. Bounded by `RAG_MAX_CLARIFICATIONS`.
+Serialized to the wire as `{ "status": "clarify", "message", "options", "session_state": { "accumulated_context": {...} } }` (Contract 3, Mode A). No retrieval performed. If the index scan yields a single dominant branch, skip the question and proceed. Bounded by `RAG_MAX_CLARIFICATIONS`.
 
 ### SessionState (Stateful multi-turn memory)
 
 | Field | Type | Notes |
 |-------|------|-------|
 | `session_id` | `str` | keyed by `user_id`/session (reuses `webapp.py` session tracking) |
-| `slots` | `dict[str,str]` | accumulated parameters across turns, e.g. `{"action":"bảo dưỡng","equipment":"máy phát điện","cycle":"6 tháng"}` |
+| `accumulated_context` | `dict[str,str]` | accumulated parameters across turns, e.g. `{"action":"bảo dưỡng","equipment":"máy phát điện","department":"technical"}`. **This is the wire field** echoed to/from the client (internally also referred to as `slots`) |
 | `intent` | `str` | sticky intent from the first classified turn |
-| `department` | `str \| None` | sticky department once known |
 | `guidance_turns` | `int` | count of guidance turns so far (bounded by `RAG_MAX_CLARIFICATIONS`) |
 | `updated_at` | `str` | ISO timestamp; state expires with the session |
 
-**Lifecycle**: each turn merges new `extracted_parameters` into `slots`, re-runs the router with the accumulated state, and either asks for the next missing slot or (when `is_complete`) runs precise retrieval using `slots` as the metadata filter + query expansion.
+**Lifecycle**: each turn merges new `extracted_parameters` into `accumulated_context`, re-runs the router with the accumulated state, and either asks for the next missing slot (`status="clarify"`) or (when `is_complete`) runs precise retrieval using `accumulated_context` as the metadata filter + query expansion and returns `status="success"`.
 
 ### RelevanceVerdict (Node 2 output)
 

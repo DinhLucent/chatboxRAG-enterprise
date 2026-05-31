@@ -40,7 +40,7 @@ The value is concentrated in **index schema + retrieval strategy + LLM-driven fl
    - **Node 2 — Relevance Judge (LLM-as-judge)**: runs **after rerank, before answer generation**; drops candidate chunks that don't actually contain the answer.
    - **Node 3 — Answer Formatter + Citation Validator**: ensures correct render structure (Markdown / tables / Mermaid) and that every citation is grounded (anti-hallucination). Abstain or ask back when evidence is weak. Concise, well-formed Vietnamese with spelling/diacritic correction.
 5. **LLM selection** — recommend the best-fit model versus the current DeepSeek chat, kept config-driven with failover (see research.md).
-6. **Interface** — enable the disabled "Xem trước" preview, add an authenticated image-serving endpoint, render a split-screen citation preview (highlighted source text + MinerU image/diagram), and render the agentic **guidance option chips** (dynamic buttons from `clarification.options`) so users narrow broad → deep by clicking.
+6. **Interface** — enable the disabled "Xem trước" preview, add an authenticated image-serving endpoint, render a split-screen citation preview (highlighted source text + MinerU image/diagram), and render the agentic **guidance option chips** (dynamic buttons from `options[].next_query`) so users narrow broad → deep by clicking. The chat API returns a **canonical two-status contract** (`status: "clarify"` with `message`+`options`, or `status: "success"` with `answer`+`citations`), both echoing `session_state.accumulated_context` — a data-driven, decoupled UI where the backend owns all guidance logic (see contracts/api-contract.md §3).
 
 ### Stack roles (architect decision)
 
