@@ -150,6 +150,15 @@ a:focus-visible {
   color: #f8fafc;
 }
 
+.brand-version {
+  font-size: 9px;
+  font-weight: 600;
+  color: #94a3b8;
+  opacity: 0.85;
+  margin-top: -4px;
+  letter-spacing: 0.05em;
+}
+
 .rail-nav {
   display: flex;
   flex-direction: column;
@@ -2444,7 +2453,8 @@ a:focus-visible {
     border-radius: 8px;
   }
 
-  .brand-text {
+  .brand-text,
+  .brand-version {
     display: none;
   }
 

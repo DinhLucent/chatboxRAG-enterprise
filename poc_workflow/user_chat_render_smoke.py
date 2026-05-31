@@ -140,7 +140,10 @@ def render_harness_html(root: Path) -> str:
 <body>
   <div class="user-shell">
     <aside class="rail" aria-label="Dieu huong">
-      <div class="rail-brand"><span class="brand-text">DL Knowledge</span></div>
+      <div class="rail-brand">
+        <span class="brand-text">DL Knowledge</span>
+        <span class="brand-version">0.1.4</span>
+      </div>
       <div class="rail-nav">
         <button id="newChatBtn" class="rail-button active" type="button">Moi</button>
         <button id="toggleDrawerBtn" class="rail-button" type="button">Nguon</button>
