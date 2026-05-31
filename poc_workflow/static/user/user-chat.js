@@ -862,9 +862,62 @@ async function streamChat(payload) {
   const decoder = new TextDecoder();
   let buffer = "";
   let finalResult = null;
+
+  // Typewriter buffer and states
+  let textQueue = [];
+  let displayedText = "";
+  let isTypingStarted = false;
+  let responseBodyEl = state.pendingBubble ? state.pendingBubble.querySelector(".message-body") : null;
+  let finished = false;
+
+  function animateResponseLoop() {
+    if (!responseBodyEl) return;
+
+    if (textQueue.length > 0) {
+      if (!isTypingStarted) {
+        isTypingStarted = true;
+        responseBodyEl.innerHTML = '<div class="chat-response-stream"></div>';
+      }
+
+      const streamContainer = responseBodyEl.querySelector(".chat-response-stream");
+      if (streamContainer) {
+        // Adjust typing speed based on queue size (prevent lag if server is fast)
+        const fetchCount = Math.max(1, Math.round(textQueue.length / 10));
+        for (let i = 0; i < fetchCount; i++) {
+          const char = textQueue[i];
+          if (char !== undefined) {
+            displayedText += char;
+          }
+        }
+        textQueue = textQueue.slice(fetchCount);
+        streamContainer.textContent = displayedText;
+
+        // Auto-scroll logic (if user is near bottom)
+        const chatContainer = qs("#chatContainer") || document.documentElement;
+        const threshold = 150;
+        const isNearBottom = chatContainer.scrollHeight - chatContainer.scrollTop - chatContainer.clientHeight < threshold;
+        if (isNearBottom) {
+          chatContainer.scrollTo({
+            top: chatContainer.scrollHeight,
+            behavior: "auto"
+          });
+        }
+      }
+    }
+
+    if (finished && textQueue.length === 0) {
+      return;
+    }
+
+    requestAnimationFrame(animateResponseLoop);
+  }
+
   while (true) {
     const { value, done } = await reader.read();
-    if (done) break;
+    if (done) {
+      finished = true;
+      break;
+    }
     buffer += decoder.decode(value, { stream: true });
     const events = buffer.split("\n\n");
     buffer = events.pop() || "";
@@ -874,6 +927,16 @@ async function streamChat(payload) {
       if (parsed.event === "trace") {
         renderTrace(parsed.data.trace_steps || []);
         updateLoadingStepsUI(state.pendingBubble, parsed.data.trace_steps || []);
+      } else if (parsed.event === "token") {
+        const tokenText = parsed.data.text || "";
+        if (tokenText) {
+          if (!isTypingStarted && textQueue.length === 0) {
+            requestAnimationFrame(animateResponseLoop);
+          }
+          for (const char of tokenText) {
+            textQueue.push(char);
+          }
+        }
       } else if (parsed.event === "final") {
         finalResult = parsed.data.result;
       } else if (parsed.event === "error") {
@@ -881,6 +944,12 @@ async function streamChat(payload) {
       }
     }
   }
+
+  // Wait until typewriter queue is fully drained
+  while (textQueue.length > 0) {
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  }
+
   if (!finalResult) {
     throw new Error("Stream ended before final answer.");
   }

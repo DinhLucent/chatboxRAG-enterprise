@@ -2830,3 +2830,29 @@ blockquote p {
     opacity: 1;
   }
 }
+
+/* SSE Streaming typing and cursor animations */
+.chat-response-stream {
+  display: inline;
+  white-space: pre-wrap;
+  position: relative;
+}
+
+.chat-response-stream::after {
+  content: "▋";
+  display: inline-block;
+  color: var(--red);
+  font-weight: 900;
+  animation: cursorBlink 0.8s infinite steps(2, start);
+  margin-left: 2px;
+  vertical-align: baseline;
+}
+
+@keyframes cursorBlink {
+  0%, 100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+}

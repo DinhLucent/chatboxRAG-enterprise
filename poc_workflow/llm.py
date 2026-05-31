@@ -7,7 +7,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib import error, request
 
 llm_usage_tracker = contextvars.ContextVar("llm_usage_tracker", default=None)
@@ -672,6 +672,36 @@ class OpenAICompatibleClient:
             raise last_exc
         raise LLMError("No active LLM configurations available to call.")
 
+    def complete_messages_stream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float = 0,
+        timeout: float = 60,
+        max_tokens: int | None = None,
+    ) -> Iterator[str]:
+        last_exc = None
+        import sys
+        for config in self.configs_to_try:
+            self.config = config
+            try:
+                payload: dict[str, Any] = {
+                    "model": self.config.model,
+                    "messages": messages,
+                    "temperature": temperature,
+                }
+                if max_tokens is not None:
+                    payload["max_tokens"] = max_tokens
+                yield from self._post_chat_stream(payload, timeout=timeout)
+                return
+            except LLMError as exc:
+                last_exc = exc
+                sys.stderr.write(f"[LLM Failover] {config.provider} (model: {config.model}) failed: {exc}\n")
+                continue
+        if last_exc:
+            raise last_exc
+        raise LLMError("No active LLM configurations available to call.")
+
     def _post_chat(self, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = request.Request(
@@ -707,6 +737,56 @@ class OpenAICompatibleClient:
                     "completion_tokens": ct
                 })
         return data
+
+    def _post_chat_stream(self, payload: dict[str, Any], timeout: float) -> Iterator[str]:
+        payload = {**payload, "stream": True}
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = request.Request(
+            self.config.base_url.rstrip("/") + "/chat/completions",
+            data=body,
+            method="POST",
+            headers={
+                "Authorization": f"Bearer {self.config.api_key}",
+                "Content-Type": "application/json",
+            },
+        )
+        try:
+            with request.urlopen(req, timeout=timeout) as response:
+                for line in response:
+                    decoded = line.decode("utf-8").strip()
+                    if not decoded:
+                        continue
+                    if decoded.startswith("data: "):
+                        data_str = decoded[6:]
+                        if data_str == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data_str)
+                            usage = chunk.get("usage")
+                            if isinstance(usage, dict):
+                                pt = usage.get("prompt_tokens") or 0
+                                ct = usage.get("completion_tokens") or 0
+                                self.usage_history.append({
+                                    "prompt_tokens": pt,
+                                    "completion_tokens": ct
+                                })
+                                tracker = llm_usage_tracker.get()
+                                if tracker is not None:
+                                    tracker.append({
+                                        "prompt_tokens": pt,
+                                        "completion_tokens": ct
+                                    })
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content")
+                            if content:
+                                yield content
+                        except Exception:
+                            continue
+        except error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="ignore")
+            raise LLMError(f"LLM HTTP {exc.code}: {raw}") from exc
+        except error.URLError as exc:
+            raise LLMError(f"LLM connection failed: {exc.reason}") from exc
 
 
 def llm_runtime_status(
