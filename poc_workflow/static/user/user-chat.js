@@ -964,6 +964,7 @@ function renderWelcomeCards() {
     }
   });
   wireSpotlight(".welcome-card:not(:disabled)");
+  initMagneticHover();
 }
 
 function renderTemplates() {
@@ -995,6 +996,7 @@ function renderTemplates() {
       button.addEventListener("click", () => selectPrompt(button));
     }
   });
+  initMagneticHover();
 }
 
 function selectPrompt(button) {
@@ -1014,11 +1016,96 @@ function selectPrompt(button) {
 
 function appendMessage(role, html, actions = "") {
   const target = qs("#messages");
-  qs("#welcomeState")?.remove();
+  const welcomeState = qs("#welcomeState");
+  if (welcomeState) {
+    // Pin welcome state in place so it doesn't push the new message down
+    const rect = welcomeState.getBoundingClientRect();
+    welcomeState.style.position = "absolute";
+    welcomeState.style.top = `${welcomeState.offsetTop}px`;
+    welcomeState.style.left = `${welcomeState.offsetLeft}px`;
+    welcomeState.style.width = `${rect.width}px`;
+    welcomeState.style.margin = "0";
+    welcomeState.style.pointerEvents = "none";
+
+    // Fade out text elements and cards
+    const heroText = welcomeState.querySelectorAll(".welcome-eyebrow, .welcome-sub, #welcomeCards");
+    const avatar = welcomeState.querySelector(".welcome-avatar");
+
+    anime({
+      targets: heroText,
+      opacity: 0,
+      translateY: -20,
+      duration: 350,
+      easing: "easeInQuad",
+    });
+
+    // Animate avatar: scale down and translate to fly top-left
+    anime({
+      targets: avatar,
+      scale: 0.36,
+      translateY: -100,
+      translateX: -120,
+      opacity: 0,
+      duration: 500,
+      easing: "cubicBezier(0.16, 1, 0.3, 1)",
+      complete: () => {
+        welcomeState.remove();
+      }
+    });
+  }
   const article = document.createElement("article");
   article.className = `message ${role}`;
-  article.innerHTML = `<div class="message-body">${html}</div>${actions}`;
+  
+  if (role === "assistant") {
+    article.innerHTML = `
+      <div class="message-wrapper">
+        <div class="message-avatar-container">
+          <svg class="bot-message-avatar" width="32" height="32" viewBox="0 0 88 88" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="botAvatarGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#fb7185"/>
+                <stop offset="100%" stop-color="#e11d48"/>
+              </linearGradient>
+            </defs>
+            <circle cx="44" cy="44" r="38" fill="url(#botAvatarGrad)"/>
+            <rect x="32" y="33" width="24" height="20" rx="6" fill="#ffffff"/>
+            <rect x="29" y="38" width="3" height="10" rx="1.5" fill="#ffffff"/>
+            <rect x="56" y="38" width="3" height="10" rx="1.5" fill="#ffffff"/>
+            <rect x="41" y="52" width="6" height="4" fill="#ffffff"/>
+            <circle cx="39" cy="42" r="2" fill="#e11d48"/>
+            <circle cx="49" cy="42" r="2" fill="#e11d48"/>
+            <path d="M41 47.5C42 48.5 43 49 44 49C45 49 46 48.5 47 47.5" stroke="#e11d48" stroke-width="1.5" stroke-linecap="round"/>
+            <rect x="43" y="26" width="2" height="7" fill="#ffffff"/>
+            <circle cx="44" cy="25" r="2" fill="#ffffff"/>
+          </svg>
+        </div>
+        <div class="message-content">
+          <div class="message-body">${html}</div>
+          ${actions}
+        </div>
+      </div>
+    `;
+  } else {
+    article.innerHTML = `<div class="message-body">${html}</div>${actions}`;
+  }
+  
   target.appendChild(article);
+
+  // Custom spring entrance animation using Anime.js
+  anime.set(article, {
+    opacity: 0,
+    translateY: 20,
+    scale: 0.96
+  });
+  anime({
+    targets: article,
+    opacity: [0, 1],
+    translateY: [20, 0],
+    scale: [0.96, 1],
+    duration: 500,
+    easing: "spring(1, 80, 15, 0)"
+  });
+
   target.scrollTop = target.scrollHeight;
   return article;
 }
@@ -1091,6 +1178,7 @@ async function submitChat(event) {
     return;
   }
 
+  triggerComposerGlow(true);
   qs("#sendBtn").disabled = true;
   appendMessage("user", escapeHtml(query));
   const pending = appendMessage("assistant", renderLoadingMessage());
@@ -1154,7 +1242,6 @@ async function submitChat(event) {
     hydrateCharts(pending);
     renderSources(result.citations || [], result);
     renderTrace(result.trace_steps || result.trace?.steps || [], result.trace);
-    switchDrawerTab("sources");
     qs("#drawerMeta").textContent = drawerMetaLabel(result);
     qs("#queryInput").value = "";
     autoGrowTextarea();
@@ -1166,6 +1253,7 @@ async function submitChat(event) {
     clearInterval(loadingInterval);
     qs("#sendBtn").disabled = false;
     state.pendingBubble = null;
+    triggerComposerGlow(false);
   }
 }
 
@@ -1173,7 +1261,7 @@ function renderLoadingMessage() {
   return `
     <div class="loading-indicator-wrapper">
       <div class="modern-loading-spinner"></div>
-      <div class="loading-title">OrientSOP đang suy nghĩ...</div>
+      <div class="loading-title">OrientSOP đang suy nghĩ<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span></div>
     </div>
     <div class="loading-list">
       ${LOADING_STEPS.map((step, idx) => `
@@ -1828,31 +1916,6 @@ function renderTrace(steps, trace = null) {
   }
   
   let summaryHtml = "";
-  if (trace && typeof trace === "object") {
-    const latency = trace.latency_ms !== undefined ? `${trace.latency_ms}ms` : "-";
-    const promptTokens = trace.tokens_prompt !== undefined ? trace.tokens_prompt : "-";
-    const completionTokens = trace.tokens_completion !== undefined ? trace.tokens_completion : "-";
-    
-    summaryHtml = `
-      <article class="trace-summary-card" style="margin-bottom: 16px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface-solid); padding: 16px; box-shadow: var(--shadow-sm);">
-        <div class="source-summary-title" style="font-size: 13px; font-weight: 700; color: var(--ink); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px;">Thống kê hiệu năng</div>
-        <div class="source-summary-grid" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; font-size: 11px;">
-          <div>
-            <span style="display: block; color: var(--muted); font-weight: 600; margin-bottom: 4px;">Độ trễ xử lý</span>
-            <strong style="color: var(--ink); font-size: 13px; font-weight: 700;">${latency}</strong>
-          </div>
-          <div>
-            <span style="display: block; color: var(--muted); font-weight: 600; margin-bottom: 4px;">Token Input</span>
-            <strong style="color: var(--ink); font-size: 13px; font-weight: 700;">${promptTokens}</strong>
-          </div>
-          <div>
-            <span style="display: block; color: var(--muted); font-weight: 600; margin-bottom: 4px;">Token Output</span>
-            <strong style="color: var(--ink); font-size: 13px; font-weight: 700;">${completionTokens}</strong>
-          </div>
-        </div>
-      </article>
-    `;
-  }
   
   const stepHtmls = rows.map((step) => {
     const duration = getStepDuration(step);
@@ -1982,6 +2045,7 @@ function syncDrawer() {
   const drawer = qs("#sourceDrawer");
   qs(".user-shell").classList.toggle("drawer-hidden", state.drawerHidden);
   drawer.classList.toggle("hidden", state.drawerHidden);
+  qs("#toggleDrawerBtn")?.classList.toggle("active", !state.drawerHidden);
 }
 
 function syncSidebar() {
@@ -1989,6 +2053,7 @@ function syncSidebar() {
   const shell = qs(".user-shell");
   const isHidden = sidebar.classList.contains("hidden");
   shell.classList.toggle("sidebar-open", !isHidden);
+  qs("#historyBtn")?.classList.toggle("active", !isHidden);
 }
 
 function ensureDrawerVisible() {
@@ -2203,6 +2268,139 @@ async function restoreSession(sessionId) {
   }
 }
 
+/* ==========================================================================
+   UI Animations & Design Spells (Anime.js / Custom Easing)
+   ========================================================================== */
+
+function runEntranceAnimations() {
+  const loader = qs("#pageLoader");
+  if (!loader) return;
+
+  // Pre-hide elements to prevent layout flash when the page loader fades out
+  anime.set(".rail, .chat-header, .welcome-hero, .welcome-cards, .composer", {
+    opacity: 0,
+    translateY: 20
+  });
+  anime.set(".welcome-card", {
+    opacity: 0,
+    scale: 0.95,
+    translateY: 15
+  });
+
+  const tl = anime.timeline({
+    easing: "easeInOutQuad",
+  });
+
+  tl.add({
+    targets: "#pageLoader .loader-bar",
+    left: ["-100%", "0%"],
+    duration: 800,
+  }).add({
+    targets: "#pageLoader",
+    opacity: 0,
+    duration: 400,
+    complete: () => {
+      loader.classList.add("is-hidden");
+      runAppEntranceReveal();
+    }
+  });
+}
+
+function runAppEntranceReveal() {
+  anime.set(".rail, .chat-header, .welcome-hero, .welcome-cards, .composer", {
+    opacity: 0,
+    translateY: 20
+  });
+
+  anime({
+    targets: ".rail, .chat-header, .welcome-hero, .welcome-cards, .composer",
+    opacity: [0, 1],
+    translateY: [20, 0],
+    delay: anime.stagger(80),
+    duration: 800,
+    easing: "cubicBezier(0.16, 1, 0.3, 1)",
+    complete: () => {
+      initMagneticHover();
+    }
+  });
+
+  anime.set(".welcome-card", {
+    opacity: 0,
+    scale: 0.95,
+    translateY: 15
+  });
+
+  anime({
+    targets: ".welcome-card",
+    opacity: [0, 1],
+    scale: [0.95, 1],
+    translateY: [15, 0],
+    delay: anime.stagger(60, { start: 300 }),
+    duration: 600,
+    easing: "spring(1, 80, 12, 0)"
+  });
+}
+
+function initMagneticHover() {
+  const magneticElements = document.querySelectorAll(".welcome-card, .welcome-avatar-inner, .template-chip");
+  
+  magneticElements.forEach((el) => {
+    if (el.dataset.magneticBound) return;
+    el.dataset.magneticBound = "true";
+
+    el.addEventListener("mousemove", (e) => {
+      const rect = el.getBoundingClientRect();
+      const x = e.clientX - rect.left - rect.width / 2;
+      const y = e.clientY - rect.top - rect.height / 2;
+      
+      anime({
+        targets: el,
+        translateX: x * 0.22,
+        translateY: y * 0.22,
+        duration: 100,
+        easing: "easeOutQuad"
+      });
+    });
+    
+    el.addEventListener("mouseleave", () => {
+      anime({
+        targets: el,
+        translateX: 0,
+        translateY: 0,
+        duration: 600,
+        easing: "spring(1, 75, 12, 0)"
+      });
+    });
+  });
+}
+
+let composerGlowAnimation = null;
+
+function triggerComposerGlow(active) {
+  const composer = qs(".composer");
+  if (!composer) return;
+  
+  if (active) {
+    composer.classList.add("is-loading");
+    if (!composerGlowAnimation) {
+      composerGlowAnimation = anime({
+        targets: ".composer-border-rect",
+        strokeDashoffset: [0, -400],
+        duration: 3000,
+        loop: true,
+        easing: "linear"
+      });
+    } else {
+      composerGlowAnimation.play();
+    }
+  } else {
+    composer.classList.remove("is-loading");
+    if (composerGlowAnimation) {
+      composerGlowAnimation.pause();
+    }
+  }
+}
+
 async function init() {
   window.addEventListener("mousemove", (e) => {
     document.body.style.setProperty("--global-mouse-x", `${e.clientX}px`);
@@ -2264,6 +2462,7 @@ async function init() {
   }
   syncDrawer();
   syncSidebar();
+  runEntranceAnimations();
 }
 
 init();

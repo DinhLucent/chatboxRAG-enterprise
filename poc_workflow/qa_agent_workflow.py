@@ -421,25 +421,47 @@ def normalize_blocks(raw: object) -> list[dict[str, object]]:
     return blocks[:10]
 
 
-def _run_qa_agent_workflow_impl(
-    root: Path,
-    query: str,
-    *,
-    history: list[dict[str, Any]] | None = None,
-    conversation_context: dict[str, Any] | None = None,
-    answer_style: str = "brief",
-    use_llm: bool = True,
-    emit: TraceEmitter | None = None,
-    variables: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    start = time.perf_counter()
-    answer_run_id = f"run_{uuid.uuid4().hex}"
-    trace_steps: list[dict[str, Any]] = []
-    history = history or []
-    conversation_context = conversation_context or {}
-    current_intent = ""
+class QaRunContext:
+    def __init__(
+        self,
+        root: Path,
+        query: str,
+        *,
+        history: list[dict[str, Any]] | None = None,
+        conversation_context: dict[str, Any] | None = None,
+        answer_style: str = "brief",
+        use_llm: bool = True,
+        emit: TraceEmitter | None = None,
+        variables: dict[str, Any] | None = None,
+    ) -> None:
+        self.root = root
+        self.query = query
+        self.history = history or []
+        self.conversation_context = conversation_context or {}
+        self.answer_style = answer_style
+        self.use_llm = use_llm
+        self.emit = emit
+        self.variables = variables
+
+        self.start_time = time.perf_counter()
+        self.answer_run_id = f"run_{uuid.uuid4().hex}"
+        self.trace_steps: list[dict[str, Any]] = []
+        self.current_intent = ""
+
+        self.llm_config: Any = None
+        self.ragflow_config: Any = None
+        self.ragflow_datasets: list[str] | None = None
+        self.ragflow_ready: bool = False
+        self.llm_client: Any = None
+        self.ragflow_client: Any = None
+        self.local_index: Any = None
+        self.retrieval_backend: str = "local_index"
+        self.fast_local_mode: bool = False
+        self.local_step_count_mode: bool = False
+        self.datasets: list[str] = []
 
     def add_step(
+        self,
         step_id: str,
         label: str,
         status: str,
@@ -454,11 +476,12 @@ def _run_qa_agent_workflow_impl(
         }
         if metadata:
             step["metadata"] = metadata
-        trace_steps.append(step)
-        if emit:
-            emit({"event": "trace", "step": step, "trace_steps": trace_steps})
+        self.trace_steps.append(step)
+        if self.emit:
+            self.emit({"event": "trace", "step": step, "trace_steps": self.trace_steps})
 
     def answer_run(
+        self,
         *,
         stage: str,
         retrieval_round: int = 0,
@@ -468,9 +491,9 @@ def _run_qa_agent_workflow_impl(
         final_confidence: float = 0.0,
     ) -> dict[str, Any]:
         return {
-            "answer_run_id": answer_run_id,
-            "user_question": query,
-            "intent": current_intent,
+            "answer_run_id": self.answer_run_id,
+            "user_question": self.query,
+            "intent": self.current_intent,
             "stage": stage,
             "retrieval_round": retrieval_round,
             "revision_round": revision_round,
@@ -480,38 +503,107 @@ def _run_qa_agent_workflow_impl(
             "final_confidence": round(max(0.0, min(float(final_confidence), 1.0)), 3),
         }
 
-    def failed(reason: str, detail: str, *, answer_source: str = "no_answer") -> dict[str, Any]:
-        add_step("final", "Hoan tat an toan", "empty", detail, {"reason": reason})
-        format_plan = no_answer_format_plan()
-        return {
-            "answer": NO_SOURCE_ANSWER,
-            "citations": [],
-            "trace_steps": trace_steps,
-            "evidence_summary": {
-                "chunks_considered": 0,
-                "selected_chunks": 0,
-                "missing_evidence": [reason],
-                "conflicts": [],
-            },
-            "quality_decision": {"decision": "fail", "reason": reason, "issues": [detail]},
-            "procedure_compliance": {},
-            "format_type": "no_answer_card",
-            "format_plan": format_plan,
-            "structured_answer": no_answer_structured_answer(NO_SOURCE_ANSWER, reason),
-            "evidence_pack": {"verified_evidence": [], "missing_evidence": [reason], "conflicts": []},
-            "answer_source": answer_source,
-            "fallback_reason": reason,
-            "latency_ms": elapsed_ms(start),
-            "llm_used": False,
-            "llm_error": detail,
-            "llm_provider": None,
-            "llm_model": None,
-            "needs_clarification": False,
-            "answer_run": answer_run(stage="failed", evidence_status=reason),
-        }
 
-    scope = scope_guard(query)
-    add_step(
+def _failed_result(ctx: QaRunContext, reason: str, detail: str, *, answer_source: str = "no_answer") -> dict[str, Any]:
+    ctx.add_step("final", "Hoan tat an toan", "empty", detail, {"reason": reason})
+    format_plan = no_answer_format_plan()
+    return {
+        "answer": NO_SOURCE_ANSWER,
+        "citations": [],
+        "trace_steps": ctx.trace_steps,
+        "evidence_summary": {
+            "chunks_considered": 0,
+            "selected_chunks": 0,
+            "missing_evidence": [reason],
+            "conflicts": [],
+        },
+        "quality_decision": {"decision": "fail", "reason": reason, "issues": [detail]},
+        "procedure_compliance": {},
+        "format_type": "no_answer_card",
+        "format_plan": format_plan,
+        "structured_answer": no_answer_structured_answer(NO_SOURCE_ANSWER, reason),
+        "evidence_pack": {"verified_evidence": [], "missing_evidence": [reason], "conflicts": []},
+        "answer_source": answer_source,
+        "fallback_reason": reason,
+        "latency_ms": elapsed_ms(ctx.start_time),
+        "llm_used": False,
+        "llm_error": detail,
+        "llm_provider": None,
+        "llm_model": None,
+        "needs_clarification": False,
+        "answer_run": ctx.answer_run(stage="failed", evidence_status=reason),
+    }
+
+
+def _clarification_result(ctx: QaRunContext, answer: str, missing: list[str]) -> dict[str, Any]:
+    format_plan = clarification_format_plan()
+    structured_answer = clarification_structured_answer(answer, missing)
+    ctx.add_step("clarify", "Can lam ro thong tin", "warning", answer, {"missing_context": missing})
+    return {
+        "answer": answer,
+        "citations": [],
+        "trace_steps": ctx.trace_steps,
+        "evidence_summary": {
+            "chunks_considered": 0,
+            "selected_chunks": 0,
+            "missing_evidence": missing,
+            "conflicts": [],
+        },
+        "quality_decision": {"decision": "clarify", "reason": "missing_context", "issues": missing},
+        "format_type": "markdown",
+        "format_plan": public_format_plan(format_plan),
+        "structured_answer": public_structured_answer(structured_answer),
+        "blocks": normalize_blocks(structured_answer.get("blocks")),
+        "block_plan": normalize_block_plan(format_plan.get("block_plan")),
+        "answer_source": "clarification",
+        "fallback_reason": "missing_context",
+        "latency_ms": elapsed_ms(ctx.start_time),
+        "llm_used": True,
+        "llm_error": None,
+        "llm_provider": ctx.llm_config.provider if ctx.llm_config else None,
+        "llm_model": ctx.llm_config.model if ctx.llm_config else None,
+        "needs_clarification": True,
+        "answer_run": ctx.answer_run(
+            stage="needs_clarification",
+            answer_quality_status="clarify",
+            evidence_status="missing_context",
+        ),
+    }
+
+
+def _no_answer_result(ctx: QaRunContext, safe_reply: str, reason: str) -> dict[str, Any]:
+    format_plan = no_answer_format_plan()
+    return {
+        "answer": safe_reply,
+        "citations": [],
+        "trace_steps": ctx.trace_steps,
+        "evidence_summary": {
+            "chunks_considered": 0,
+            "selected_chunks": 0,
+            "missing_evidence": [reason],
+            "conflicts": [],
+        },
+        "quality_decision": {"decision": "scope_reject", "reason": reason, "issues": [safe_reply]},
+        "procedure_compliance": {},
+        "format_type": "no_answer_card",
+        "format_plan": format_plan,
+        "structured_answer": no_answer_structured_answer(safe_reply, reason),
+        "evidence_pack": {"verified_evidence": [], "missing_evidence": [reason], "conflicts": []},
+        "answer_source": "scope_guard",
+        "fallback_reason": reason,
+        "latency_ms": elapsed_ms(ctx.start_time),
+        "llm_used": False,
+        "llm_error": None,
+        "llm_provider": None,
+        "llm_model": None,
+        "needs_clarification": False,
+        "answer_run": ctx.answer_run(stage="failed", evidence_status=reason),
+    }
+
+
+def _stage_scope_gate(ctx: QaRunContext) -> dict[str, Any] | None:
+    scope = scope_guard(ctx.query)
+    ctx.add_step(
         "scope_guard",
         "Kiem pham vi cau hoi",
         "done" if scope["in_scope"] else "empty",
@@ -519,75 +611,68 @@ def _run_qa_agent_workflow_impl(
         {"scope": public_scope(scope)},
     )
     if not scope["in_scope"]:
-        format_plan = no_answer_format_plan()
-        return {
-            "answer": scope["safe_reply"],
-            "citations": [],
-            "trace_steps": trace_steps,
-            "evidence_summary": {
-                "chunks_considered": 0,
-                "selected_chunks": 0,
-                "missing_evidence": ["out_of_scope"],
-                "conflicts": [],
-            },
-            "quality_decision": {"decision": "scope_reject", "reason": "out_of_scope", "issues": [scope["reason"]]},
-            "procedure_compliance": {},
-            "format_type": "no_answer_card",
-            "format_plan": format_plan,
-            "structured_answer": no_answer_structured_answer(scope["safe_reply"], "out_of_scope"),
-            "evidence_pack": {"verified_evidence": [], "missing_evidence": ["out_of_scope"], "conflicts": []},
-            "answer_source": "scope_guard",
-            "fallback_reason": "out_of_scope",
-            "latency_ms": elapsed_ms(start),
-            "llm_used": False,
-            "llm_error": None,
-            "llm_provider": None,
-            "llm_model": None,
-            "needs_clarification": False,
-            "answer_run": answer_run(stage="failed", evidence_status="out_of_scope"),
-        }
+        return _no_answer_result(ctx, scope["safe_reply"], "out_of_scope")
+    return None
 
-    if not use_llm:
-        return failed("llm_disabled", "QA Agent V1 requires an LLM for analysis, drafting, and critic checks.")
 
-    llm_config = resolve_llm_config(root)
-    if not llm_config:
-        return failed("llm_not_configured", "QA Agent V1 requires POC_LLM_MODEL and an API key.")
-    ragflow_config = RAGFlowConfig.from_env()
-    ragflow_datasets = ragflow_dataset_allowlist(ragflow_config)
-    ragflow_ready = bool(ragflow_config and ragflow_config.base_url and ragflow_config.api_key and ragflow_datasets)
-    if qa_agent_require_ragflow() and not ragflow_ready:
-        return failed(
+def _stage_initialize_config(ctx: QaRunContext) -> dict[str, Any] | None:
+    if not ctx.use_llm:
+        return _failed_result(ctx, "llm_disabled", "QA Agent V1 requires an LLM for analysis, drafting, and critic checks.")
+
+    ctx.llm_config = resolve_llm_config(ctx.root)
+    if not ctx.llm_config:
+        return _failed_result(ctx, "llm_not_configured", "QA Agent V1 requires POC_LLM_MODEL and an API key.")
+    
+    ctx.ragflow_config = RAGFlowConfig.from_env()
+    ctx.ragflow_datasets = ragflow_dataset_allowlist(ctx.ragflow_config)
+    ctx.ragflow_ready = bool(ctx.ragflow_config and ctx.ragflow_config.base_url and ctx.ragflow_config.api_key and ctx.ragflow_datasets)
+    
+    if qa_agent_require_ragflow() and not ctx.ragflow_ready:
+        return _failed_result(
+            ctx,
             "ragflow_not_configured",
             "QA Agent V1 requires RAGFlow base URL, API key, and a dataset allowlist.",
         )
+    return None
 
-    llm_client = OpenAICompatibleClient(llm_config)
-    ragflow_client = RAGFlowHTTPClient(ragflow_config.base_url, ragflow_config.api_key) if ragflow_ready and ragflow_config else None
-    local_index = None if ragflow_client else LocalRagIndex(root)
-    retrieval_backend = "ragflow" if ragflow_client else "local_index"
-    fast_local_mode = retrieval_backend == "local_index" and qa_agent_fast_local_mode()
-    local_step_count_mode = fast_local_mode and is_procedure_step_count_query(query)
-    datasets = ragflow_datasets if ragflow_client else [LOCAL_RETRIEVAL_DATASET_ID]
-    add_step(
+
+def _stage_initialize_clients(ctx: QaRunContext) -> None:
+    ctx.llm_client = OpenAICompatibleClient(ctx.llm_config)
+    ctx.ragflow_client = RAGFlowHTTPClient(ctx.ragflow_config.base_url, ctx.ragflow_config.api_key) if ctx.ragflow_ready and ctx.ragflow_config else None
+    ctx.local_index = None if ctx.ragflow_client else LocalRagIndex(ctx.root)
+    ctx.retrieval_backend = "ragflow" if ctx.ragflow_client else "local_index"
+    ctx.fast_local_mode = ctx.retrieval_backend == "local_index" and qa_agent_fast_local_mode()
+    ctx.local_step_count_mode = ctx.fast_local_mode and is_procedure_step_count_query(ctx.query)
+    ctx.datasets = ctx.ragflow_datasets if ctx.ragflow_client else [LOCAL_RETRIEVAL_DATASET_ID]
+
+
+def _stage_analyze_query(ctx: QaRunContext) -> dict[str, Any] | None:
+    init_res = _stage_initialize_config(ctx)
+    if init_res is not None:
+        return init_res
+
+    _stage_initialize_clients(ctx)
+
+    ctx.add_step(
         "context_check",
         "Kiem boi canh hoi thoai",
         "done",
-        "Da ap dung boi canh gan nhat." if conversation_context.get("context_used") else "Cau hoi du doc lap de xu ly.",
-        {"conversation_context": public_conversation_context(conversation_context)},
+        "Da ap dung boi canh gan nhat." if ctx.conversation_context.get("context_used") else "Cau hoi du doc lap de xu ly.",
+        {"conversation_context": public_conversation_context(ctx.conversation_context)},
     )
-    add_step(
+    ctx.add_step(
         "analyze",
         "Phan tich cau hoi",
         "running",
         "Dang xac dinh intent, entity, boi canh hoi thoai va thong tin con thieu.",
     )
     try:
-        analysis = analyze_query(llm_client, query, history, answer_style, conversation_context)
+        analysis = analyze_query(ctx.llm_client, ctx.query, ctx.history, ctx.answer_style, ctx.conversation_context)
     except (LLMError, QAAgentWorkflowError) as exc:
-        return failed("analysis_failed", str(exc))
-    current_intent = str(analysis.get("intent") or "")
-    add_step(
+        return _failed_result(ctx, "analysis_failed", str(exc))
+        
+    ctx.current_intent = str(analysis.get("intent") or "")
+    ctx.add_step(
         "analysis_result",
         "Ket qua phan tich",
         "done",
@@ -596,45 +681,18 @@ def _run_qa_agent_workflow_impl(
     )
 
     if analysis.get("out_of_scope"):
-        return failed("out_of_scope", "Cau hoi nam ngoai pham vi tai lieu duoc phe duyet.")
+        return _failed_result(ctx, "out_of_scope", "Cau hoi nam ngoai pham vi tai lieu duoc phe duyet.")
+        
     missing = [str(item) for item in analysis.get("missing_context") or [] if item]
     if missing:
         answer = clarification_message(missing)
-        format_plan = clarification_format_plan()
-        structured_answer = clarification_structured_answer(answer, missing)
-        add_step("clarify", "Can lam ro thong tin", "warning", answer, {"missing_context": missing})
-        return {
-            "answer": answer,
-            "citations": [],
-            "trace_steps": trace_steps,
-            "evidence_summary": {
-                "chunks_considered": 0,
-                "selected_chunks": 0,
-                "missing_evidence": missing,
-                "conflicts": [],
-            },
-            "quality_decision": {"decision": "clarify", "reason": "missing_context", "issues": missing},
-            "format_type": "markdown",
-            "format_plan": public_format_plan(format_plan),
-            "structured_answer": public_structured_answer(structured_answer),
-            "blocks": normalize_blocks(structured_answer.get("blocks")),
-            "block_plan": normalize_block_plan(format_plan.get("block_plan")),
-            "answer_source": "clarification",
-            "fallback_reason": "missing_context",
-            "latency_ms": elapsed_ms(start),
-            "llm_used": True,
-            "llm_error": None,
-            "llm_provider": llm_config.provider,
-            "llm_model": llm_config.model,
-            "needs_clarification": True,
-            "answer_run": answer_run(
-                stage="needs_clarification",
-                answer_quality_status="clarify",
-                evidence_status="missing_context",
-            ),
-        }
+        return _clarification_result(ctx, answer, missing)
+        
+    return analysis
 
-    add_step(
+
+def _stage_plan_retrieval(ctx: QaRunContext, analysis: dict[str, Any]) -> dict[str, Any] | None:
+    ctx.add_step(
         "plan_retrieval",
         "Lap ke hoach truy xuat",
         "running",
@@ -642,408 +700,770 @@ def _run_qa_agent_workflow_impl(
     )
     try:
         retrieval_plan = (
-            deterministic_retrieval_plan(query, analysis)
-            if fast_local_mode
-            else plan_retrieval(llm_client, query, analysis, datasets)
+            deterministic_retrieval_plan(ctx.query, analysis)
+            if ctx.fast_local_mode
+            else plan_retrieval(ctx.llm_client, ctx.query, analysis, ctx.datasets)
         )
     except (LLMError, QAAgentWorkflowError) as exc:
-        return failed("retrieval_plan_failed", str(exc))
-    metadata_condition = approved_latest_metadata_condition(variables, analysis)
-    add_step(
+        return _failed_result(ctx, "retrieval_plan_failed", str(exc))
+        
+    metadata_condition = approved_latest_metadata_condition(ctx.variables, analysis)
+    ctx.add_step(
         "retrieval_plan",
         "Ke hoach truy xuat",
         "done",
-        f"{len(retrieval_plan['queries'])} query tren {len(datasets)} dataset allowlist.",
+        f"{len(retrieval_plan['queries'])} query tren {len(ctx.datasets)} dataset allowlist.",
         {
             "queries": retrieval_plan["queries"],
-            "datasets": datasets,
-            "backend": retrieval_backend,
-            "fast_local_mode": fast_local_mode,
+            "datasets": ctx.datasets,
+            "backend": ctx.retrieval_backend,
+            "fast_local_mode": ctx.fast_local_mode,
             "filters": metadata_filter_labels(metadata_condition),
         },
     )
+    return {
+        "retrieval_plan": retrieval_plan,
+        "metadata_condition": metadata_condition,
+    }
 
-    chunks: list[EvidenceChunk] = []
-    retrieval_errors: list[str] = []
-    retrieve_queries = list(retrieval_plan["queries"])
-    for loop_index in range(MAX_RETRIEVE_MORE_LOOPS + 1):
-        if elapsed_ms(start) > qa_agent_latency_budget_ms():
-            return failed("latency_budget_exceeded", "QA Agent exceeded the configured latency budget.")
-        try:
-            if ragflow_client:
-                retrieved = retrieve_evidence(
-                    ragflow_client,
-                    datasets,
-                    retrieve_queries,
-                    top_k=int(retrieval_plan.get("top_k") or DEFAULT_TOP_K),
-                    metadata_condition=metadata_condition,
-                )
-            else:
-                retrieved = retrieve_local_evidence(
-                    local_index or LocalRagIndex(root),
-                    retrieve_queries,
-                    top_k=int(retrieval_plan.get("top_k") or DEFAULT_TOP_K),
-                    category=str(analysis.get("likely_category") or infer_category(query) or "") or None,
-                    department=metadata_filter_value("department", variables, analysis) or None,
-                )
-                if local_step_count_mode:
-                    retrieved = expand_local_procedure_step_chunks(
-                        local_index or LocalRagIndex(root),
-                        retrieved,
-                        department=metadata_filter_value("department", variables, analysis) or None,
-                    )
-        except (RAGFlowHTTPError, ValueError) as exc:
-            reason = "ragflow_error" if ragflow_client else "local_retrieval_error"
-            return failed(reason, str(exc))
-        selected_limit = 30 if local_step_count_mode else DEFAULT_SELECTED_CHUNKS
-        chunks = rerank_chunks([*chunks, *retrieved], query, limit=selected_limit)
-        add_step(
-            "retrieve" if loop_index == 0 else f"retrieve_more_{loop_index}",
-            "Truy xuat bang chung",
-            "done" if retrieved else "empty",
-            f"Nhan {len(retrieved)} chunk tu {retrieval_backend}, chon {len(chunks)} chunk tot nhat.",
-            {"query_count": len(retrieve_queries), "selected_chunks": len(chunks), "backend": retrieval_backend},
-        )
-        if not chunks:
-            break
 
-        try:
-            evidence_pack = (
-                deterministic_evidence_pack(chunks, retrieval_plan)
-                if fast_local_mode
-                else build_evidence_pack(llm_client, chunks, retrieval_plan, analysis)
+def _stage_retrieve_evidence(
+    ctx: QaRunContext,
+    queries: list[str],
+    retrieval_plan: dict[str, Any],
+    metadata_condition: dict[str, Any],
+    analysis: dict[str, Any],
+) -> list[EvidenceChunk] | dict[str, Any]:
+    try:
+        if ctx.ragflow_client:
+            retrieved = retrieve_evidence(
+                ctx.ragflow_client,
+                ctx.datasets,
+                queries,
+                top_k=int(retrieval_plan.get("top_k") or DEFAULT_TOP_K),
+                metadata_condition=metadata_condition,
             )
-        except LLMError as exc:
-            return failed("evidence_builder_failed", str(exc))
-        evidence_summary = build_evidence_summary(chunks, datasets, evidence_pack)
-        add_step(
-            "evidence",
-            "Xay bang chung",
-            "done",
-            f"Da gom {evidence_summary['claim_count']} claim co citation tu {evidence_summary['selected_chunks']} chunk.",
-            compact_evidence_trace(evidence_summary),
+        else:
+            retrieved = retrieve_local_evidence(
+                ctx.local_index or LocalRagIndex(ctx.root),
+                queries,
+                top_k=int(retrieval_plan.get("top_k") or DEFAULT_TOP_K),
+                category=str(analysis.get("likely_category") or infer_category(ctx.query) or "") or None,
+                department=metadata_filter_value("department", ctx.variables, analysis) or None,
+            )
+            if ctx.local_step_count_mode:
+                retrieved = expand_local_procedure_step_chunks(
+                    ctx.local_index or LocalRagIndex(ctx.root),
+                    retrieved,
+                    department=metadata_filter_value("department", ctx.variables, analysis) or None,
+                )
+    except (RAGFlowHTTPError, ValueError) as exc:
+        reason = "ragflow_error" if ctx.ragflow_client else "local_retrieval_error"
+        return _failed_result(ctx, reason, str(exc))
+    return retrieved
+
+
+def _stage_build_evidence_pack(
+    ctx: QaRunContext,
+    chunks: list[EvidenceChunk],
+    retrieval_plan: dict[str, Any],
+    analysis: dict[str, Any],
+) -> dict[str, Any] | None:
+    try:
+        evidence_pack = (
+            deterministic_evidence_pack(chunks, retrieval_plan)
+            if ctx.fast_local_mode
+            else build_evidence_pack(ctx.llm_client, chunks, retrieval_plan, analysis)
         )
-        try:
-            format_plan = (
-                deterministic_format_plan(analysis, answer_style)
-                if fast_local_mode
-                else plan_response_format(llm_client, query, analysis, evidence_pack, answer_style)
-            )
-        except LLMError as exc:
-            return failed("format_plan_failed", str(exc))
-        format_type = str(format_plan.get("primary_format") or choose_format_type(analysis, answer_style))
-        add_step(
-            "format_plan",
-            "Chon cach hien thi",
-            "done",
-            f"Chon format `{format_type}`.",
-            {"format_plan": public_format_plan(format_plan)},
+    except LLMError as exc:
+        return _failed_result(ctx, "evidence_builder_failed", str(exc))
+    if isinstance(evidence_pack, dict) and "fallback_reason" in evidence_pack:
+        return evidence_pack
+    evidence_summary = build_evidence_summary(chunks, ctx.datasets, evidence_pack)
+    ctx.add_step(
+        "evidence",
+        "Xay bang chung",
+        "done",
+        f"Da gom {evidence_summary['claim_count']} claim co citation tu {evidence_summary['selected_chunks']} chunk.",
+        compact_evidence_trace(evidence_summary),
+    )
+    return evidence_pack
+
+
+def _stage_plan_format(
+    ctx: QaRunContext,
+    pack: dict[str, Any],
+    analysis: dict[str, Any],
+) -> dict[str, Any] | None:
+    try:
+        format_plan = (
+            deterministic_format_plan(analysis, ctx.answer_style)
+            if ctx.fast_local_mode
+            else plan_response_format(ctx.llm_client, ctx.query, analysis, pack, ctx.answer_style)
         )
-        try:
-            structured_answer = (
-                deterministic_step_count_answer(query, chunks, evidence_pack, format_plan)
-                if local_step_count_mode
-                else draft_answer(llm_client, query, analysis, evidence_pack, format_plan)
-            )
-            if local_step_count_mode and not structured_answer:
-                structured_answer = draft_answer(llm_client, query, analysis, evidence_pack, format_plan)
-        except LLMError as exc:
-            return failed("draft_failed", str(exc))
+    except LLMError as exc:
+        return _failed_result(ctx, "format_plan_failed", str(exc))
+    return format_plan
+
+
+def _stage_draft_answer(
+    ctx: QaRunContext,
+    chunks: list[EvidenceChunk],
+    pack: dict[str, Any],
+    plan: dict[str, Any],
+    analysis: dict[str, Any],
+) -> dict[str, Any] | None:
+    try:
+        structured_answer = (
+            deterministic_step_count_answer(ctx.query, chunks, pack, plan)
+            if ctx.local_step_count_mode
+            else draft_answer(ctx.llm_client, ctx.query, analysis, pack, plan)
+        )
+        if ctx.local_step_count_mode and not structured_answer:
+            structured_answer = draft_answer(ctx.llm_client, ctx.query, analysis, pack, plan)
+    except LLMError as exc:
+        return _failed_result(ctx, "draft_failed", str(exc))
+    return structured_answer
+
+
+def _stage_verify_answer(
+    ctx: QaRunContext,
+    answer: dict[str, Any],
+    pack: dict[str, Any],
+    plan: dict[str, Any],
+) -> dict[str, Any] | None:
+    try:
+        verification = (
+            deterministic_answer_verification(answer, pack)
+            if ctx.fast_local_mode
+            else verify_structured_answer(ctx.llm_client, ctx.query, answer, pack, plan)
+        )
+    except LLMError as exc:
+        return _failed_result(ctx, "answer_verification_failed", str(exc))
+    return verification
+
+
+def _stage_critic(
+    ctx: QaRunContext,
+    draft: str,
+    pack: dict[str, Any],
+    analysis: dict[str, Any],
+) -> dict[str, Any] | None:
+    try:
+        quality = (
+            deterministic_critic(draft, [item for item in pack.get("verified_evidence") or [] if isinstance(item, dict)])
+            if ctx.fast_local_mode
+            else critic_answer(ctx.llm_client, ctx.query, draft, pack, analysis)
+        )
+    except LLMError as exc:
+        return _failed_result(ctx, "critic_failed", str(exc))
+    return quality
+
+
+def _stage_procedure_compliance(
+    ctx: QaRunContext,
+    draft: str,
+    pack: dict[str, Any],
+    plan: dict[str, Any],
+    analysis: dict[str, Any],
+) -> dict[str, Any] | None:
+    format_type = str(plan.get("primary_format") or choose_format_type(analysis, ctx.answer_style))
+    try:
+        compliance = (
+            deterministic_procedure_compliance(draft, pack)
+            if ctx.fast_local_mode
+            else procedure_compliance_check(ctx.llm_client, ctx.query, draft, pack, analysis, format_type)
+        )
+    except LLMError as exc:
+        return _failed_result(ctx, "procedure_compliance_failed", str(exc))
+    return compliance
+
+
+def _stage_finalize(
+    ctx: QaRunContext,
+    draft: dict[str, Any],
+    chunks: list[EvidenceChunk],
+    pack: dict[str, Any],
+    plan: dict[str, Any],
+    quality: dict[str, Any],
+    compliance: dict[str, Any],
+    analysis: dict[str, Any],
+    loop_index: int,
+) -> dict[str, Any]:
+    format_type = str(plan.get("primary_format") or choose_format_type(analysis, ctx.answer_style))
+    rendered_draft = render_structured_answer(draft)
+    final_answer = finalize_answer(rendered_draft, format_type)
+    citations = citations_from_chunks(chunks)
+    ctx.add_step(
+        "format",
+        "Dinh dang cau tra loi",
+        "done",
+        f"Final formatter dung `{format_type}` va {len(citations)} citation.",
+        {"format_type": format_type, "citation_count": len(citations)},
+    )
+    return {
+        "answer": final_answer,
+        "citations": citations,
+        "trace_steps": ctx.trace_steps,
+        "evidence_summary": build_evidence_summary(chunks, ctx.datasets, pack),
+        "quality_decision": quality,
+        "procedure_compliance": compliance,
+        "format_type": format_type,
+        "format_plan": public_format_plan(plan),
+        "structured_answer": public_structured_answer(draft),
+        "answer_source": "qa_agent_llm",
+        "fallback_reason": None,
+        "latency_ms": elapsed_ms(ctx.start_time),
+        "llm_used": True,
+        "llm_error": None,
+        "llm_provider": ctx.llm_config.provider,
+        "llm_model": ctx.llm_config.model,
+        "needs_clarification": False,
+        "evidence_pack": public_evidence_pack(pack),
+        "answer_run": ctx.answer_run(
+            stage="finalized",
+            retrieval_round=loop_index + 1,
+            revision_round=loop_index + 1,
+            answer_quality_status="passed",
+            evidence_status="sufficient",
+            final_confidence=final_confidence(pack, quality, compliance),
+        ),
+    }
+
+
+def _is_fallback(val: Any) -> bool:
+    return isinstance(val, dict) and "fallback_reason" in val
+
+
+def _get_selected_limit(ctx: QaRunContext) -> int:
+    return 30 if ctx.local_step_count_mode else DEFAULT_SELECTED_CHUNKS
+
+
+def _get_retrieve_step_info(loop_index: int, retrieved: list[EvidenceChunk]) -> tuple[str, str]:
+    name = "retrieve" if loop_index == 0 else f"retrieve_more_{loop_index}"
+    status = "done" if retrieved else "empty"
+    return name, status
+
+
+def _repair_and_reverify(
+    ctx: QaRunContext,
+    structured_answer: dict[str, Any],
+    evidence_pack: dict[str, Any],
+    verification: dict[str, Any],
+    format_plan: dict[str, Any],
+) -> dict[str, Any] | tuple[dict[str, Any], str, dict[str, Any]]:
+    try:
+        structured_answer = repair_structured_answer(
+            ctx.llm_client,
+            ctx.query,
+            structured_answer,
+            evidence_pack,
+            verification,
+            format_plan,
+        )
+    except LLMError as exc:
+        return _failed_result(ctx, "answer_repair_failed", str(exc))
+    draft = render_structured_answer(structured_answer)
+    verification = verify_structured_answer(ctx.llm_client, ctx.query, structured_answer, evidence_pack, format_plan)
+    ctx.add_step(
+        "answer_repair",
+        "Sua cau tra loi mot vong",
+        "done" if verification.get("passed") else "warning",
+        str(verification.get("rationale") or verification.get("final_action") or ""),
+        {"answer_verification": public_answer_verification(verification)},
+    )
+    return structured_answer, draft, verification
+
+
+def _needs_clarification_result(
+    ctx: QaRunContext,
+    compliance: dict[str, Any],
+    evidence_pack: dict[str, Any],
+    format_plan: dict[str, Any],
+    structured_answer: dict[str, Any],
+    chunks: list[EvidenceChunk],
+    quality: dict[str, Any],
+    loop_index: int,
+) -> dict[str, Any]:
+    answer = str(compliance.get("clarifying_question") or "Ban bo sung them thong tin de minh tra cuu dung quy trinh nhe.")
+    provider = ctx.llm_config.provider if ctx.llm_config else None
+    model = ctx.llm_config.model if ctx.llm_config else None
+    return {
+        "answer": answer,
+        "citations": [],
+        "trace_steps": ctx.trace_steps,
+        "evidence_summary": build_evidence_summary(chunks, ctx.datasets, evidence_pack),
+        "quality_decision": quality,
+        "procedure_compliance": compliance,
+        "format_type": "markdown",
+        "format_plan": public_format_plan(format_plan),
+        "structured_answer": public_structured_answer(structured_answer),
+        "answer_source": "clarification",
+        "fallback_reason": "procedure_clarification_required",
+        "latency_ms": elapsed_ms(ctx.start_time),
+        "llm_used": True,
+        "llm_error": None,
+        "llm_provider": provider,
+        "llm_model": model,
+        "needs_clarification": True,
+        "evidence_pack": public_evidence_pack(evidence_pack),
+        "answer_run": ctx.answer_run(
+            stage="needs_clarification",
+            retrieval_round=loop_index + 1,
+            revision_round=loop_index + 1,
+            answer_quality_status="clarify",
+            evidence_status="ambiguous",
+            final_confidence=final_confidence(evidence_pack, quality, compliance),
+        ),
+    }
+
+
+def _compliance_failed_result(
+    ctx: QaRunContext,
+    compliance: dict[str, Any],
+    evidence_pack: dict[str, Any],
+    chunks: list[EvidenceChunk],
+    quality: dict[str, Any],
+    loop_index: int,
+) -> dict[str, Any]:
+    gap_reason = "procedure_compliance_failed"
+    no_answer_plan = no_answer_format_plan()
+    provider = ctx.llm_config.provider if ctx.llm_config else None
+    model = ctx.llm_config.model if ctx.llm_config else None
+    return {
+        "answer": NO_SOURCE_ANSWER,
+        "citations": [],
+        "trace_steps": ctx.trace_steps,
+        "evidence_summary": build_evidence_summary(chunks, ctx.datasets, evidence_pack),
+        "quality_decision": quality,
+        "procedure_compliance": compliance,
+        "format_type": "no_answer_card",
+        "format_plan": no_answer_plan,
+        "structured_answer": no_answer_structured_answer(NO_SOURCE_ANSWER, gap_reason),
+        "answer_source": "no_answer",
+        "fallback_reason": gap_reason,
+        "latency_ms": elapsed_ms(ctx.start_time),
+        "llm_used": True,
+        "llm_error": None,
+        "llm_provider": provider,
+        "llm_model": model,
+        "needs_clarification": False,
+        "evidence_pack": public_evidence_pack(evidence_pack),
+        "answer_run": ctx.answer_run(
+            stage="failed",
+            retrieval_round=loop_index + 1,
+            revision_round=loop_index + 1,
+            answer_quality_status="failed",
+            evidence_status=gap_reason,
+            final_confidence=final_confidence(evidence_pack, quality, compliance),
+        ),
+    }
+
+
+def _verification_clarification_result(
+    ctx: QaRunContext,
+    verification: dict[str, Any],
+    chunks: list[EvidenceChunk],
+    evidence_pack: dict[str, Any],
+    loop_index: int,
+) -> dict[str, Any]:
+    answer = str(verification.get("clarifying_question") or "Ban bo sung them thong tin de minh tra cuu dung quy trinh nhe.")
+    v_format_plan = clarification_format_plan()
+    v_structured_answer = clarification_structured_answer(answer, normalize_string_list(verification.get("issues")))
+    provider = ctx.llm_config.provider if ctx.llm_config else None
+    model = ctx.llm_config.model if ctx.llm_config else None
+    return {
+        "answer": answer,
+        "citations": [],
+        "trace_steps": ctx.trace_steps,
+        "evidence_summary": build_evidence_summary(chunks, ctx.datasets, evidence_pack),
+        "quality_decision": verification,
+        "procedure_compliance": {},
+        "format_type": "clarification",
+        "format_plan": public_format_plan(v_format_plan),
+        "structured_answer": public_structured_answer(v_structured_answer),
+        "answer_source": "clarification",
+        "fallback_reason": "answer_verification_needs_clarification",
+        "latency_ms": elapsed_ms(ctx.start_time),
+        "llm_used": True,
+        "llm_error": None,
+        "llm_provider": provider,
+        "llm_model": model,
+        "needs_clarification": True,
+        "evidence_pack": public_evidence_pack(evidence_pack),
+        "answer_run": ctx.answer_run(
+            stage="needs_clarification",
+            retrieval_round=loop_index + 1,
+            revision_round=0,
+            answer_quality_status="clarify",
+            evidence_status="ambiguous",
+        ),
+    }
+
+
+def _verification_failed_result(
+    ctx: QaRunContext,
+    verification: dict[str, Any],
+    chunks: list[EvidenceChunk],
+    evidence_pack: dict[str, Any],
+    loop_index: int,
+) -> dict[str, Any]:
+    gap_reason = "answer_verification_failed"
+    no_answer_plan = no_answer_format_plan()
+    provider = ctx.llm_config.provider if ctx.llm_config else None
+    model = ctx.llm_config.model if ctx.llm_config else None
+    return {
+        "answer": NO_SOURCE_ANSWER,
+        "citations": [],
+        "trace_steps": ctx.trace_steps,
+        "evidence_summary": build_evidence_summary(chunks, ctx.datasets, evidence_pack),
+        "quality_decision": verification,
+        "procedure_compliance": {},
+        "format_type": "no_answer_card",
+        "format_plan": no_answer_plan,
+        "structured_answer": no_answer_structured_answer(NO_SOURCE_ANSWER, gap_reason),
+        "answer_source": "no_answer",
+        "fallback_reason": gap_reason,
+        "latency_ms": elapsed_ms(ctx.start_time),
+        "llm_used": True,
+        "llm_error": None,
+        "llm_provider": provider,
+        "llm_model": model,
+        "needs_clarification": False,
+        "evidence_pack": public_evidence_pack(evidence_pack),
+        "answer_run": ctx.answer_run(
+            stage="failed",
+            retrieval_round=loop_index + 1,
+            revision_round=loop_index + 1,
+            answer_quality_status="failed",
+            evidence_status=gap_reason,
+        ),
+    }
+
+
+def _handle_verification_outcome(
+    ctx: QaRunContext,
+    verification: dict[str, Any],
+    loop_index: int,
+    evidence_pack: dict[str, Any],
+    format_plan: dict[str, Any],
+    chunks: list[EvidenceChunk],
+    structured_answer: dict[str, Any],
+) -> dict[str, Any] | tuple[list[str], list[EvidenceChunk]] | tuple[dict[str, Any], str, dict[str, Any]]:
+    if verification.get("passed"):
         draft = render_structured_answer(structured_answer)
-        add_step("draft", "Tao ban nhap", "done", f"Da tao cau tra loi dang `{format_type}`.", {"format_type": format_type})
+        return structured_answer, draft, verification
 
-        try:
-            verification = (
-                deterministic_answer_verification(structured_answer, evidence_pack)
-                if fast_local_mode
-                else verify_structured_answer(llm_client, query, structured_answer, evidence_pack, format_plan)
-            )
-        except LLMError as exc:
-            return failed("answer_verification_failed", str(exc))
-        add_step(
-            "answer_verification",
-            "Kiem schema va source anchor",
-            "done" if verification.get("passed") else "warning",
-            str(verification.get("rationale") or verification.get("final_action") or ""),
-            {"answer_verification": public_answer_verification(verification)},
+    action = verification.get("final_action")
+    if action == "retrieve_more" and loop_index < MAX_RETRIEVE_MORE_LOOPS:
+        next_queries = targeted_queries(verification, ctx.query)
+        ctx.add_step(
+            "verify_retrieve_more_plan",
+            "Lap vong truy xuat bo sung",
+            "warning",
+            f"Verifier yeu cau truy xuat bo sung voi {len(next_queries)} query.",
+            {"queries": next_queries},
         )
-        if not verification.get("passed") and verification.get("final_action") == "retrieve_more" and loop_index < MAX_RETRIEVE_MORE_LOOPS:
-            retrieve_queries = targeted_queries(verification, query)
-            add_step(
-                "verify_retrieve_more_plan",
-                "Lap vong truy xuat bo sung",
-                "warning",
-                f"Verifier yeu cau truy xuat bo sung voi {len(retrieve_queries)} query.",
-                {"queries": retrieve_queries},
-            )
-            continue
-        if not verification.get("passed") and verification.get("final_action") == "needs_clarification":
-            answer = str(verification.get("clarifying_question") or "Ban bo sung them thong tin de minh tra cuu dung quy trinh nhe.")
-            format_plan = clarification_format_plan()
-            structured_answer = clarification_structured_answer(answer, normalize_string_list(verification.get("issues")))
-            return {
-                "answer": answer,
-                "citations": [],
-                "trace_steps": trace_steps,
-                "evidence_summary": evidence_summary,
-                "quality_decision": verification,
-                "procedure_compliance": {},
-                "format_type": "clarification",
-                "format_plan": public_format_plan(format_plan),
-                "structured_answer": public_structured_answer(structured_answer),
-                "answer_source": "clarification",
-                "fallback_reason": "answer_verification_needs_clarification",
-                "latency_ms": elapsed_ms(start),
-                "llm_used": True,
-                "llm_error": None,
-                "llm_provider": llm_config.provider,
-                "llm_model": llm_config.model,
-                "needs_clarification": True,
-                "evidence_pack": public_evidence_pack(evidence_pack),
-                "answer_run": answer_run(
-                    stage="needs_clarification",
-                    retrieval_round=loop_index + 1,
-                    revision_round=0,
-                    answer_quality_status="clarify",
-                    evidence_status="ambiguous",
-                ),
-            }
-        if not verification.get("passed") and verification.get("final_action") == "repair_answer":
-            try:
-                structured_answer = repair_structured_answer(
-                    llm_client,
-                    query,
-                    structured_answer,
-                    evidence_pack,
-                    verification,
-                    format_plan,
-                )
-            except LLMError as exc:
-                return failed("answer_repair_failed", str(exc))
-            draft = render_structured_answer(structured_answer)
-            verification = verify_structured_answer(llm_client, query, structured_answer, evidence_pack, format_plan)
-            add_step(
-                "answer_repair",
-                "Sua cau tra loi mot vong",
-                "done" if verification.get("passed") else "warning",
-                str(verification.get("rationale") or verification.get("final_action") or ""),
-                {"answer_verification": public_answer_verification(verification)},
-            )
-        if not verification.get("passed"):
-            gap_reason = "answer_verification_failed"
-            no_answer_plan = no_answer_format_plan()
-            return {
-                "answer": NO_SOURCE_ANSWER,
-                "citations": [],
-                "trace_steps": trace_steps,
-                "evidence_summary": evidence_summary,
-                "quality_decision": verification,
-                "procedure_compliance": {},
-                "format_type": "no_answer_card",
-                "format_plan": no_answer_plan,
-                "structured_answer": no_answer_structured_answer(NO_SOURCE_ANSWER, gap_reason),
-                "answer_source": "no_answer",
-                "fallback_reason": gap_reason,
-                "latency_ms": elapsed_ms(start),
-                "llm_used": True,
-                "llm_error": None,
-                "llm_provider": llm_config.provider,
-                "llm_model": llm_config.model,
-                "needs_clarification": False,
-                "evidence_pack": public_evidence_pack(evidence_pack),
-                "answer_run": answer_run(
-                    stage="failed",
-                    retrieval_round=loop_index + 1,
-                    revision_round=loop_index + 1,
-                    answer_quality_status="failed",
-                    evidence_status=gap_reason,
-                ),
-            }
+        return next_queries, chunks
 
-        try:
-            quality = (
-                deterministic_critic(draft, [item for item in evidence_pack.get("verified_evidence") or [] if isinstance(item, dict)])
-                if fast_local_mode
-                else critic_answer(llm_client, query, draft, evidence_pack, analysis)
-            )
-        except LLMError as exc:
-            return failed("critic_failed", str(exc))
-        decision = str(quality.get("decision") or "pass").lower()
-        add_step(
-            "critic",
-            "Kiem dinh cau tra loi",
-            "done" if decision == "pass" else "warning",
-            str(quality.get("rationale") or quality.get("reason") or decision),
-            {"quality_decision": quality},
+    if action == "needs_clarification":
+        return _verification_clarification_result(ctx, verification, chunks, evidence_pack, loop_index)
+
+    if action == "repair_answer":
+        repair_res = _repair_and_reverify(ctx, structured_answer, evidence_pack, verification, format_plan)
+        if isinstance(repair_res, dict):
+            return repair_res
+        structured_answer, draft, verification = repair_res
+        if verification.get("passed"):
+            return structured_answer, draft, verification
+
+    return _verification_failed_result(ctx, verification, chunks, evidence_pack, loop_index)
+
+
+def _handle_critic_outcome(
+    ctx: QaRunContext,
+    quality: dict[str, Any],
+    loop_index: int,
+    evidence_pack: dict[str, Any],
+    chunks: list[EvidenceChunk],
+) -> dict[str, Any] | tuple[list[str], list[EvidenceChunk]] | None:
+    decision = str(quality.get("decision") or "pass").lower()
+    ctx.add_step(
+        "critic",
+        "Kiem dinh cau tra loi",
+        "done" if decision == "pass" else "warning",
+        str(quality.get("rationale") or quality.get("reason") or decision),
+        {"quality_decision": quality},
+    )
+    if decision == "retrieve_more" and loop_index < MAX_RETRIEVE_MORE_LOOPS:
+        next_queries = targeted_queries(quality, ctx.query)
+        ctx.add_step(
+            "retrieve_more_plan",
+            "Lap vong truy xuat bo sung",
+            "warning",
+            f"Critic yeu cau truy xuat bo sung voi {len(next_queries)} query.",
+            {"queries": next_queries},
         )
-        if decision == "retrieve_more" and loop_index < MAX_RETRIEVE_MORE_LOOPS:
-            retrieve_queries = targeted_queries(quality, query)
-            add_step(
-                "retrieve_more_plan",
-                "Lap vong truy xuat bo sung",
-                "warning",
-                f"Critic yeu cau truy xuat bo sung voi {len(retrieve_queries)} query.",
-                {"queries": retrieve_queries},
-            )
-            continue
-        if decision != "pass":
-            gap_reason = "insufficient_evidence"
-            no_answer_plan = no_answer_format_plan()
-            return {
-                "answer": NO_SOURCE_ANSWER,
-                "citations": [],
-                "trace_steps": trace_steps,
-                "evidence_summary": evidence_summary,
-                "quality_decision": quality,
-                "procedure_compliance": {},
-                "format_type": "no_answer_card",
-                "format_plan": no_answer_plan,
-                "structured_answer": no_answer_structured_answer(NO_SOURCE_ANSWER, gap_reason),
-                "answer_source": "no_answer",
-                "fallback_reason": gap_reason,
-                "latency_ms": elapsed_ms(start),
-                "llm_used": True,
-                "llm_error": None,
-                "llm_provider": llm_config.provider,
-                "llm_model": llm_config.model,
-                "needs_clarification": False,
-                "evidence_pack": public_evidence_pack(evidence_pack),
-                "answer_run": answer_run(
-                    stage="failed",
-                    retrieval_round=loop_index + 1,
-                    revision_round=loop_index + 1,
-                    answer_quality_status="failed",
-                    evidence_status=gap_reason,
-                ),
-            }
-        try:
-            compliance = (
-                deterministic_procedure_compliance(draft, evidence_pack)
-                if fast_local_mode
-                else procedure_compliance_check(llm_client, query, draft, evidence_pack, analysis, format_type)
-            )
-        except LLMError as exc:
-            return failed("procedure_compliance_failed", str(exc))
-        compliance_decision = normalize_final_decision(compliance.get("final_decision"))
-        add_step(
-            "procedure_compliance",
-            "Kiem quy chuan tra loi quy trinh",
-            "done" if compliance_decision == "release" else "warning",
-            str(compliance.get("rationale") or compliance.get("procedure_compliance") or compliance_decision),
-            {"procedure_compliance": compliance},
-        )
-        if compliance_decision == "retrieve_more" and loop_index < MAX_RETRIEVE_MORE_LOOPS:
-            retrieve_queries = targeted_queries(compliance, query)
-            add_step(
-                "retrieve_more_plan",
-                "Lap vong truy xuat bo sung",
-                "warning",
-                f"Compliance checker yeu cau truy xuat bo sung voi {len(retrieve_queries)} query.",
-                {"queries": retrieve_queries},
-            )
-            continue
-        if compliance_decision == "needs_clarification":
-            answer = str(compliance.get("clarifying_question") or "Ban bo sung them thong tin de minh tra cuu dung quy trinh nhe.")
-            return {
-                "answer": answer,
-                "citations": [],
-                "trace_steps": trace_steps,
-                "evidence_summary": evidence_summary,
-                "quality_decision": quality,
-                "procedure_compliance": compliance,
-                "format_type": "markdown",
-                "format_plan": public_format_plan(format_plan),
-                "structured_answer": public_structured_answer(structured_answer),
-                "answer_source": "clarification",
-                "fallback_reason": "procedure_clarification_required",
-                "latency_ms": elapsed_ms(start),
-                "llm_used": True,
-                "llm_error": None,
-                "llm_provider": llm_config.provider,
-                "llm_model": llm_config.model,
-                "needs_clarification": True,
-                "evidence_pack": public_evidence_pack(evidence_pack),
-                "answer_run": answer_run(
-                    stage="needs_clarification",
-                    retrieval_round=loop_index + 1,
-                    revision_round=loop_index + 1,
-                    answer_quality_status="clarify",
-                    evidence_status="ambiguous",
-                    final_confidence=final_confidence(evidence_pack, quality, compliance),
-                ),
-            }
-        if compliance_decision != "release":
-            gap_reason = "procedure_compliance_failed"
-            no_answer_plan = no_answer_format_plan()
-            return {
-                "answer": NO_SOURCE_ANSWER,
-                "citations": [],
-                "trace_steps": trace_steps,
-                "evidence_summary": evidence_summary,
-                "quality_decision": quality,
-                "procedure_compliance": compliance,
-                "format_type": "no_answer_card",
-                "format_plan": no_answer_plan,
-                "structured_answer": no_answer_structured_answer(NO_SOURCE_ANSWER, gap_reason),
-                "answer_source": "no_answer",
-                "fallback_reason": gap_reason,
-                "latency_ms": elapsed_ms(start),
-                "llm_used": True,
-                "llm_error": None,
-                "llm_provider": llm_config.provider,
-                "llm_model": llm_config.model,
-                "needs_clarification": False,
-                "evidence_pack": public_evidence_pack(evidence_pack),
-                "answer_run": answer_run(
-                    stage="failed",
-                    retrieval_round=loop_index + 1,
-                    revision_round=loop_index + 1,
-                    answer_quality_status="failed",
-                    evidence_status=gap_reason,
-                    final_confidence=final_confidence(evidence_pack, quality, compliance),
-                ),
-            }
-        final_answer = finalize_answer(draft, format_type)
-        citations = citations_from_chunks(chunks)
-        add_step(
-            "format",
-            "Dinh dang cau tra loi",
-            "done",
-            f"Final formatter dung `{format_type}` va {len(citations)} citation.",
-            {"format_type": format_type, "citation_count": len(citations)},
-        )
+        return next_queries, chunks
+    if decision != "pass":
+        gap_reason = "insufficient_evidence"
+        no_answer_plan = no_answer_format_plan()
+        provider = ctx.llm_config.provider if ctx.llm_config else None
+        model = ctx.llm_config.model if ctx.llm_config else None
         return {
-            "answer": final_answer,
-            "citations": citations,
-            "trace_steps": trace_steps,
-            "evidence_summary": evidence_summary,
+            "answer": NO_SOURCE_ANSWER,
+            "citations": [],
+            "trace_steps": ctx.trace_steps,
+            "evidence_summary": build_evidence_summary(chunks, ctx.datasets, evidence_pack),
             "quality_decision": quality,
-            "procedure_compliance": compliance,
-            "format_type": format_type,
-            "format_plan": public_format_plan(format_plan),
-            "structured_answer": public_structured_answer(structured_answer),
-            "answer_source": "qa_agent_llm",
-            "fallback_reason": None,
-            "latency_ms": elapsed_ms(start),
+            "procedure_compliance": {},
+            "format_type": "no_answer_card",
+            "format_plan": no_answer_plan,
+            "structured_answer": no_answer_structured_answer(NO_SOURCE_ANSWER, gap_reason),
+            "answer_source": "no_answer",
+            "fallback_reason": gap_reason,
+            "latency_ms": elapsed_ms(ctx.start_time),
             "llm_used": True,
             "llm_error": None,
-            "llm_provider": llm_config.provider,
-            "llm_model": llm_config.model,
+            "llm_provider": provider,
+            "llm_model": model,
             "needs_clarification": False,
             "evidence_pack": public_evidence_pack(evidence_pack),
-            "answer_run": answer_run(
-                stage="finalized",
+            "answer_run": ctx.answer_run(
+                stage="failed",
                 retrieval_round=loop_index + 1,
                 revision_round=loop_index + 1,
-                answer_quality_status="passed",
-                evidence_status="sufficient",
-                final_confidence=final_confidence(evidence_pack, quality, compliance),
+                answer_quality_status="failed",
+                evidence_status=gap_reason,
             ),
         }
+    return None
 
-    if retrieval_errors:
-        return failed("ragflow_error", "; ".join(retrieval_errors))
-    return failed("no_active_source", f"Khong tim thay chunk approved/latest/active phu hop trong {retrieval_backend}.")
+
+def _handle_compliance_outcome(
+    ctx: QaRunContext,
+    compliance: dict[str, Any],
+    loop_index: int,
+    evidence_pack: dict[str, Any],
+    chunks: list[EvidenceChunk],
+    format_plan: dict[str, Any],
+    quality: dict[str, Any],
+    structured_answer: dict[str, Any],
+) -> dict[str, Any] | tuple[list[str], list[EvidenceChunk]] | None:
+    compliance_decision = normalize_final_decision(compliance.get("final_decision"))
+    ctx.add_step(
+        "procedure_compliance",
+        "Kiem quy chuan tra loi quy trinh",
+        "done" if compliance_decision == "release" else "warning",
+        str(compliance.get("rationale") or compliance.get("procedure_compliance") or compliance_decision),
+        {"procedure_compliance": compliance},
+    )
+    if compliance_decision == "retrieve_more" and loop_index < MAX_RETRIEVE_MORE_LOOPS:
+        next_queries = targeted_queries(compliance, ctx.query)
+        ctx.add_step(
+            "retrieve_more_plan",
+            "Lap vong truy xuat bo sung",
+            "warning",
+            f"Compliance checker yeu cau truy xuat bo sung voi {len(next_queries)} query.",
+            {"queries": next_queries},
+        )
+        return next_queries, chunks
+    if compliance_decision == "needs_clarification":
+        return _needs_clarification_result(ctx, compliance, evidence_pack, format_plan, structured_answer, chunks, quality, loop_index)
+    if compliance_decision != "release":
+        return _compliance_failed_result(ctx, compliance, evidence_pack, chunks, quality, loop_index)
+    return None
+
+
+def _draft_and_verify(
+    ctx: QaRunContext,
+    loop_index: int,
+    retrieve_queries: list[str],
+    chunks: list[EvidenceChunk],
+    retrieval_plan: dict[str, Any],
+    metadata_condition: dict[str, Any],
+    analysis: dict[str, Any],
+) -> dict[str, Any] | tuple[list[str], list[EvidenceChunk]] | tuple[dict[str, Any], str, dict[str, Any], dict[str, Any], dict[str, Any], list[EvidenceChunk]]:
+    retrieved = _stage_retrieve_evidence(ctx, retrieve_queries, retrieval_plan, metadata_condition, analysis)
+    if _is_fallback(retrieved):
+        return retrieved
+
+    selected_limit = _get_selected_limit(ctx)
+    chunks = rerank_chunks([*chunks, *retrieved], ctx.query, limit=selected_limit)
+    step_name, step_status = _get_retrieve_step_info(loop_index, retrieved)
+    ctx.add_step(
+        step_name,
+        "Truy xuat bang chung",
+        step_status,
+        f"Nhan {len(retrieved)} chunk tu {ctx.retrieval_backend}, chon {len(chunks)} chunk tot nhat.",
+        {"query_count": len(retrieve_queries), "selected_chunks": len(chunks), "backend": ctx.retrieval_backend},
+    )
+    if not chunks:
+        return _failed_result(ctx, "no_active_source", f"Khong tim thay chunk approved/latest/active phu hop trong {ctx.retrieval_backend}.")
+
+    evidence_pack = _stage_build_evidence_pack(ctx, chunks, retrieval_plan, analysis)
+    if _is_fallback(evidence_pack):
+        return evidence_pack
+
+    format_plan = _stage_plan_format(ctx, evidence_pack, analysis)
+    if _is_fallback(format_plan):
+        return format_plan
+    format_type = str(format_plan.get("primary_format") or choose_format_type(analysis, ctx.answer_style))
+    ctx.add_step(
+        "format_plan",
+        "Chon cach hien thi",
+        "done",
+        f"Chon format `{format_type}`.",
+        {"format_plan": public_format_plan(format_plan)},
+    )
+
+    structured_answer = _stage_draft_answer(ctx, chunks, evidence_pack, format_plan, analysis)
+    if _is_fallback(structured_answer):
+        return structured_answer
+    draft = render_structured_answer(structured_answer)
+    ctx.add_step("draft", "Tao ban nhap", "done", f"Da tao cau tra loi dang `{format_type}`.", {"format_type": format_type})
+
+    verification = _stage_verify_answer(ctx, structured_answer, evidence_pack, format_plan)
+    if _is_fallback(verification):
+        return verification
+    
+    step_status = "done" if verification.get("passed") else "warning"
+    ctx.add_step(
+        "answer_verification",
+        "Kiem schema va source anchor",
+        step_status,
+        str(verification.get("rationale") or verification.get("final_action") or ""),
+        {"answer_verification": public_answer_verification(verification)},
+    )
+
+    v_res = _handle_verification_outcome(
+        ctx,
+        verification,
+        loop_index,
+        evidence_pack,
+        format_plan,
+        chunks,
+        structured_answer,
+    )
+    if isinstance(v_res, dict):
+        return v_res
+    if isinstance(v_res, tuple) and len(v_res) == 2:
+        return v_res
+    structured_answer, draft, verification = v_res
+
+    return structured_answer, draft, verification, evidence_pack, format_plan, chunks
+
+
+def _run_loop_round(
+    ctx: QaRunContext,
+    loop_index: int,
+    retrieve_queries: list[str],
+    chunks: list[EvidenceChunk],
+    retrieval_plan: dict[str, Any],
+    metadata_condition: dict[str, Any],
+    analysis: dict[str, Any],
+) -> dict[str, Any] | tuple[list[str], list[EvidenceChunk]]:
+    draft_res = _draft_and_verify(
+        ctx,
+        loop_index,
+        retrieve_queries,
+        chunks,
+        retrieval_plan,
+        metadata_condition,
+        analysis,
+    )
+    if isinstance(draft_res, dict):
+        return draft_res
+    if isinstance(draft_res, tuple) and len(draft_res) == 2:
+        return draft_res
+
+    structured_answer, draft, verification, evidence_pack, format_plan, chunks = draft_res
+
+    quality = _stage_critic(ctx, draft, evidence_pack, analysis)
+    if _is_fallback(quality):
+        return quality
+
+    q_res = _handle_critic_outcome(ctx, quality, loop_index, evidence_pack, chunks)
+    if q_res is not None:
+        return q_res
+
+    compliance = _stage_procedure_compliance(ctx, draft, evidence_pack, format_plan, analysis)
+    if _is_fallback(compliance):
+        return compliance
+
+    c_res = _handle_compliance_outcome(
+        ctx,
+        compliance,
+        loop_index,
+        evidence_pack,
+        chunks,
+        format_plan,
+        quality,
+        structured_answer,
+    )
+    if c_res is not None:
+        return c_res
+
+    return _stage_finalize(ctx, structured_answer, chunks, evidence_pack, format_plan, quality, compliance, analysis, loop_index)
+
+
+def _run_qa_agent_workflow_impl(
+    root: Path,
+    query: str,
+    *,
+    history: list[dict[str, Any]] | None = None,
+    conversation_context: dict[str, Any] | None = None,
+    answer_style: str = "brief",
+    use_llm: bool = True,
+    emit: TraceEmitter | None = None,
+    variables: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    ctx = QaRunContext(
+        root=root,
+        query=query,
+        history=history,
+        conversation_context=conversation_context,
+        answer_style=answer_style,
+        use_llm=use_llm,
+        emit=emit,
+        variables=variables,
+    )
+
+    scope_res = _stage_scope_gate(ctx)
+    if scope_res is not None:
+        return scope_res
+
+    analysis = _stage_analyze_query(ctx)
+    if isinstance(analysis, dict) and "fallback_reason" in analysis:
+        return analysis
+
+    plan_res = _stage_plan_retrieval(ctx, analysis)
+    if isinstance(plan_res, dict) and "fallback_reason" in plan_res:
+        return plan_res
+    retrieval_plan = plan_res["retrieval_plan"]
+    metadata_condition = plan_res["metadata_condition"]
+
+    chunks: list[EvidenceChunk] = []
+    retrieve_queries = list(retrieval_plan["queries"])
+
+    for loop_index in range(MAX_RETRIEVE_MORE_LOOPS + 1):
+        if elapsed_ms(ctx.start_time) > qa_agent_latency_budget_ms():
+            return _failed_result(ctx, "latency_budget_exceeded", "QA Agent exceeded the configured latency budget.")
+
+        res = _run_loop_round(
+            ctx,
+            loop_index,
+            retrieve_queries,
+            chunks,
+            retrieval_plan,
+            metadata_condition,
+            analysis,
+        )
+        if isinstance(res, dict):
+            return res
+        retrieve_queries, chunks = res
+
+    return _failed_result(ctx, "no_active_source", f"Khong tim thay chunk approved/latest/active phu hop trong {ctx.retrieval_backend}.")
 
 
 def run_qa_agent_workflow(

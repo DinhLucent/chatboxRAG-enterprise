@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.coverage
 .pytest-tmp*/
 .mypy_cache/
 .ruff_cache/
@@ -54,6 +55,12 @@ manifest/*
 .cursor/
 .vercel/
 vercel-demo/.vercel/
+.vscode/
+.specify/
+.claude/
+.agents/
+.kiro/*
+!.kiro/specs/
 
 # Local scratch/debug scripts and notes
 scratch/

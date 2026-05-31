@@ -14,6 +14,31 @@
     <link rel="stylesheet" href="/static/user/user-chat.css?v=20260527-qa-agent" />
   </head>
   <body>
+    <div id="pageLoader" class="page-loader">
+      <div class="loader-content">
+        <div class="loader-logo">
+          <svg width="72" height="72" viewBox="0 0 88 88" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="loaderGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#fb7185"/>
+                <stop offset="100%" stop-color="#e11d48"/>
+              </linearGradient>
+            </defs>
+            <circle cx="44" cy="44" r="34" stroke="url(#loaderGradient)" stroke-width="2.5" stroke-dasharray="10 6" class="loader-spin-circle"/>
+            <rect x="32" y="33" width="24" height="20" rx="6" fill="url(#loaderGradient)"/>
+            <circle cx="39" cy="42" r="2" fill="#ffffff"/>
+            <circle cx="49" cy="42" r="2" fill="#ffffff"/>
+            <path d="M41 47.5C42 48.5 43 49 44 49C45 49 46 48.5 47 47.5" stroke="#ffffff" stroke-width="1.5" stroke-linecap="round"/>
+            <rect x="43" y="26" width="2" height="7" fill="url(#loaderGradient)"/>
+            <circle cx="44" cy="25" r="2" fill="url(#loaderGradient)"/>
+          </svg>
+        </div>
+        <div class="loader-title">OrientSOP</div>
+        <div class="loader-bar-bg">
+          <div class="loader-bar"></div>
+        </div>
+      </div>
+    </div>
     <div class="user-shell">
       <aside class="rail" aria-label="Điều hướng">
         <div class="rail-brand" aria-label="OrientSOP | Hệ thống Truy vấn tài liệu Phương Đông">
@@ -136,6 +161,17 @@
 
         <form id="chatForm" class="composer">
           <div class="composer-container">
+            <!-- Composer border trail glow SVG -->
+            <svg class="composer-border-svg" width="100%" height="100%" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <rect class="composer-border-rect" x="0.5" y="0.5" width="100%" height="100%" rx="16" stroke="url(#composerBorderGrad)" stroke-width="1.5" stroke-dasharray="80 320" stroke-dashoffset="0"/>
+              <defs>
+                <linearGradient id="composerBorderGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#e11d48"/>
+                  <stop offset="50%" stop-color="#f43f5e"/>
+                  <stop offset="100%" stop-color="#e11d48"/>
+                </linearGradient>
+              </defs>
+            </svg>
             <div class="composer-settings">
               <label class="answer-style-label" for="docCategorySelect">Phạm vi:</label>
               <div class="select-wrapper">
@@ -208,6 +244,7 @@
     </div>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/animejs/3.2.1/anime.min.js"></script>
     <script src="/static/user/user-chat.js?v=20260527-qa-agent"></script>
   </body>
 </html>

@@ -228,9 +228,9 @@ def test_user_chat_app_public_api_safe_citations_policy_and_feedback(tmp_path: P
     assert {style["id"] for style in boot["answer_styles"]} == {"brief", "steps", "checklist", "workflow"}
     assert [card["label"] for card in boot["welcome_cards"]] == [
         "Quy trình Phương Đông",
-        "Biểu mẫu quy trình",
+        "Biểu mẫu & Hồ sơ",
         "Xử lý sự cố",
-        "Tài liệu quy trình",
+        "Tài liệu kỹ thuật",
     ]
     assert "policy_id" not in boot["policy"]
     assert {group["id"] for group in boot["templates"]["groups"]} == {

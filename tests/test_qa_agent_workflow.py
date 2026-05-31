@@ -423,3 +423,17 @@ def test_analyzer_planner_and_critic_guardrails() -> None:
     clarification = qa.clarification_structured_answer("Can them ten quy trinh.", ["document_or_procedure_name"])
     verification = qa.deterministic_answer_verification(clarification, {"verified_evidence": []})
     assert verification["final_action"] == "render"
+
+
+from hypothesis import given, strategies as st
+
+@given(st.dictionaries(st.text(), st.one_of(st.text(), st.integers(), st.none())))
+def test_is_fallback_property(d):
+    expected = "fallback_reason" in d
+    assert qa._is_fallback(d) == expected
+
+
+@given(st.one_of(st.integers(), st.text(), st.lists(st.integers())))
+def test_is_fallback_non_dict_property(val):
+    assert qa._is_fallback(val) is False
+

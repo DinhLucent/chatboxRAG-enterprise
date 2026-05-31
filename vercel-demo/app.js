@@ -40,232 +40,12 @@ function getOrCreateStoredId(key, prefix) {
   return value;
 }
 
-function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-function parseMarkdown(text) {
-  if (!text) return "";
-  
-  const html = escapeHtml(text);
-  const lines = html.split("\n");
-  const result = [];
-  let inUl = false;
-  let inOl = false;
-  let inCode = false;
-  let codeLang = "";
-  let codeLines = [];
-  let inBlockquote = false;
-  let currentCalloutType = "";
-  
-  for (let line of lines) {
-    const trimmed = line.trim();
-
-    if (trimmed.startsWith("```")) {
-      if (inBlockquote) {
-        result.push(currentCalloutType ? "</div>" : "</blockquote>");
-        inBlockquote = false;
-        currentCalloutType = "";
-      }
-      if (inCode) {
-        result.push(renderCodeBlock(codeLang, codeLines.join("\n")));
-        inCode = false;
-        codeLang = "";
-        codeLines = [];
-      } else {
-        if (inUl) {
-          result.push("</ul>");
-          inUl = false;
-        }
-        if (inOl) {
-          result.push("</ol>");
-          inOl = false;
-        }
-        inCode = true;
-        codeLang = trimmed.slice(3).trim().toLowerCase();
-        codeLines = [];
-      }
-      continue;
-    }
-
-    if (inCode) {
-      codeLines.push(line);
-      continue;
-    }
-
-    // Handle blockquotes / callouts (escaped > is &gt;)
-    if (trimmed.startsWith("&gt;")) {
-      if (inUl) {
-        result.push("</ul>");
-        inUl = false;
-      }
-      if (inOl) {
-        result.push("</ol>");
-        inOl = false;
-      }
-      
-      const quoteContent = line.substring(line.indexOf("&gt;") + 4).trim();
-      
-      if (!inBlockquote) {
-        const calloutMatch = quoteContent.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]/i);
-        if (calloutMatch) {
-          currentCalloutType = calloutMatch[1].toUpperCase();
-          const innerText = quoteContent.substring(calloutMatch[0].length).trim();
-          result.push(`<div class="callout callout-${currentCalloutType.toLowerCase()}">`);
-          result.push(getCalloutHeader(currentCalloutType));
-          if (innerText) {
-            result.push(`<p class="callout-body">${formatInlineMarkdown(innerText)}</p>`);
-          }
-        } else {
-          currentCalloutType = "";
-          result.push(`<blockquote>`);
-          result.push(`<p>${formatInlineMarkdown(quoteContent)}</p>`);
-        }
-        inBlockquote = true;
-      } else {
-        if (currentCalloutType) {
-          result.push(`<p class="callout-body">${formatInlineMarkdown(quoteContent)}</p>`);
-        } else {
-          result.push(`<p>${formatInlineMarkdown(quoteContent)}</p>`);
-        }
-      }
-      continue;
-    }
-
-    // Close blockquote if we hit a non-blockquote line
-    if (inBlockquote) {
-      result.push(currentCalloutType ? "</div>" : "</blockquote>");
-      inBlockquote = false;
-      currentCalloutType = "";
-    }
-    
-    if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
-      if (inOl) {
-        result.push("</ol>");
-        inOl = false;
-      }
-      if (!inUl) {
-        result.push('<ul class="markdown-ul">');
-        inUl = true;
-      }
-      const content = trimmed.substring(2);
-      result.push(`<li>${formatInlineMarkdown(content)}</li>`);
-      continue;
-    }
-    
-    const olMatch = trimmed.match(/^(\d+)\.\s+(.*)/);
-    if (olMatch) {
-      if (inUl) {
-        result.push("</ul>");
-        inUl = false;
-      }
-      if (!inOl) {
-        result.push('<ol class="markdown-ol">');
-        inOl = true;
-      }
-      const content = olMatch[2];
-      result.push(`<li>${formatInlineMarkdown(content)}</li>`);
-      continue;
-    }
-    
-    if (inUl) {
-      result.push("</ul>");
-      inUl = false;
-    }
-    if (inOl) {
-      result.push("</ol>");
-      inOl = false;
-    }
-    
-    if (trimmed.startsWith("### ")) {
-      result.push(`<h3>${formatInlineMarkdown(trimmed.substring(4))}</h3>`);
-    } else if (trimmed.startsWith("## ")) {
-      result.push(`<h2>${formatInlineMarkdown(trimmed.substring(3))}</h2>`);
-    } else if (trimmed.startsWith("# ")) {
-      result.push(`<h1>${formatInlineMarkdown(trimmed.substring(2))}</h1>`);
-    } else if (trimmed === "") {
-      result.push('<p class="markdown-empty-line"></p>');
-    } else {
-      result.push(`<p class="markdown-para">${formatInlineMarkdown(line)}</p>`);
-    }
-  }
-  
-  if (inUl) result.push("</ul>");
-  if (inOl) result.push("</ol>");
-  if (inBlockquote) {
-    result.push(currentCalloutType ? "</div>" : "</blockquote>");
-  }
-  if (inCode) result.push(renderCodeBlock(codeLang, codeLines.join("\n")));
-  
-  return result.join("\n");
-}
-
-function formatInlineMarkdown(value) {
-  let html = String(value ?? "");
-  html = html.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
-  html = html.replace(/\*(.*?)\*/g, "<em>$1</em>");
-  html = html.replace(/`(.*?)`/g, "<code>$1</code>");
-  html = html.replace(
-    /\[(.*?)\]\(((?:https?:\/\/|\/)[^\s)]+)\)/g,
-    '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>',
-  );
-  return html;
-}
-
-function renderCodeBlock(lang, code) {
-  if (lang === "mermaid") {
-    return renderMermaidWorkflow(code);
-  }
-  if (lang === "chart" || lang === "echarts") {
-    const trimmed = code.trim();
-    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-      return `<div class="chat-chart-container" data-chart-config="${escapeHtml(trimmed)}"></div>`;
-    }
-  }
-  return `<pre class="markdown-code"><code>${code}</code></pre>`;
-}
-
-function renderMermaidWorkflow(code) {
-  const labels = [];
-  const seen = new Set();
-  const nodePattern = /([A-Za-z][A-Za-z0-9_-]*)\[(?:(?:"|&quot;)(.*?)(?:"|&quot;)|([^\]]+))\]/g;
-  for (const line of code.split("\n")) {
-    for (const match of line.matchAll(nodePattern)) {
-      if (seen.has(match[1])) continue;
-      seen.add(match[1]);
-      const label = (match[2] || match[3] || "").trim();
-      if (label) labels.push(label);
-    }
-  }
-  if (!labels.length) {
-    return `<pre class="markdown-code"><code>${code}</code></pre>`;
-  }
-  return `
-    <div class="workflow-diagram">
-      <div class="workflow-nodes">
-        ${labels
-          .map(
-            (label, index) => `
-              <div class="workflow-node">
-                <span>${index + 1}</span>
-                <p>${label}</p>
-              </div>
-              ${index < labels.length - 1 ? '<div class="workflow-arrow" aria-hidden="true">&darr;</div>' : ""}
-            `,
-          )
-          .join("")}
-      </div>
-      <details class="workflow-source">
-        <summary>Mermaid</summary>
-        <pre class="markdown-code"><code>${code}</code></pre>
-      </details>
-    </div>
-  `;
-}
+// ---------------------------------------------------------------------------
+// Markdown rendering moved to markdown.js (loaded before this file in
+// index.html). escapeHtml, parseMarkdown, formatInlineMarkdown, renderCodeBlock,
+// renderMermaidWorkflow and getCalloutHeader are globals from that classic
+// script, so all call sites below remain unchanged.
+// ---------------------------------------------------------------------------
 
 function toast(message) {
   const target = qs("#toast");
@@ -274,36 +54,6 @@ function toast(message) {
   window.setTimeout(() => target.classList.remove("show"), 2800);
 }
 
-function getCalloutHeader(type) {
-  const titles = {
-    NOTE: "Ghi chú",
-    TIP: "Mẹo / Gợi ý",
-    IMPORTANT: "Quan trọng",
-    WARNING: "Cảnh báo",
-    CAUTION: "Lưu ý đặc biệt"
-  };
-  const title = titles[type] || type;
-  
-  let iconSvg = "";
-  if (type === "NOTE") {
-    iconSvg = `<svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>`;
-  } else if (type === "TIP") {
-    iconSvg = `<svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6M10 22h4M12 2v2M4.22 4.22l1.42 1.42M18.36 4.22l-1.42 1.42M1 12h2M21 12h2M12 6a6 6 0 0 0-6 6c0 1.66.83 3.12 2.1 4H15.9a4 4 0 0 0 2.1-4c0-3.31-2.69-6-6-6z"/></svg>`;
-  } else if (type === "IMPORTANT") {
-    iconSvg = `<svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>`;
-  } else if (type === "WARNING") {
-    iconSvg = `<svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>`;
-  } else if (type === "CAUTION") {
-    iconSvg = `<svg class="callout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>`;
-  }
-  
-  return `
-    <div class="callout-title">
-      ${iconSvg}
-      <span>${title}</span>
-    </div>
-  `;
-}
 
 function loadChartJS() {
   if (window.Chart) {
@@ -474,6 +224,7 @@ function renderWelcomeCards() {
     button.addEventListener("click", () => selectPrompt(button));
   });
   wireSpotlight(".welcome-card");
+  initMagneticHover();
 }
 
 function renderTemplates() {
@@ -499,6 +250,7 @@ function renderTemplates() {
   document.querySelectorAll(".template-chip").forEach((button) => {
     button.addEventListener("click", () => selectPrompt(button));
   });
+  initMagneticHover();
 }
 
 function selectPrompt(button) {
@@ -518,11 +270,96 @@ function selectPrompt(button) {
 
 function appendMessage(role, html, actions = "") {
   const target = qs("#messages");
-  qs("#welcomeState")?.remove();
+  const welcomeState = qs("#welcomeState");
+  if (welcomeState) {
+    // Pin welcome state in place so it doesn't push the new message down
+    const rect = welcomeState.getBoundingClientRect();
+    welcomeState.style.position = "absolute";
+    welcomeState.style.top = `${welcomeState.offsetTop}px`;
+    welcomeState.style.left = `${welcomeState.offsetLeft}px`;
+    welcomeState.style.width = `${rect.width}px`;
+    welcomeState.style.margin = "0";
+    welcomeState.style.pointerEvents = "none";
+
+    // Fade out text elements and cards
+    const heroText = welcomeState.querySelectorAll(".welcome-eyebrow, .welcome-sub, #welcomeCards");
+    const avatar = welcomeState.querySelector(".welcome-avatar");
+
+    anime({
+      targets: heroText,
+      opacity: 0,
+      translateY: -20,
+      duration: 350,
+      easing: "easeInQuad",
+    });
+
+    // Animate avatar: scale down and translate to fly top-left
+    anime({
+      targets: avatar,
+      scale: 0.36,
+      translateY: -100,
+      translateX: -120,
+      opacity: 0,
+      duration: 500,
+      easing: "cubicBezier(0.16, 1, 0.3, 1)",
+      complete: () => {
+        welcomeState.remove();
+      }
+    });
+  }
   const article = document.createElement("article");
   article.className = `message ${role}`;
-  article.innerHTML = `<div class="message-body">${html}</div>${actions}`;
+  
+  if (role === "assistant") {
+    article.innerHTML = `
+      <div class="message-wrapper">
+        <div class="message-avatar-container">
+          <svg class="bot-message-avatar" width="32" height="32" viewBox="0 0 88 88" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="botAvatarGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#fb7185"/>
+                <stop offset="100%" stop-color="#e11d48"/>
+              </linearGradient>
+            </defs>
+            <circle cx="44" cy="44" r="38" fill="url(#botAvatarGrad)"/>
+            <rect x="32" y="33" width="24" height="20" rx="6" fill="#ffffff"/>
+            <rect x="29" y="38" width="3" height="10" rx="1.5" fill="#ffffff"/>
+            <rect x="56" y="38" width="3" height="10" rx="1.5" fill="#ffffff"/>
+            <rect x="41" y="52" width="6" height="4" fill="#ffffff"/>
+            <circle cx="39" cy="42" r="2" fill="#e11d48"/>
+            <circle cx="49" cy="42" r="2" fill="#e11d48"/>
+            <path d="M41 47.5C42 48.5 43 49 44 49C45 49 46 48.5 47 47.5" stroke="#e11d48" stroke-width="1.5" stroke-linecap="round"/>
+            <rect x="43" y="26" width="2" height="7" fill="#ffffff"/>
+            <circle cx="44" cy="25" r="2" fill="#ffffff"/>
+          </svg>
+        </div>
+        <div class="message-content">
+          <div class="message-body">${html}</div>
+          ${actions}
+        </div>
+      </div>
+    `;
+  } else {
+    article.innerHTML = `<div class="message-body">${html}</div>${actions}`;
+  }
+  
   target.appendChild(article);
+
+  // Custom spring entrance animation using Anime.js
+  anime.set(article, {
+    opacity: 0,
+    translateY: 20,
+    scale: 0.96
+  });
+  anime({
+    targets: article,
+    opacity: [0, 1],
+    translateY: [20, 0],
+    scale: [0.96, 1],
+    duration: 500,
+    easing: "spring(1, 80, 15, 0)"
+  });
+
   target.scrollTop = target.scrollHeight;
   return article;
 }
@@ -592,6 +429,7 @@ async function submitChat(event) {
     return;
   }
 
+  triggerComposerGlow(true);
   qs("#sendBtn").disabled = true;
   appendMessage("user", escapeHtml(query));
   const pending = appendMessage("assistant", renderLoadingMessage());
@@ -666,7 +504,6 @@ async function submitChat(event) {
     hydrateCharts(pending);
     renderSources(result.citations || []);
     renderTrace(result.trace_steps || result.trace?.steps || []);
-    switchDrawerTab("sources");
     qs("#drawerMeta").textContent = `${result.citations?.length || 0} nguồn`;
     qs("#queryInput").value = "";
     autoGrowTextarea();
@@ -701,6 +538,7 @@ async function submitChat(event) {
   } finally {
     clearInterval(loadingInterval);
     qs("#sendBtn").disabled = false;
+    triggerComposerGlow(false);
   }
 }
 
@@ -807,7 +645,7 @@ function renderLoadingMessage() {
   return `
     <div class="loading-indicator-wrapper">
       <div class="modern-loading-spinner"></div>
-      <div class="loading-title">OrientSOP đang suy nghĩ...</div>
+      <div class="loading-title">OrientSOP đang suy nghĩ<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span></div>
     </div>
     <div class="loading-list">
       ${LOADING_STEPS.map((step, idx) => `
@@ -979,6 +817,7 @@ function syncDrawer() {
   const drawer = qs("#sourceDrawer");
   qs(".user-shell").classList.toggle("drawer-hidden", state.drawerHidden);
   drawer.classList.toggle("hidden", state.drawerHidden);
+  qs("#toggleDrawerBtn")?.classList.toggle("active", !state.drawerHidden);
 }
 
 function ensureDrawerVisible() {
@@ -1143,6 +982,139 @@ async function checkHealth() {
   }
 }
 
+/* ==========================================================================
+   UI Animations & Design Spells (Anime.js / Custom Easing)
+   ========================================================================== */
+
+function runEntranceAnimations() {
+  const loader = qs("#pageLoader");
+  if (!loader) return;
+
+  // Pre-hide elements to prevent layout flash when the page loader fades out
+  anime.set(".rail, .chat-header, .welcome-hero, .welcome-cards, .composer", {
+    opacity: 0,
+    translateY: 20
+  });
+  anime.set(".welcome-card", {
+    opacity: 0,
+    scale: 0.95,
+    translateY: 15
+  });
+
+  const tl = anime.timeline({
+    easing: "easeInOutQuad",
+  });
+
+  tl.add({
+    targets: "#pageLoader .loader-bar",
+    left: ["-100%", "0%"],
+    duration: 800,
+  }).add({
+    targets: "#pageLoader",
+    opacity: 0,
+    duration: 400,
+    complete: () => {
+      loader.classList.add("is-hidden");
+      runAppEntranceReveal();
+    }
+  });
+}
+
+function runAppEntranceReveal() {
+  anime.set(".rail, .chat-header, .welcome-hero, .welcome-cards, .composer", {
+    opacity: 0,
+    translateY: 20
+  });
+
+  anime({
+    targets: ".rail, .chat-header, .welcome-hero, .welcome-cards, .composer",
+    opacity: [0, 1],
+    translateY: [20, 0],
+    delay: anime.stagger(80),
+    duration: 800,
+    easing: "cubicBezier(0.16, 1, 0.3, 1)",
+    complete: () => {
+      initMagneticHover();
+    }
+  });
+
+  anime.set(".welcome-card", {
+    opacity: 0,
+    scale: 0.95,
+    translateY: 15
+  });
+
+  anime({
+    targets: ".welcome-card",
+    opacity: [0, 1],
+    scale: [0.95, 1],
+    translateY: [15, 0],
+    delay: anime.stagger(60, { start: 300 }),
+    duration: 600,
+    easing: "spring(1, 80, 12, 0)"
+  });
+}
+
+function initMagneticHover() {
+  const magneticElements = document.querySelectorAll(".welcome-card, .welcome-avatar-inner, .template-chip");
+  
+  magneticElements.forEach((el) => {
+    if (el.dataset.magneticBound) return;
+    el.dataset.magneticBound = "true";
+
+    el.addEventListener("mousemove", (e) => {
+      const rect = el.getBoundingClientRect();
+      const x = e.clientX - rect.left - rect.width / 2;
+      const y = e.clientY - rect.top - rect.height / 2;
+      
+      anime({
+        targets: el,
+        translateX: x * 0.22,
+        translateY: y * 0.22,
+        duration: 100,
+        easing: "easeOutQuad"
+      });
+    });
+    
+    el.addEventListener("mouseleave", () => {
+      anime({
+        targets: el,
+        translateX: 0,
+        translateY: 0,
+        duration: 600,
+        easing: "spring(1, 75, 12, 0)"
+      });
+    });
+  });
+}
+
+let composerGlowAnimation = null;
+
+function triggerComposerGlow(active) {
+  const composer = qs(".composer");
+  if (!composer) return;
+  
+  if (active) {
+    composer.classList.add("is-loading");
+    if (!composerGlowAnimation) {
+      composerGlowAnimation = anime({
+        targets: ".composer-border-rect",
+        strokeDashoffset: [0, -400],
+        duration: 3000,
+        loop: true,
+        easing: "linear"
+      });
+    } else {
+      composerGlowAnimation.play();
+    }
+  } else {
+    composer.classList.remove("is-loading");
+    if (composerGlowAnimation) {
+      composerGlowAnimation.pause();
+    }
+  }
+}
+
 async function init() {
   // Throttle mousemove with requestAnimationFrame to avoid excessive CPU usage
   let _rafPending = false;
@@ -1239,6 +1211,7 @@ async function init() {
       toast("Đã khôi phục câu hỏi nháp chưa gửi.");
     }
   }
+  runEntranceAnimations();
 }
 
 init();
